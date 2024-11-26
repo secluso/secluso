@@ -1,0 +1,27 @@
+[package]
+name = "privastead-server"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
+
+[features]
+default = ["logging"]
+logging = ["log"]
+
+[dependencies]
+docopt = "~1.1"
+env_logger = "0.9.0" # 0.10 requires an MSRV bump to 1.60
+log = { version = "0.4.4", optional = true }
+mio = { version = "0.8", features = ["net", "os-poll"] }
+serde = "1.0"
+serde_derive = "1.0"
+bincode = "1.2.1"
+openmls = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.6.0-pre.1", features = ["test-utils"] }
+ds-lib = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.6.0-pre.1" }
+#tls_codec = { version = "0.3.0-pre.3", features = ["derive", "serde", "mls"] }
+reqwest = { version = "0.11", features = ["blocking", "json"] }
+serde_json = "1.0"
+jsonwebtoken = "7.2"
+chrono = "0.4"
+base64 = "0.21"
+privastead-client-server-lib = { path = "../client_server_lib" }

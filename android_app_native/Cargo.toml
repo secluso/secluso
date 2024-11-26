@@ -1,0 +1,18 @@
+[package]
+name = "privastead-android-app-native"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
+
+[dependencies]
+privastead-client-lib = { path = "../client_lib" }
+privastead-client-server-lib = { path = "../client_server_lib" }
+bincode = "1.2.1"
+rand="0.8"
+lazy_static = "1.4"
+
+[lib]
+crate-type = ["dylib"]
+
+[target.'cfg(target_os="android")'.dependencies]
+jni = { version = "0.20", default-features = false }

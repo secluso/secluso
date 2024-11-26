@@ -1,0 +1,14 @@
+[package]
+name = "privastead-config-tool"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
+
+[dependencies]
+docopt = "~1.1"
+serde = "1.0"
+serde_derive = "1.0"
+openmls_traits = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.6.0-pre.1" }
+openmls_rust_crypto = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.6.0-pre.1" }
+qrcode = "0.14.0"
+image = "0.25.1"
