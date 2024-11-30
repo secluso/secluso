@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://github.com/privastead/images/blob/main/banner.svg" alt="Privastead" />
+</p>
+
 # Privastead
 
 Privastead is a privacy-preserving home security camera solution that uses end-to-end encryption.
@@ -51,6 +55,11 @@ So far, the following cameras have been tested:
 ## Supported mobile OSes
 
 * Android
+
+<p align="left">
+  <img src="https://github.com/privastead/images/blob/main/screenshot1.png" alt="screenshot" width="20%"/>
+  <img src="https://github.com/privastead/images/blob/main/screenshot2.png" alt="screenshot" width="20%"/>
+</p>
 
 ## Tested smartphones (OS version)
 
