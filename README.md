@@ -100,3 +100,5 @@ Note: this is a side project of Ardalan Amiri Sani, who works on it in his spare
 ## Disclaimers
 
 This project uses cryptography libraries/software. Before using it, check your country's laws and regulations.
+
+Use at your own risks. The project authors do not provide any guarantees of privacy or home security.

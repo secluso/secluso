@@ -27,3 +27,9 @@ qrcode = "0.14.0"
 image = "0.25.1"
 openmls_traits = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.6.0-pre.1" }
 openmls_rust_crypto = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.6.0-pre.1" }
+retina = "0.4.10"
+tokio = { version = "1.5.0", features = ["fs", "io-util", "macros", "rt-multi-thread"] }
+url = "2.2.1"
+anyhow = "1.0.41"
+bytes = "1.0.1"
+futures = "0.3.14"

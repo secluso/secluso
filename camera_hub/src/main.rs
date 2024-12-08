@@ -48,6 +48,8 @@ use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
 mod livestream;
 use crate::livestream::{is_there_livestream_start_request, livestream};
 
+mod mp4;
+
 // Used to generate random names.
 // With 16 alphanumeric characters, the probability of collision is very low.
 // Note: even if collision happens, it has no impact on

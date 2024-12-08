@@ -30,6 +30,8 @@ use std::path::Path;
 use std::process;
 use std::process::Command;
 use std::process::{Child, Stdio};
+use tokio::runtime::Runtime;
+use crate::mp4;
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
@@ -401,44 +403,17 @@ impl IpCamera {
     }
 
     pub fn record_motion_video(&self, dir: String, info: &VideoInfo) -> io::Result<()> {
-        let mut child = Command::new("ffmpeg")
-            .args([
-                "-rtsp_transport",
-                "tcp",
-                "-i",
-                &("rtsp://".to_owned()
-                    + &self.username
-                    + ":"
-                    + &self.password
-                    + "@"
-                    + &self.ip_addr
-                    + ":"
-                    + &self.rtsp_port),
-                "-t",
-                "20",
-                "-map",
-                "0:v",
-                "-map",
-                "0:a",
-                "-c:v",
-                "copy",
-                "-c:a",
-                "copy",
-                "-f",
-                "matroska",
-                "-y",
-                &(dir + "/" + &info.filename),
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
+        let rt = Runtime::new()?;
 
-        child.wait()?;
+        let future = mp4::record(self.username.clone(), self.password.clone(), "rtsp://".to_owned() + &self.ip_addr + ":" + &self.rtsp_port, dir + "/" + &info.filename, 20);
+
+        rt.block_on(future).unwrap();
 
         Ok(())
     }
 
     pub fn launch_livestream(&self) -> io::Result<Child> {
+        //FIXME: replace ffmpeg with a Rust-based implementation.
         return Command::new("ffmpeg")
             .args([
                 "-rtsp_transport",
@@ -471,3 +446,4 @@ impl IpCamera {
             .spawn();
     }
 }
+

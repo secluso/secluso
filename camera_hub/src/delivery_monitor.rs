@@ -43,7 +43,7 @@ impl VideoInfo {
     }
 
     pub fn get_filename_from_timestamp(timestamp: u64) -> String {
-        "video_".to_owned() + &timestamp.to_string() + ".mkv"
+        "video_".to_owned() + &timestamp.to_string() + ".mp4"
     }
 }
 

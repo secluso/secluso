@@ -634,7 +634,7 @@ pub fn receive(
                         + &contact_name
                         + "_"
                         + &info.timestamp.to_string()
-                        + ".mkv";
+                        + ".mp4";
                     let pathname: String =
                         dir_pathname.to_owned() + "/" + &filename.clone();
 
