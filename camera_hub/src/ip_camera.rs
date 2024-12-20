@@ -28,10 +28,11 @@ use std::io;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process;
-use std::process::Command;
-use std::process::{Child, Stdio};
+use std::thread;
 use tokio::runtime::Runtime;
+use crate::livestream::LivestreamWriter;
 use crate::mp4;
+use crate::fmp4;
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
@@ -412,38 +413,21 @@ impl IpCamera {
         Ok(())
     }
 
-    pub fn launch_livestream(&self) -> io::Result<Child> {
-        //FIXME: replace ffmpeg with a Rust-based implementation.
-        return Command::new("ffmpeg")
-            .args([
-                "-rtsp_transport",
-                "tcp",
-                "-flags",
-                "low_delay",
-                "-i",
-                &("rtsp://".to_owned()
-                    + &self.username
-                    + ":"
-                    + &self.password
-                    + "@"
-                    + &self.ip_addr
-                    + ":"
-                    + &self.rtsp_port),
-                "-map",
-                "0:v",
-                "-map",
-                "0:a",
-                "-c:v",
-                "copy",
-                "-c:a",
-                "copy",
-                "-f",
-                "matroska",
-                "-",
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn();
+    pub fn launch_livestream(&self, livestream_writer: LivestreamWriter) -> io::Result<()> {
+        let username = self.username.clone();
+        let password = self.password.clone();
+        let ip_addr = self.ip_addr.clone();
+        let rtsp_port = self.rtsp_port.clone();
+
+        thread::spawn(move || {
+            let rt = Runtime::new().unwrap();
+
+            let future = fmp4::record(username, password, "rtsp://".to_owned() + &ip_addr + ":" + &rtsp_port, livestream_writer);
+
+            rt.block_on(future).unwrap();
+        });
+
+        Ok(())
     }
 }
 

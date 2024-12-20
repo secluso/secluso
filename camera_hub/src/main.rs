@@ -49,6 +49,7 @@ mod livestream;
 use crate::livestream::{is_there_livestream_start_request, livestream};
 
 mod mp4;
+mod fmp4;
 
 // Used to generate random names.
 // With 16 alphanumeric characters, the probability of collision is very low.

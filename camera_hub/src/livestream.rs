@@ -18,7 +18,74 @@
 use crate::ip_camera::IpCamera;
 use privastead_client_lib::user::User;
 use std::io;
-use std::io::Read;
+use std::sync::mpsc;
+use std::sync::mpsc::Sender;
+use tokio::io::AsyncWrite;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+pub struct LivestreamWriter {
+    sender: Sender<Vec<u8>>,
+    buffer: Vec<u8>,
+}
+
+impl LivestreamWriter {
+    fn new(sender: Sender<Vec<u8>>) -> Self {
+        Self {
+            sender,
+            buffer: Vec::new(),
+        }
+    }
+}
+
+impl AsyncWrite for LivestreamWriter {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        // We want each encrypted message to fit within one TCP packet (max size: 64 kB or 65535 B).
+        // With these numbers, some experiments show that the encrypted message will have the max
+        // size of 64687 B.
+        let max_buf_size: usize = 62 * 1024;
+        let min_buf_size: usize = 60 * 1024;
+
+        self.buffer.extend_from_slice(buf);
+
+        if self.buffer.len() >= min_buf_size {
+            let len_to_send = if self.buffer.len() > max_buf_size {
+                max_buf_size
+            } else {
+                self.buffer.len()
+            };
+
+            let data = self.buffer.drain(..len_to_send).collect();
+            
+            if self.sender.send(data).is_err() {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Failed to send data over the channel",
+                )));
+            }
+        }
+
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
 
 pub fn is_there_livestream_start_request(client: &mut User) -> io::Result<bool> {
     let mut livestream_start = false;
@@ -51,52 +118,31 @@ pub fn livestream(client: &mut User, group_name: String, ip_camera: &IpCamera) -
         return Ok(());
     }
 
-    let mut child = ip_camera.launch_livestream()?;
-    let child_stdout_ret = child.stdout.take();
-    if child_stdout_ret.is_none() {
-        child.kill().unwrap();
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "Failed to launch livestream.".to_string(),
-        ));
-    }
-
-    let mut child_stdout = child_stdout_ret.unwrap();
-
-    // We want each encrypted message to fit within one TCP packet (max size: 64 kB or 65535 B).
-    // With these numbers, some experiments show that the encrypted message will have the max
-    // size of 64687 B.
-    let mut buffer = [0; 63 * 1024];
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let livestream_writer = LivestreamWriter::new(tx);
+    ip_camera.launch_livestream(livestream_writer).unwrap();
 
     // The first read blocks for the stream to be ready.
-    // We want to start the tracker after that.
-    // FIXME: the read and send code is duplicated here
-    // and in the loop.
-    let len = child_stdout.read(&mut buffer[..]).expect("Read failed!");
-    client
-        .send(&buffer[..len], group_name.clone())
-        .map_err(|e| {
-            error!("send() returned error:");
-            e
-        })?;
-    client.save_groups_state();
+    // We want to start the heartbeat tracker after that.
+    let mut first_send = true;
 
     loop {
-        let len = child_stdout.read(&mut buffer[..]).expect("Read failed!");
+        let data = rx.recv().unwrap();
+
         let heartbeat = client
-            .send(&buffer[..len], group_name.clone())
+            .send(&data, group_name.clone())
             .map_err(|e| {
                 error!("send() returned error:");
                 e
             })?;
         client.save_groups_state();
 
-        if !heartbeat {
+        if !heartbeat && !first_send {
             info!("Ending livestream.");
-            //terminate stream from the camera
-            child.kill().unwrap();
             break;
         }
+
+        first_send = false;
     }
 
     Ok(())

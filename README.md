@@ -67,7 +67,7 @@ So far, the following cameras have been tested:
 
 ## Tested execution environment for the hub
 
-* Ubuntu (ffmpeg required)
+* Ubuntu
 
 ## (Current) key limitations
 
