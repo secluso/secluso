@@ -18,11 +18,11 @@
 use crate::ip_camera::IpCamera;
 use privastead_client_lib::user::User;
 use std::io;
+use std::pin::Pin;
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
-use tokio::io::AsyncWrite;
-use std::pin::Pin;
 use std::task::{Context, Poll};
+use tokio::io::AsyncWrite;
 
 pub struct LivestreamWriter {
     sender: Sender<Vec<u8>>,
@@ -60,7 +60,7 @@ impl AsyncWrite for LivestreamWriter {
             };
 
             let data = self.buffer.drain(..len_to_send).collect();
-            
+
             if self.sender.send(data).is_err() {
                 return Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::Other,
@@ -72,17 +72,11 @@ impl AsyncWrite for LivestreamWriter {
         Poll::Ready(Ok(buf.len()))
     }
 
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_shutdown(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
     }
 }
@@ -129,12 +123,10 @@ pub fn livestream(client: &mut User, group_name: String, ip_camera: &IpCamera) -
     loop {
         let data = rx.recv().unwrap();
 
-        let heartbeat = client
-            .send(&data, group_name.clone())
-            .map_err(|e| {
-                error!("send() returned error:");
-                e
-            })?;
+        let heartbeat = client.send(&data, group_name.clone()).map_err(|e| {
+            error!("send() returned error:");
+            e
+        })?;
         client.save_groups_state();
 
         if !heartbeat && !first_send {

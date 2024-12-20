@@ -40,19 +40,17 @@
 
 use anyhow::{anyhow, bail, Context, Error};
 use bytes::{Buf, BufMut, BytesMut};
-use url::Url;
 use futures::StreamExt;
 use retina::{
     client::SetupOptions,
     codec::{AudioParameters, CodecItem, ParametersRef, VideoParameters},
 };
+use url::Url;
 
+use std::convert::TryFrom;
 use std::num::NonZeroU32;
-use std::{convert::TryFrom};
 use std::sync::Arc;
-use tokio::{
-    io::{AsyncWrite, AsyncWriteExt},
-};
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 /// Writes a box length for everything appended in the supplied scope.
 macro_rules! write_box {
@@ -133,7 +131,12 @@ impl TrakTracker {
         let duration: u32 = if self.last_timestamp == 0 {
             0
         } else {
-            timestamp.timestamp().checked_sub(self.last_timestamp).unwrap().try_into().unwrap()
+            timestamp
+                .timestamp()
+                .checked_sub(self.last_timestamp)
+                .unwrap()
+                .try_into()
+                .unwrap()
         };
         self.last_timestamp = timestamp.timestamp();
         self.tot_duration += u64::from(duration);
@@ -205,7 +208,7 @@ impl TrakTracker {
     fn write_fragment(&self, buf: &mut BytesMut) -> Result<(), Error> {
         write_box!(buf, b"tfdt", {
             buf.put_u32(1 << 24); // version, flags
-            buf.put_u64(self.fragment_start_time); // base media decode time 
+            buf.put_u64(self.fragment_start_time); // base media decode time
         });
         write_box!(buf, b"trun", {
             buf.put_u32(1 << 24 | 0x100 | 0x200); // version, flags (sample duration, sample size)
@@ -214,7 +217,7 @@ impl TrakTracker {
             for (duration, size) in &self.samples_durations_sizes {
                 buf.put_u32(*duration);
                 buf.put_u32(*size);
-            };
+            }
         });
         Ok(())
     }
@@ -312,7 +315,11 @@ impl<W: AsyncWrite + Unpin> Fmp4Writer<W> {
         Ok(())
     }
 
-    fn write_video_trak(&self, buf: &mut BytesMut, parameters: &VideoParameters) -> Result<(), Error> {
+    fn write_video_trak(
+        &self,
+        buf: &mut BytesMut,
+        parameters: &VideoParameters,
+    ) -> Result<(), Error> {
         write_box!(buf, b"trak", {
             write_box!(buf, b"tkhd", {
                 buf.put_u32((1 << 24) | 7); // version, flags
@@ -329,7 +336,7 @@ impl<W: AsyncWrite + Unpin> Fmp4Writer<W> {
                 for v in &[0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000] {
                     buf.put_u32(*v); // matrix
                 }
-                
+
                 let dims = parameters.pixel_dimensions();
                 let width = u32::from(u16::try_from(dims.0)?) << 16;
                 let height = u32::from(u16::try_from(dims.1)?) << 16;
@@ -373,7 +380,7 @@ impl<W: AsyncWrite + Unpin> Fmp4Writer<W> {
                     write_box!(buf, b"stbl", {
                         write_box!(buf, b"stsd", {
                             buf.put_u32(0); // version
-                            //buf.put_u32(u32::try_from(parameters.len())?); // entry_count
+                                            //buf.put_u32(u32::try_from(parameters.len())?); // entry_count
                             buf.put_u32(1); // entry_count
                             let e = parameters.mp4_sample_entry().build().map_err(|e| {
                                 anyhow!(
@@ -520,7 +527,9 @@ impl<W: AsyncWrite + Unpin> Fmp4Writer<W> {
             }
         });
 
-        buf.extend_from_slice(&u32::try_from(self.fbuf_video.len() + self.fbuf_audio.len() + 8)?.to_be_bytes()[..]);
+        buf.extend_from_slice(
+            &u32::try_from(self.fbuf_video.len() + self.fbuf_audio.len() + 8)?.to_be_bytes()[..],
+        );
         buf.extend_from_slice(&b"mdat"[..]);
 
         self.inner.write_all(&buf).await?;
@@ -541,39 +550,28 @@ impl<W: AsyncWrite + Unpin> Fmp4Writer<W> {
                 buf.put_u32(1 << 24); // version, flags
                 buf.put_u32(1); // track_id
             });
-            
+
             self.video_trak.write_fragment(buf)?;
         });
         Ok(())
     }
 
-    fn write_audio_fragment(
-        &self,
-        buf: &mut BytesMut,
-    ) -> Result<(), Error> {
+    fn write_audio_fragment(&self, buf: &mut BytesMut) -> Result<(), Error> {
         write_box!(buf, b"traf", {
             write_box!(buf, b"tfhd", {
                 buf.put_u32(1 << 24);
                 buf.put_u32(2); // track_id
             });
-            
-            self.audio_trak.write_fragment(buf)?;
 
+            self.audio_trak.write_fragment(buf)?;
         });
         Ok(())
     }
 
-    async fn video(
-        &mut self,
-        frame: retina::codec::VideoFrame,
-    ) -> Result<(), Error> {
+    async fn video(&mut self, frame: retina::codec::VideoFrame) -> Result<(), Error> {
         let size = u32::try_from(frame.data().remaining())?;
-        self.video_trak.add_sample(
-            size,
-            frame.timestamp(),
-            frame.loss(),
-            self.allow_loss,
-        )?;
+        self.video_trak
+            .add_sample(size, frame.timestamp(), frame.loss(), self.allow_loss)?;
         self.mdat_pos = self
             .mdat_pos
             .checked_add(size)
@@ -587,12 +585,8 @@ impl<W: AsyncWrite + Unpin> Fmp4Writer<W> {
 
     async fn audio(&mut self, frame: retina::codec::AudioFrame) -> Result<(), Error> {
         let size = u32::try_from(frame.data().remaining())?;
-        self.audio_trak.add_sample(
-            size,
-            frame.timestamp(),
-            frame.loss(),
-            self.allow_loss,
-        )?;
+        self.audio_trak
+            .add_sample(size, frame.timestamp(), frame.loss(), self.allow_loss)?;
         self.mdat_pos = self
             .mdat_pos
             .checked_add(size)
@@ -677,10 +671,7 @@ pub async fn record<W: AsyncWrite + Unpin>(
     url: String,
     writer: W,
 ) -> Result<(), Error> {
-    let creds = retina::client::Credentials {
-        username,
-        password,
-    };
+    let creds = retina::client::Credentials { username, password };
     let session_group = Arc::new(retina::client::SessionGroup::default());
     let url_parsed = Url::parse(&url)?;
     let mut session = retina::client::Session::describe(
@@ -713,7 +704,10 @@ pub async fn record<W: AsyncWrite + Unpin>(
     };
     if let Some(i) = video_stream_i {
         session
-            .setup(i, SetupOptions::default().transport(retina::client::Transport::default()))
+            .setup(
+                i,
+                SetupOptions::default().transport(retina::client::Transport::default()),
+            )
             .await?;
     }
     let audio_stream = {
@@ -741,7 +735,10 @@ pub async fn record<W: AsyncWrite + Unpin>(
     };
     if let Some((i, _)) = audio_stream {
         session
-            .setup(i, SetupOptions::default().transport(retina::client::Transport::default()))
+            .setup(
+                i,
+                SetupOptions::default().transport(retina::client::Transport::default()),
+            )
             .await?;
     }
     if video_stream_i.is_none() && audio_stream.is_none() {
@@ -752,9 +749,7 @@ pub async fn record<W: AsyncWrite + Unpin>(
     //The frame will have the stream ID: e.g., let stream = &session.streams()[f.stream_id()];
     let video_stream = &session.streams()[video_stream_i.unwrap()];
     let video_params = match video_stream.parameters() {
-        Some(ParametersRef::Video(params)) => {
-            Some(Box::new(params.clone()))
-        }
+        Some(ParametersRef::Video(params)) => Some(Box::new(params.clone())),
         _ => {
             bail!("Exiting because no video parameters were found");
         }

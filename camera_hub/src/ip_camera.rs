@@ -17,6 +17,9 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::delivery_monitor::VideoInfo;
+use crate::fmp4;
+use crate::livestream::LivestreamWriter;
+use crate::mp4;
 use base64::encode;
 use chrono::Utc;
 use reqwest::blocking::Client;
@@ -30,9 +33,6 @@ use std::path::Path;
 use std::process;
 use std::thread;
 use tokio::runtime::Runtime;
-use crate::livestream::LivestreamWriter;
-use crate::mp4;
-use crate::fmp4;
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
@@ -388,9 +388,8 @@ impl IpCamera {
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("send() failed: {e}")))?;
 
-        res.text().map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("text() failed: {e}"))
-        })
+        res.text()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("text() failed: {e}")))
     }
 
     fn parse_response(response: String) -> io::Result<Envelope> {
@@ -406,7 +405,13 @@ impl IpCamera {
     pub fn record_motion_video(&self, dir: String, info: &VideoInfo) -> io::Result<()> {
         let rt = Runtime::new()?;
 
-        let future = mp4::record(self.username.clone(), self.password.clone(), "rtsp://".to_owned() + &self.ip_addr + ":" + &self.rtsp_port, dir + "/" + &info.filename, 20);
+        let future = mp4::record(
+            self.username.clone(),
+            self.password.clone(),
+            "rtsp://".to_owned() + &self.ip_addr + ":" + &self.rtsp_port,
+            dir + "/" + &info.filename,
+            20,
+        );
 
         rt.block_on(future).unwrap();
 
@@ -422,7 +427,12 @@ impl IpCamera {
         thread::spawn(move || {
             let rt = Runtime::new().unwrap();
 
-            let future = fmp4::record(username, password, "rtsp://".to_owned() + &ip_addr + ":" + &rtsp_port, livestream_writer);
+            let future = fmp4::record(
+                username,
+                password,
+                "rtsp://".to_owned() + &ip_addr + ":" + &rtsp_port,
+                livestream_writer,
+            );
 
             rt.block_on(future).unwrap();
         });
@@ -430,4 +440,3 @@ impl IpCamera {
         Ok(())
     }
 }
-

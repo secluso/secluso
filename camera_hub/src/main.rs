@@ -48,8 +48,8 @@ use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
 mod livestream;
 use crate::livestream::{is_there_livestream_start_request, livestream};
 
-mod mp4;
 mod fmp4;
+mod mp4;
 
 // Used to generate random names.
 // With 16 alphanumeric characters, the probability of collision is very low.
@@ -799,7 +799,8 @@ fn core(
                         }
                     }
                 } else {
-                    motion_check_iterations_to_skip = motion_check_iterations_to_skip.saturating_sub(1);
+                    motion_check_iterations_to_skip =
+                        motion_check_iterations_to_skip.saturating_sub(1);
                 }
 
                 // Livestream requeset? Start it.

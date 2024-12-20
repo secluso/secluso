@@ -40,17 +40,17 @@
 
 use anyhow::{anyhow, bail, Context, Error};
 use bytes::{Buf, BufMut, BytesMut};
-use url::Url;
 use futures::StreamExt;
 use log::{debug, info};
 use retina::{
     client::SetupOptions,
     codec::{AudioParameters, CodecItem, ParametersRef, VideoParameters},
 };
+use url::Url;
 
+use std::convert::TryFrom;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
-use std::{convert::TryFrom};
 use std::{io::SeekFrom, sync::Arc};
 use tokio::{
     fs::File,
@@ -663,10 +663,7 @@ pub async fn record(
     filename: String,
     duration: u64,
 ) -> Result<(), Error> {
-    let creds = retina::client::Credentials {
-        username,
-        password,
-    };
+    let creds = retina::client::Credentials { username, password };
     let session_group = Arc::new(retina::client::SessionGroup::default());
     let url_parsed = Url::parse(&url)?;
     let mut session = retina::client::Session::describe(
@@ -699,7 +696,10 @@ pub async fn record(
     };
     if let Some(i) = video_stream_i {
         session
-            .setup(i, SetupOptions::default().transport(retina::client::Transport::default()))
+            .setup(
+                i,
+                SetupOptions::default().transport(retina::client::Transport::default()),
+            )
             .await?;
     }
     let audio_stream = {
@@ -727,7 +727,10 @@ pub async fn record(
     };
     if let Some((i, _)) = audio_stream {
         session
-            .setup(i, SetupOptions::default().transport(retina::client::Transport::default()))
+            .setup(
+                i,
+                SetupOptions::default().transport(retina::client::Transport::default()),
+            )
             .await?;
     }
     if video_stream_i.is_none() && audio_stream.is_none() {
