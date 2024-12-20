@@ -813,27 +813,13 @@ pub fn livestream_start(
 
     *session = Some(Box::new(LivestreamSession::new(camera_name.clone())));
 
-    // Before we start the stream, we receive a message from the server.
+    // The drain_messages call has two purposes:
+    // 1) Before we start the stream, we receive a message from the server.
     // This is because on the first stream, we need to receive the welcome message
     // that was sent by the camera in the initialization phase.
-    let callback = |_msg_bytes: Vec<u8>, _contact_name: String| -> io::Result<()> { Ok(()) };
-    match clients
-        .as_mut()
-        .unwrap()
-        .client_livestream
-        .receive(callback)
-    {
-        Ok(_) => {}
-        Err(e) => {
-            my_log(logger, format!("Error: {e}"));
-            return false;
-        }
-    };
-    clients
-        .as_mut()
-        .unwrap()
-        .client_livestream
-        .save_groups_state();
+    // 2) We drain any leftover messages from the previous stream,
+    // which did not get successfully drained in livestream_end.
+    drain_messages(&mut clients);
 
     let start_signal = vec![13];
     let group_name = clients
@@ -863,6 +849,36 @@ pub fn livestream_start(
     true
 }
 
+fn drain_messages(
+    clients: &mut MutexGuard<'_, Option<Box<Clients>>>,
+) {
+    let mut need_to_wait = true;
+    let mut callback = |_msg_bytes: Vec<u8>, _contact_name: String| -> io::Result<()> { Ok(()) };
+
+    while need_to_wait {
+        match clients
+            .as_mut()
+            .unwrap()
+            .client_livestream
+            .receive(&mut callback)
+        {
+            Ok(mc) => {
+                if mc == 0 {
+                    need_to_wait = false;
+                }
+            }
+            Err(_) => {
+                return;
+            }
+        };
+        clients
+            .as_mut()
+            .unwrap()
+            .client_livestream
+            .save_groups_state();
+    }
+}
+
 pub fn livestream_end(
     mut clients: MutexGuard<'_, Option<Box<Clients>>>,
     mut session: MutexGuard<'_, Option<Box<LivestreamSession>>>,
@@ -874,36 +890,11 @@ pub fn livestream_end(
     }
 
     //First, wait a few seconds to make sure the camera stops streaming.
-    thread::sleep(Duration::from_secs(3));
+    thread::sleep(Duration::from_secs(5));
 
     //Then drain all the leftover messages.
     //This helps drain leftover messages from the previous stream.
-    let need_to_wait: RefCell<bool> = RefCell::new(true);
-    let mut callback = |_msg_bytes: Vec<u8>, _contact_name: String| -> io::Result<()> { Ok(()) };
-
-    while *need_to_wait.borrow() {
-        match clients
-            .as_mut()
-            .unwrap()
-            .client_livestream
-            .receive(&mut callback)
-        {
-            Ok(mc) => {
-                if mc == 0 {
-                    *need_to_wait.borrow_mut() = false;
-                }
-            }
-            Err(e) => {
-                my_log(logger, format!("Error: {e}"));
-                return false;
-            }
-        };
-        clients
-            .as_mut()
-            .unwrap()
-            .client_livestream
-            .save_groups_state();
-    }
+    drain_messages(&mut clients);
     *session = None;
 
     true
