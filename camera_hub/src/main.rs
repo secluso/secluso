@@ -50,6 +50,7 @@ use crate::livestream::{is_there_livestream_start_request, livestream};
 
 mod fmp4;
 mod mp4;
+mod traits;
 
 // Used to generate random names.
 // With 16 alphanumeric characters, the probability of collision is very low.
@@ -633,6 +634,7 @@ fn reset(
     println!("Reset finished.");
 }
 
+#[allow(clippy::too_many_arguments)]
 fn core(
     server_motion_stream: TcpStream,
     server_livestream_stream: TcpStream,

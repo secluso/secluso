@@ -16,10 +16,33 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+//! Uses some code from the Retina example MP4 writer (https://github.com/scottlamb/retina).
+//! MIT License.
+//!
+// Copyright (C) 2021 Scott Lamb <slamb@slamb.org>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+//! Proof-of-concept `.mp4` writer.
+//!
+//! This writes media data (`mdat`) to a stream, buffering parameters for a
+//! `moov` atom at the end. This avoids the need to buffer the media data
+//! (`mdat`) first or reserved a fixed size for the `moov`, but it will slow
+//! playback, particularly when serving `.mp4` files remotely.
+//!
+//! For a more high-quality implementation, see [Moonfire NVR](https://github.com/scottlamb/moonfire-nvr).
+//! It's better tested, places the `moov` atom at the start, can do HTTP range
+//! serving for arbitrary time ranges, and supports standard and fragmented
+//! `.mp4` files.
+//!
+//! See the BMFF spec, ISO/IEC 14496-12:2015:
+//! https://github.com/scottlamb/moonfire-nvr/wiki/Standards-and-specifications
+//! https://standards.iso.org/ittf/PubliclyAvailableStandards/c068960_ISO_IEC_14496-12_2015.zip
+
 use crate::delivery_monitor::VideoInfo;
-use crate::fmp4;
+use crate::fmp4::Fmp4Writer;
 use crate::livestream::LivestreamWriter;
-use crate::mp4;
+use crate::mp4::Mp4Writer;
+use crate::traits::{CodecParameters, Mp4};
 use base64::encode;
 use chrono::Utc;
 use reqwest::blocking::Client;
@@ -33,6 +56,20 @@ use std::path::Path;
 use std::process;
 use std::thread;
 use tokio::runtime::Runtime;
+
+use anyhow::{anyhow, bail, Context, Error};
+use bytes::BytesMut;
+use futures::StreamExt;
+use log::info;
+use retina::{
+    client::SetupOptions,
+    codec::{AudioParameters, CodecItem, ParametersRef, VideoParameters},
+};
+use url::Url;
+
+use std::convert::TryFrom;
+use std::num::NonZeroU32;
+use std::sync::Arc;
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
@@ -405,7 +442,7 @@ impl IpCamera {
     pub fn record_motion_video(&self, dir: String, info: &VideoInfo) -> io::Result<()> {
         let rt = Runtime::new()?;
 
-        let future = mp4::record(
+        let future = Self::write_mp4(
             self.username.clone(),
             self.password.clone(),
             "rtsp://".to_owned() + &self.ip_addr + ":" + &self.rtsp_port,
@@ -427,7 +464,7 @@ impl IpCamera {
         thread::spawn(move || {
             let rt = Runtime::new().unwrap();
 
-            let future = fmp4::record(
+            let future = Self::write_fmp4(
                 username,
                 password,
                 "rtsp://".to_owned() + &ip_addr + ":" + &rtsp_port,
@@ -438,5 +475,309 @@ impl IpCamera {
         });
 
         Ok(())
+    }
+
+    /// Writes the `.mp4`, including trying to finish or clean up the file.
+    async fn write_mp4(
+        username: String,
+        password: String,
+        url: String,
+        filename: String,
+        duration: u64,
+    ) -> Result<(), Error> {
+        let (session, video_params, audio_params) =
+            Self::get_stream(username, password, url).await?;
+
+        let mut session = session
+            .play(
+                retina::client::PlayOptions::default()
+                    .initial_timestamp(retina::client::InitialTimestampPolicy::Default)
+                    .enforce_timestamps_with_max_jump_secs(NonZeroU32::new(10).unwrap())
+                    .unknown_rtcp_ssrc(retina::client::UnknownRtcpSsrcPolicy::Default),
+            )
+            .await?
+            .demuxed()?;
+
+        let out = tokio::fs::File::create(&filename).await?;
+        let mut mp4 = Mp4Writer::new(
+            IpCameraVideoParameters::new(video_params),
+            IpCameraAudioParameters::new(audio_params),
+            out,
+        )
+        .await?;
+        Self::copy(&mut session, &mut mp4, Some(duration)).await?;
+        mp4.finish().await?;
+
+        // FIXME: do we need to wait for teardown here?
+        // Session has now been dropped, on success or failure. A TEARDOWN should
+        // be pending if necessary. session_group.await_teardown() will wait for it.
+        //if let Err(e) = session_group.await_teardown().await {
+        //    log::error!("TEARDOWN failed: {}", e);
+        //}
+
+        Ok(())
+    }
+
+    /// Streams fmp4 video.
+    async fn write_fmp4(
+        username: String,
+        password: String,
+        url: String,
+        livestream_writer: LivestreamWriter,
+    ) -> Result<(), Error> {
+        let (session, video_params, audio_params) =
+            Self::get_stream(username, password, url).await?;
+
+        let mut session = session
+            .play(
+                retina::client::PlayOptions::default()
+                    .initial_timestamp(retina::client::InitialTimestampPolicy::Default)
+                    .enforce_timestamps_with_max_jump_secs(NonZeroU32::new(10).unwrap())
+                    .unknown_rtcp_ssrc(retina::client::UnknownRtcpSsrcPolicy::Default),
+            )
+            .await?
+            .demuxed()?;
+
+        let mut fmp4 = Fmp4Writer::new(
+            IpCameraVideoParameters::new(video_params),
+            IpCameraAudioParameters::new(audio_params),
+            livestream_writer,
+        )
+        .await?;
+        fmp4.finish_header().await?;
+        Self::copy(&mut session, &mut fmp4, None).await?;
+
+        // FIXME: do we need to wait for teardown here?
+
+        Ok(())
+    }
+
+    /// Copies packets from `session` to `mp4` without handling any cleanup on error.
+    async fn copy<'a, M: Mp4>(
+        session: &'a mut retina::client::Demuxed,
+        mp4: &'a mut M,
+        duration: Option<u64>,
+    ) -> Result<(), Error> {
+        let sleep = match duration {
+            Some(secs) => futures::future::Either::Left(tokio::time::sleep(
+                std::time::Duration::from_secs(secs),
+            )),
+            None => futures::future::Either::Right(futures::future::pending()),
+        };
+        tokio::pin!(sleep);
+        loop {
+            tokio::select! {
+                pkt = session.next() => {
+                    match pkt.ok_or_else(|| anyhow!("EOF"))?? {
+                        CodecItem::VideoFrame(f) => {
+                            if f.is_random_access_point() {
+                                if let Err(_e) = mp4.finish_fragment().await {
+                                    // This will be executed when livestream ends.
+                                    // This is a no op for recording an .mp4 file
+                                    // log::error!(".mp4 finish failed: {}", e);
+                                    break;
+                                }
+                            }
+                            let start_ctx = *f.start_ctx();
+                            mp4.video(f.data(), f.timestamp().timestamp().try_into().unwrap(), f.is_random_access_point()).await.with_context(
+                                || format!("Error processing video frame starting with {start_ctx}"))?;
+                        },
+                        CodecItem::AudioFrame(f) => {
+                            let ctx = *f.ctx();
+                            mp4.audio(f.data(), f.timestamp().timestamp().try_into().unwrap()).await.with_context(
+                                || format!("Error processing audio frame, {ctx}"))?;
+                        },
+                        CodecItem::Rtcp(rtcp) => {
+                            if let (Some(_t), Some(Ok(Some(_sr)))) = (rtcp.rtp_timestamp(), rtcp.pkts().next().map(retina::rtcp::PacketRef::as_sender_report)) {
+                            }
+                        },
+                        _ => continue,
+                    };
+                },
+                _ = &mut sleep => {
+                    info!("Stopping after {} seconds", duration.unwrap());
+                    break;
+                },
+            }
+        }
+        Ok(())
+    }
+
+    /// Record an mp4 video file from the IP camera
+    /// username: username of the IP camera
+    /// passwword: password of the IP camera
+    /// url: RTSP url of the IP camera
+    /// filename: the name of the mp4 file to be used
+    /// duration: the duration of the video, in seconds.
+    async fn get_stream(
+        username: String,
+        password: String,
+        url: String,
+    ) -> Result<
+        (
+            retina::client::Session<retina::client::Described>,
+            VideoParameters,
+            AudioParameters,
+        ),
+        Error,
+    > {
+        let creds = retina::client::Credentials { username, password };
+        let session_group = Arc::new(retina::client::SessionGroup::default());
+        let url_parsed = Url::parse(&url)?;
+        let mut session = retina::client::Session::describe(
+            url_parsed,
+            retina::client::SessionOptions::default()
+                .creds(Some(creds))
+                .session_group(session_group.clone())
+                .teardown(retina::client::TeardownPolicy::Auto),
+        )
+        .await?;
+        let video_stream_i = {
+            let s = session.streams().iter().position(|s| {
+                if s.media() == "video" {
+                    if s.encoding_name() == "h264" || s.encoding_name() == "jpeg" {
+                        log::info!("Starting to record using h264 video stream");
+                        return true;
+                    }
+                    log::info!(
+                        "Ignoring {} video stream because it's unsupported",
+                        s.encoding_name(),
+                    );
+                }
+                false
+            });
+            if s.is_none() {
+                log::info!("No suitable video stream found");
+            }
+            s
+        };
+        if let Some(i) = video_stream_i {
+            session
+                .setup(
+                    i,
+                    SetupOptions::default().transport(retina::client::Transport::default()),
+                )
+                .await?;
+        }
+        let audio_stream = {
+            let s = session
+                .streams()
+                .iter()
+                .enumerate()
+                .find_map(|(i, s)| match s.parameters() {
+                    // Only consider audio streams that can produce a .mp4 sample
+                    // entry.
+                    Some(retina::codec::ParametersRef::Audio(a)) if a.mp4_sample_entry().build().is_ok() => {
+                        log::info!("Using {} audio stream (rfc 6381 codec {})", s.encoding_name(), a.rfc6381_codec().unwrap());
+                        Some((i, Box::new(a.clone())))
+                    }
+                    _ if s.media() == "audio" => {
+                        log::info!("Ignoring {} audio stream because it can't be placed into a .mp4 file without transcoding", s.encoding_name());
+                        None
+                    }
+                    _ => None,
+                });
+            if s.is_none() {
+                log::info!("No suitable audio stream found");
+            }
+            s
+        };
+        if let Some((i, _)) = audio_stream {
+            session
+                .setup(
+                    i,
+                    SetupOptions::default().transport(retina::client::Transport::default()),
+                )
+                .await?;
+        }
+        if video_stream_i.is_none() && audio_stream.is_none() {
+            bail!("Exiting because no video or audio stream was selected; see info log messages above");
+        }
+
+        //FIXME: what if there are multiple streams?
+        //The frame will have the stream ID: e.g., let stream = &session.streams()[f.stream_id()];
+        let video_stream = &session.streams()[video_stream_i.unwrap()];
+        let video_params = match video_stream.parameters() {
+            Some(ParametersRef::Video(params)) => params.clone(),
+            _ => {
+                bail!("Exiting because no video parameters were found");
+            }
+        };
+
+        let audio_params = audio_stream.map(|(_i, p)| p).unwrap();
+
+        Ok((session, video_params, *audio_params))
+    }
+}
+
+struct IpCameraVideoParameters {
+    parameters: VideoParameters,
+}
+
+impl IpCameraVideoParameters {
+    pub fn new(parameters: VideoParameters) -> Self {
+        Self { parameters }
+    }
+}
+
+impl CodecParameters for IpCameraVideoParameters {
+    fn write_codec_box(&self, buf: &mut BytesMut) {
+        let e = self
+            .parameters
+            .mp4_sample_entry()
+            .build()
+            .map_err(|e| {
+                anyhow!(
+                    "unable to produce VisualSampleEntry for {} stream: {}",
+                    self.parameters.rfc6381_codec(),
+                    e,
+                )
+            })
+            .unwrap();
+        buf.extend_from_slice(&e);
+    }
+
+    // Not used
+    fn get_clock_rate(&self) -> u32 {
+        0
+    }
+
+    fn get_dimensions(&self) -> (u32, u32) {
+        let dims = self.parameters.pixel_dimensions();
+        let width = u32::from(u16::try_from(dims.0).unwrap()) << 16;
+        let height = u32::from(u16::try_from(dims.1).unwrap()) << 16;
+
+        (width, height)
+    }
+}
+
+struct IpCameraAudioParameters {
+    parameters: AudioParameters,
+}
+
+impl IpCameraAudioParameters {
+    pub fn new(parameters: AudioParameters) -> Self {
+        Self { parameters }
+    }
+}
+
+impl CodecParameters for IpCameraAudioParameters {
+    fn write_codec_box(&self, buf: &mut BytesMut) {
+        buf.extend_from_slice(
+            &self
+                .parameters
+                .mp4_sample_entry()
+                .build()
+                .expect("all added streams have sample entries"),
+        );
+    }
+
+    fn get_clock_rate(&self) -> u32 {
+        self.parameters.clock_rate()
+    }
+
+    // Not applicable to audio
+    fn get_dimensions(&self) -> (u32, u32) {
+        (0, 0)
     }
 }
