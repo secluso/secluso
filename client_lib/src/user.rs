@@ -61,7 +61,6 @@ pub struct Group {
 
 pub struct User {
     pub(crate) username: String,
-    pub(crate) contacts: HashMap<Vec<u8>, Contact>,
     pub(crate) groups: RefCell<HashMap<Vec<u8>, Group>>,
     pub(crate) identity: RefCell<Identity>,
     backend: Backend,
@@ -90,11 +89,6 @@ impl User {
         } else {
             Self::restore_groups_state(file_dir.clone(), tag.clone())
         };
-        let contacts = if first_time {
-            HashMap::new()
-        } else {
-            Self::restore_contacts(file_dir.clone(), tag.clone())
-        };
         if !first_time {
             let file = fs::File::open(file_dir.clone() + "/key_store_" + &tag.clone())
                 .expect("Could not open file");
@@ -104,7 +98,6 @@ impl User {
         let mut out = Self {
             username: username.clone(),
             groups,
-            contacts,
             identity: RefCell::new(Identity::new(
                 CIPHERSUITE,
                 &crypto,
@@ -141,7 +134,6 @@ impl User {
 
         let _ = fs::remove_file(self.file_dir.clone() + "/registration_done");
         let _ = fs::remove_file(self.file_dir.clone() + "/groups_state_" + &self.tag.clone());
-        let _ = fs::remove_file(self.file_dir.clone() + "/contacts_" + &self.tag.clone());
         let _ = fs::remove_file(self.file_dir.clone() + "/key_store_" + &self.tag.clone());
 
         Ok(())
@@ -151,42 +143,11 @@ impl User {
         self.file_dir.clone()
     }
 
-    /// Add a key package to the user identity and return the pair [key package
-    /// hash ref , key package]
-    pub fn add_key_package(&self) -> (Vec<u8>, KeyPackage) {
-        let kp = self
-            .identity
-            .borrow_mut()
-            .add_key_package(CIPHERSUITE, &self.provider);
-        (
-            kp.hash_ref(self.provider.crypto())
-                .unwrap()
-                .as_slice()
-                .to_vec(),
-            kp,
-        )
-    }
-
     /// Get the key packages fo this user.
     pub fn key_packages(&self) -> Vec<(Vec<u8>, KeyPackage)> {
         // clone first !
         let kpgs = self.identity.borrow().kp.clone();
         Vec::from_iter(kpgs)
-    }
-
-    /// Generate new key_package.
-    /// Note: A key_package should be used once only. In fact, the call to new_from_welcome()
-    /// in join_group retires the key_package and the corresponding private key from
-    /// the key store.
-    pub fn generate_key_packages(&mut self) -> io::Result<()> {
-        let _ = self.add_key_package();
-
-        // Update the key package in the DS.
-        // TODO/FIXME: this only works if the previous welcome messages using the
-        // old key_package have been sent and processed.
-        self.backend.register_client(self.key_packages())?;
-
-        Ok(())
     }
 
     /// Update FCM token in the server.
@@ -196,36 +157,10 @@ impl User {
     }
 
     /// Get a list of clients in the group to send messages to.
-    fn recipients(&self, group: &Group, exclude_contact: Option<&Contact>) -> Vec<Vec<u8>> {
+    /// This is currently very simple: return the only_contact
+    fn recipients(&self, group: &Group) -> Vec<Vec<u8>> {
         let mut recipients = Vec::new();
-
-        let mls_group = group.mls_group.borrow();
-        for Member {
-            index: _,
-            encryption_key: _,
-            signature_key,
-            credential,
-        } in mls_group.members()
-        {
-            if self
-                .identity
-                .borrow()
-                .credential_with_key
-                .signature_key
-                .as_slice()
-                != signature_key.as_slice()
-            {
-                let credential = BasicCredential::try_from(credential).unwrap();
-                match self.contacts.get(credential.identity()) {
-                    Some(c) => {
-                        if exclude_contact.is_none() || c != exclude_contact.unwrap() {
-                            recipients.push(c.id.clone());
-                        }
-                    }
-                    None => panic!("There's a member in the group we don't know."),
-                };
-            }
-        }
+        recipients.push(group.only_contact.as_ref().unwrap().id.clone());
         recipients
     }
 
@@ -294,7 +229,10 @@ impl User {
             ));
         }
 
-        let (out_messages, welcome, _group_info) = group
+        // Note: out_messages is needed for other group members.
+        // Currently, we don't need/use it since our groups only have
+        // two members, an inviter (camera) and an invitee (app).
+        let (_out_messages, welcome, _group_info) = group
             .mls_group
             .borrow_mut()
             .add_members(
@@ -320,21 +258,13 @@ impl User {
         log::trace!("Sending welcome");
         self.backend.send_welcome(&welcome)?;
 
-        // Finally, send the MlsMessages to the group.
-        // Exclude the contact we just invited. It won't be able to process anyway.
-        log::trace!("Sending proposal");
-        let group_recipients = self.recipients(group, Some(contact));
-
-        let msg = GroupMessage::new(out_messages.into(), &group_recipients);
-        self.backend.send_msg(&msg, false)?;
-
         group.only_contact = Some(contact.clone());
 
         Ok(())
     }
 
     /// Join a group with the provided welcome message.
-    fn join_group(&self, welcome: Welcome) -> io::Result<()> {
+    fn join_group(&self, welcome: Welcome, expected_inviter: Contact) -> io::Result<()> {
         log::debug!("{} joining group ...", self.username);
 
         // NOTE: Since the DS currently doesn't distribute copies of the group's ratchet
@@ -356,22 +286,49 @@ impl User {
         //FIXME: needed?
         mls_group.set_aad(group_aad.as_bytes().to_vec());
 
-        let only_contact = Self::get_only_matching_contact(&mls_group, &self.contacts)?;
+        // Currently, we only support groups that have one camera and one app.
+        if mls_group.members().count() != 2 {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Unexpected group size in the invitation {:?}", mls_group.members().count())));
+        }
+
+        // Check to ensure the welcome message is from the contact we expect.
+        // Also check the other group member (which should be us).
+        let mut inviter_confirmed = false;
+        let mut invitee_confirmed = false;
+        for Member {
+            index: _,
+            encryption_key: _,
+            signature_key: _,
+            credential,
+            } in mls_group.members()
+        {
+            let credential = BasicCredential::try_from(credential).unwrap();
+            if expected_inviter.id == credential.identity() {
+                inviter_confirmed = true;
+            } else if self.identity.borrow().identity() == credential.identity() {
+                invitee_confirmed = true;
+            }
+        }
+
+        if !inviter_confirmed || !invitee_confirmed {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Unexpected inviter/invitee identity"));
+        }
 
         let group = Group {
             group_name: group_name.clone(),
             mls_group: RefCell::new(mls_group),
             pcs_initiator: None,
-            only_contact: Some(only_contact),
+            only_contact: Some(expected_inviter),
         };
 
         log::trace!("   {}", group_name);
 
         match self.groups.borrow_mut().insert(group_id, group) {
-            Some(old) => Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Overrode the group {:?}", old.group_name),
-            )),
+            Some(_old) => panic!("Error: duplicate group"),
             None => Ok(()),
         }
     }
@@ -397,24 +354,7 @@ impl User {
         RefCell::new(bincode::deserialize(data).unwrap())
     }
 
-    pub fn save_contacts(&mut self) {
-        let data = bincode::serialize(&self.contacts).unwrap();
-        let pathname = self.file_dir.clone() + "/contacts_" + &self.tag.clone();
-        let mut file = fs::File::create(pathname).expect("Could not create file");
-        let _ = file.write_all(&data);
-    }
-
-    pub fn restore_contacts(file_dir: String, tag: String) -> HashMap<Vec<u8>, Contact> {
-        let pathname = file_dir + "/contacts_" + &tag;
-        let file = fs::File::open(pathname).expect("Could not open file");
-        let mut reader =
-            BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
-        let data = reader.fill_buf().unwrap();
-
-        bincode::deserialize(data).unwrap()
-    }
-
-    pub fn add_contact(&mut self, name: String, key_packages: KeyPackages) -> Contact {
+    pub fn add_contact(&mut self, name: String, key_packages: KeyPackages) -> io::Result<Contact> {
         // FIXME: The identity of a client is defined as the identity of the first key
         // package right now.
         // Note: we only use one key package anyway.
@@ -430,15 +370,17 @@ impl User {
             id: id.clone(),
         };
 
-        if self.contacts.insert(id, contact.clone()).is_some() {
-            log::trace!("Contact already existed!");
-            panic!("Contact already existed!");
+        let contact_comp = Some(contact.clone());
+        for (_group_id, group) in self.groups.borrow().iter() {
+            if group.only_contact == contact_comp {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Contact already exists".to_string(),
+                ))
+            }
         }
 
-        self.save_contacts();
-
-        log::trace!("Added contact {}", "");
-        contact
+        Ok(contact)
     }
 
     pub fn get_group_name(&self, only_contact_name: String) -> io::Result<String> {
@@ -552,7 +494,7 @@ impl User {
             })?;
 
         log::trace!("Generating update message");
-        let group_recipients = self.recipients(group, None);
+        let group_recipients = self.recipients(group);
         // Generate the message to the group.
         let msg = GroupMessage::new(out_message.into(), &group_recipients);
 
@@ -586,7 +528,7 @@ impl User {
             .create_message(&self.provider, &self.identity.borrow().signer, bytes)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{e}")))?;
 
-        let msg = GroupMessage::new(message_out.into(), &self.recipients(group, None));
+        let msg = GroupMessage::new(message_out.into(), &self.recipients(group));
         log::debug!(" >>> send: {:?}", msg);
         self.backend.send_msg(&msg, fcm)
     }
@@ -601,48 +543,16 @@ impl User {
         self.send_core(bytes, group_name, true)
     }
 
-    /// Return the contact for the member of the group that is also in the contacts.
-    /// Returns error if there is no match or if more than one matches.
-    //fn get_only_matching_contact(group: &Group, contacts: &HashMap<Vec<u8>, Contact>) -> io::Result<Contact> {
-    fn get_only_matching_contact(
-        mls_group: &MlsGroup,
-        contacts: &HashMap<Vec<u8>, Contact>,
-    ) -> io::Result<Contact> {
-        let mut matching_contact: Option<Contact> = None;
-
-        for Member {
-            index: _,
-            encryption_key: _,
-            signature_key: _,
-            credential,
-        } in mls_group.members()
-        {
-            let credential = BasicCredential::try_from(credential).unwrap();
-            if let Some(c) = contacts.get(credential.identity()) {
-                if matching_contact.is_some() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        "Multiple matching contacts!",
-                    ));
-                } else {
-                    matching_contact = Some(c.clone());
-                }
-            }
-        }
-
-        if matching_contact.is_none() {
-            return Err(io::Error::new(io::ErrorKind::Other, "No matching contact!"));
-        }
-
-        Ok(matching_contact.unwrap())
-    }
-
+    /// process_welcome: if true, this will only process welcome messages from the expected_inviter.
+    /// if false, it will not process welcome messages at all.
     fn receive_core<F>(
         &mut self,
         mut callback: F,
         fcm: bool,
         fcm_msgs: Option<Vec<MlsMessageIn>>,
-    ) -> io::Result<u64>
+        process_welcome: bool,
+        expected_inviter: Option<Contact>,
+    ) -> io::Result<(u64, u64)>
     where
         F: FnMut(Vec<u8>, String) -> io::Result<()>,
     {
@@ -665,7 +575,7 @@ impl User {
 
             // This works since none of the other members of the group, other than the camera,
             // will be in our contact list (hence "only_matching_contact").
-            let only_contact = Self::get_only_matching_contact(&mls_group, &self.contacts)?;
+            let only_contact = group.only_contact.as_ref().unwrap();
 
             let processed_message = match mls_group.process_message(&self.provider, message) {
                 Ok(msg) => msg,
@@ -705,7 +615,7 @@ impl User {
 
                     let application_message = application_message.into_bytes();
 
-                    callback(application_message, only_contact.username)?;
+                    callback(application_message, only_contact.username.clone())?;
                     Ok(true)
                 }
                 ProcessedMessageContent::ProposalMessage(_proposal_ptr) => {
@@ -723,8 +633,16 @@ impl User {
             }
         };
 
+        if process_welcome && expected_inviter.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Error: Specify the expected inviter".to_string(),
+            ));
+        }
+
         // Go through the list of messages and process them.
         let mut msg_count: u64 = 0;
+        let mut welcome_count: u64 = 0;
         let mut msgs = if fcm {
             match fcm_msgs {
                 Some(m) => m,
@@ -743,10 +661,15 @@ impl User {
             msg_count += 1;
             match message.extract() {
                 MlsMessageBodyIn::Welcome(welcome) => {
-                    self.join_group(welcome).unwrap();
+                    if process_welcome {
+                        self.join_group(welcome, expected_inviter.clone().unwrap()).unwrap();
+                        welcome_count += 1;
+                    }
                 }
                 MlsMessageBodyIn::PrivateMessage(message) => {
-                    let _ = process_protocol_message(message.into());
+                    if !process_welcome {
+                        let _ = process_protocol_message(message.into());
+                    }
                 }
                 MlsMessageBodyIn::PublicMessage(_message) => {
                     panic!("Received an unexpected public message!");
@@ -757,7 +680,7 @@ impl User {
 
         log::trace!("done with messages ...");
 
-        Ok(msg_count)
+        Ok((msg_count, welcome_count))
     }
 
     /// Read all the messages in the server and process them using
@@ -766,7 +689,24 @@ impl User {
     where
         F: FnMut(Vec<u8>, String) -> io::Result<()>,
     {
-        self.receive_core(callback, false, None)
+        let (msg_count, _welcome_count) = self.receive_core(callback, false, None, false, None)?;
+
+        Ok(msg_count)
+    }
+
+    /// Read all the messages in the server and process welcome messages (only).
+    /// Blocks until the welcome message is received.
+    pub fn receive_welcome(&mut self, expected_inviter: Contact) -> io::Result<()> {
+        let callback = |_msg_bytes: Vec<u8>, _contact_name: String| -> io::Result<()> { Ok(()) };
+
+        loop {
+            let (_msg_count, welcome_count) = self.receive_core(callback, false, None, true, Some(expected_inviter.clone()))?;
+            if welcome_count > 0 {
+                break;
+            }
+        }
+
+        Ok(())
     }
 
     /// Process messages received through FCM using
@@ -777,7 +717,8 @@ impl User {
     {
         match TlsVecU16::<MlsMessageIn>::tls_deserialize(&mut fcm_payload.as_slice()) {
             Ok(r) => {
-                self.receive_core(callback, true, Some(r.into()))
+                let (msg_count, _welcome_count) = self.receive_core(callback, true, Some(r.into()), false, None)?;
+                Ok(msg_count)
             }
             Err(e) => {
                 // This happens if the server returns an error or if tls_deserialize fails.

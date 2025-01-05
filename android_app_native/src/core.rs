@@ -35,7 +35,7 @@ use crate::logger::AndroidLogger;
 #[cfg(target_os = "android")]
 use crate::logger::Logger;
 use privastead_client_lib::pairing;
-use privastead_client_lib::user::{KeyPackages, User};
+use privastead_client_lib::user::{KeyPackages, User, Contact};
 use privastead_client_lib::video_net_info::{VideoAckInfo, VideoNetInfo, VIDEONETINFO_SANITY};
 use privastead_client_server_lib::auth;
 
@@ -86,9 +86,8 @@ impl Clients {
             false,
         )?;
 
-        // Make sure the groups_state and contacts files are created in case we initialize again soon.
+        // Make sure the groups_state files are created in case we initialize again soon.
         client_motion.save_groups_state();
-        client_motion.save_contacts();
 
         let mut client_livestream = User::new(
             app_livestream_name,
@@ -102,7 +101,6 @@ impl Clients {
         )?;
 
         client_livestream.save_groups_state();
-        client_livestream.save_contacts();
 
         let mut client_fcm = User::new(
             app_fcm_name,
@@ -119,7 +117,6 @@ impl Clients {
             client_fcm.update_token(token)?;
         }
         client_fcm.save_groups_state();
-        client_fcm.save_contacts();
 
         fs::File::create(file_dir.clone() + "/registration_done").expect("Could not create file");
 
@@ -248,18 +245,14 @@ fn pair_with_camera(
     ))
 }
 
-fn receive_welcome_message(client: &mut User, camera_name: String) -> io::Result<()> {
-    let callback = |_msg_bytes: Vec<u8>, _contact_name: String| -> io::Result<()> { Ok(()) };
-
-    while client.get_group_name(camera_name.clone()).is_err() {
-        client.receive(callback)?;
-    }
+fn receive_welcome_message(client: &mut User, contact: Contact) -> io::Result<()> {
+    client.receive_welcome(contact)?;
     client.save_groups_state();
 
     Ok(())
 }
 
-fn my_log<T: ToString + std::fmt::Display>(logger: Option<&AndroidLogger>, log: T) {
+pub(crate) fn my_log<T: ToString + std::fmt::Display>(logger: Option<&AndroidLogger>, log: T) {
     if logger.is_some() {
         logger.unwrap().d(log.to_string()).expect("Failed to log");
     } else {
@@ -460,43 +453,6 @@ pub fn add_camera(
     let mut camera_secret = [0u8; pairing::NUM_SECRET_BYTES];
     camera_secret.copy_from_slice(&secret_vec[..]);
 
-    // We technically don't need to do this on the very first call to this function
-    // since we haven't used the key package generated at the init of User.
-    // FIXME: clean up all the error handling code.
-    match clients
-        .as_mut()
-        .unwrap()
-        .client_motion
-        .generate_key_packages()
-    {
-        Ok(_) => {}
-        Err(e) => {
-            my_log(logger, format!("Error: {e}"));
-            return false;
-        }
-    }
-
-    match clients
-        .as_mut()
-        .unwrap()
-        .client_livestream
-        .generate_key_packages()
-    {
-        Ok(_) => {}
-        Err(e) => {
-            my_log(logger, format!("Error: {e}"));
-            return false;
-        }
-    }
-
-    match clients.as_mut().unwrap().client_fcm.generate_key_packages() {
-        Ok(_) => {}
-        Err(e) => {
-            my_log(logger, format!("Error: {e}"));
-            return false;
-        }
-    }
-
     let (camera_motion_key_packages, camera_livestream_key_packages, camera_fcm_key_packages) =
         match pair_with_camera(
             camera_ip,
@@ -512,25 +468,25 @@ pub fn add_camera(
             }
         };
 
-    clients
+    let motion_contact = clients
         .as_mut()
         .unwrap()
         .client_motion
-        .add_contact(camera_name.clone(), camera_motion_key_packages);
-    clients
+        .add_contact(camera_name.clone(), camera_motion_key_packages).unwrap();
+    let livestream_contact = clients
         .as_mut()
         .unwrap()
         .client_livestream
-        .add_contact(camera_name.clone(), camera_livestream_key_packages);
-    clients
+        .add_contact(camera_name.clone(), camera_livestream_key_packages).unwrap();
+    let fcm_contact = clients
         .as_mut()
         .unwrap()
         .client_fcm
-        .add_contact(camera_name.clone(), camera_fcm_key_packages);
+        .add_contact(camera_name.clone(), camera_fcm_key_packages).unwrap();
 
     match receive_welcome_message(
         &mut clients.as_mut().unwrap().client_motion,
-        camera_name.clone(),
+        motion_contact,
     ) {
         Ok(_) => {}
         Err(e) => {
@@ -541,7 +497,7 @@ pub fn add_camera(
 
     match receive_welcome_message(
         &mut clients.as_mut().unwrap().client_livestream,
-        camera_name.clone(),
+        livestream_contact,
     ) {
         Ok(_) => {}
         Err(e) => {
@@ -550,7 +506,7 @@ pub fn add_camera(
         }
     }
 
-    match receive_welcome_message(&mut clients.as_mut().unwrap().client_fcm, camera_name) {
+    match receive_welcome_message(&mut clients.as_mut().unwrap().client_fcm, fcm_contact) {
         Ok(_) => {}
         Err(e) => {
             my_log(logger, format!("Error: {e}"));
@@ -626,17 +582,13 @@ pub fn receive(
                     }
                 } else {
                     // A video
-                    let dir_pathname: String =
-                        file_dir.to_owned() + "/camera_dir_" + &contact_name;
-                    fs::create_dir_all(dir_pathname.clone()).unwrap();
-
                     let filename: String = "video_".to_string().to_owned()
                         + &contact_name
                         + "_"
                         + &info.timestamp.to_string()
                         + ".mp4";
                     let pathname: String =
-                        dir_pathname.to_owned() + "/" + &filename.clone();
+                        file_dir.to_owned() + "/" + &filename.clone();
 
                     let file = fs::File::create(pathname).expect("Could not create file");
                     download.writer = RefCell::new(Some(BufWriter::new(file)));
@@ -772,6 +724,8 @@ pub fn decode(
             let timestamp: u64 = bincode::deserialize(&msg_bytes).unwrap();
             if timestamp != 0 {
                 response = contact_name + "_" + &timestamp.to_string();
+            } else {
+                response = "Download".to_string();
             }
         }
         Ok(())
@@ -1195,4 +1149,77 @@ fn receive_video_loop_phase_two() {
     }
 
     deregister(clients.lock().unwrap(), None);
+}
+
+#[test]
+fn receive_video_two_cameras() {
+    use std::{thread, time::Duration};
+    use std::collections::HashMap;
+
+    let camera_names: [String; 2] = ["Home1".to_string(), "Home2".to_string()];
+
+    let file = fs::File::open("user_credentials").expect("Cannot open file to send");
+    let mut reader =
+        BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
+    let user_credentials = reader.fill_buf().unwrap();
+
+    let mut clients_all: HashMap<String, Mutex<Option<Box<Clients>>>> = HashMap::new();
+
+    fs::remove_dir_all("test_data").unwrap();
+    fs::create_dir("test_data").unwrap();
+
+    for i in 0..2 {
+        let clients = clients_all.entry(camera_names[i].clone()).or_insert(Mutex::new(None)).lock().unwrap();
+        let folder_path = "test_data/".to_string() + &camera_names[i];
+
+        fs::create_dir(folder_path.clone()).unwrap();
+
+        initialize(
+            clients,
+            "127.0.0.1".to_string(),
+            "".to_string(),
+            folder_path,
+            true,
+            user_credentials.to_vec(),
+            None,
+        );
+
+        let file2 = fs::File::open("camera_secret").expect("Cannot open file to send");
+        let mut reader2 =
+            BufReader::with_capacity(file2.metadata().unwrap().len().try_into().unwrap(), file2);
+        let secret_vec = reader2.fill_buf().unwrap();
+
+        let clients = clients_all.entry(camera_names[i].clone()).or_insert(Mutex::new(None)).lock().unwrap();
+
+        add_camera(
+            clients,
+            camera_names[i].clone(),
+            "127.0.0.1".to_string(),
+            secret_vec.to_vec(),
+            None,
+        );
+        println!("Camera added");
+
+        // Camera hub instances listen on the same port.
+        // Therefore, in the test here, we run them one by one manually
+        // and connect to them here.
+        if i == 0 {
+            thread::sleep(Duration::from_secs(20));
+        }
+    }
+
+    loop {
+        for i in 0..2 {
+            let clients = clients_all.entry(camera_names[i].clone()).or_insert(Mutex::new(None)).lock().unwrap();
+            thread::sleep(Duration::from_secs(1));
+            println!("Start receive");
+            receive(clients, None);
+            println!("End receive");
+        }
+    }
+
+    for i in 0..2 {
+        let clients = clients_all.entry(camera_names[i]).or_insert(Mutex::new(None)).lock().unwrap();
+        deregister(clients, None);
+    }
 }

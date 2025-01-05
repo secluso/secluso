@@ -71,8 +71,7 @@ So far, the following cameras have been tested:
 
 ## (Current) key limitations
 
-* The app can pair with one camera only.
-* The camera hub supports one camera only.
+* The camera hub supports one camera only. To use more cameras, separate hubs need to be used (one per camera).
 * The camera hub pairs with one app instance only.
 * Performance may become a bottleneck for high camera resolutions and frame rates.
 

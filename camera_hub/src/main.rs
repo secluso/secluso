@@ -155,7 +155,7 @@ fn create_group_and_invite(
     group_name: String,
     app_key_packages: KeyPackages,
 ) -> io::Result<()> {
-    let app_contact = client.add_contact("app".to_string(), app_key_packages);
+    let app_contact = client.add_contact("app".to_string(), app_key_packages)?;
     debug!("Added contact.");
 
     client.create_group(group_name.clone());
@@ -413,6 +413,7 @@ Privastead camera hub: connects to an IP camera and send videos to the privastea
 
 Usage:
   privastead-camera-hub --server-ip SERVERIP --ip-camera-ip CAMERAIP --ip-camera-rtsp-port CAMERARTSPPORT
+  privastead-camera-hub --server-ip SERVERIP --ip-camera-ip CAMERAIP --ip-camera-rtsp-port CAMERARTSPPORT --provide-username-password --ip-camera-username USERNAME --ip-camera-password PASSWORD
   privastead-camera-hub --reset --server-ip SERVERIP
   privastead-camera-hub (--version | -v)
   privastead-camera-hub (--help | -h)
@@ -421,6 +422,9 @@ Options:
     --server-ip SERVERIP                        IP address of the server
     --ip-camera-ip CAMERAIP                     IP address of the IP camera
     --ip-camera-rtsp-port CAMERARTSPPORT        RTSP port on the IP camera
+    --provide-username-password                 Provide the username and password of the IP camera. If not set, they need to be entered on prompt.
+    --ip-camera-username USERNAME               Username of the IP camera.
+    --ip-camera-password PASSWORD               Password of the IP camera.
     --reset                                     Wipe all the state
     --version, -v                               Show version
     --help, -h                                  Show help
@@ -431,6 +435,9 @@ struct Args {
     flag_server_ip: String,
     flag_ip_camera_ip: String,
     flag_ip_camera_rtsp_port: u16,
+    flag_provide_username_password: bool,
+    flag_ip_camera_username: String,
+    flag_ip_camera_password: String,
     flag_reset: bool,
 }
 
@@ -448,6 +455,8 @@ fn main() -> io::Result<()> {
 
     let (ip_camera_username, ip_camera_password) = if args.flag_reset {
         ("".to_string(), "".to_string())
+    } else if args.flag_provide_username_password {
+        (args.flag_ip_camera_username, args.flag_ip_camera_password)
     } else {
         (
             ask_user("Enter the username for the IP camera: ".to_string()).unwrap(),
