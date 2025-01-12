@@ -76,12 +76,10 @@ impl PcsInitiator {
                 let msg = GroupMessage::tls_deserialize(&mut m.as_slice()).unwrap();
                 Ok(msg)
             }
-            None => {
-                Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "No pending update msg.",
-                ))
-            }
+            None => Err(io::Error::new(
+                io::ErrorKind::Other,
+                "No pending update msg.",
+            )),
         }
     }
 

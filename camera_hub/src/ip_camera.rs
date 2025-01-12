@@ -228,7 +228,9 @@ impl IpCamera {
 
             let mut file = fs::File::create(dir.clone() + "/onvif_subscription_url")
                 .expect("Could not create file");
-            let _ = file.write_all(url.as_bytes());
+            file.write_all(url.as_bytes()).unwrap();
+            file.flush().unwrap();
+            file.sync_all().unwrap();
 
             url
         };

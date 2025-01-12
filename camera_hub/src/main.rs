@@ -213,7 +213,9 @@ fn get_names(
 
         let mut file = fs::File::create(STATE_DIR.to_owned() + "/" + &camera_filename)
             .expect("Could not create file");
-        let _ = file.write_all(cname.as_bytes());
+        file.write_all(cname.as_bytes()).unwrap();
+        file.flush().unwrap();
+        file.sync_all().unwrap();
 
         //FIXME: how many random characters should we use here?
         let gname: String = (0..NUM_RANDOM_CHARS)
@@ -222,7 +224,9 @@ fn get_names(
 
         file = fs::File::create(STATE_DIR.to_owned() + "/" + &group_filename)
             .expect("Could not create file");
-        let _ = file.write_all(gname.as_bytes());
+        file.write_all(gname.as_bytes()).unwrap();
+        file.flush().unwrap();
+        file.sync_all().unwrap();
 
         (cname, gname)
     } else {
@@ -265,9 +269,14 @@ fn send_motion_triggered_video(
 ) -> io::Result<()> {
     debug!("Forcing an MLS update.");
     let new_update = client
-        .update(group_name.clone())
+        .perform_update(group_name.clone())
         .expect("Could not force an MLS update!");
+    // We must save state between the calls to perform_update() and send_update().
+    // This is to make sure we don't end up sending an update to the app, which
+    // we have not successfully committed/saved on our end.
     client.save_groups_state();
+    client.send_update(group_name.clone())
+        .expect("Could not send the pending update!");
     if !new_update {
         // We don't want the attacker to force us to send more than one video without an update.
         // We add the video to the delivery monitor, hoping that it will be sent in the future
@@ -295,7 +304,6 @@ fn send_motion_triggered_video(
             error!("send() returned error:");
             e
         })?;
-    client.save_groups_state();
 
     for i in 0..net_info.num_msg {
         let buffer = reader.fill_buf().unwrap();
@@ -309,11 +317,12 @@ fn send_motion_triggered_video(
 
         client.send(buffer, group_name.clone()).map_err(|e| {
             error!("send_video() returned error:");
+            client.save_groups_state();
             e
         })?;
-        client.save_groups_state();
         reader.consume(length);
     }
+    client.save_groups_state();
 
     info!("Sending the video ({}).", video_info.timestamp);
     delivery_monitor.send_event(video_info);
@@ -361,12 +370,19 @@ fn send_video_notification(
     video_info: VideoInfo,
     delivery_monitor: &mut DeliveryMonitor,
 ) -> io::Result<()> {
-    // FIXME: could this cause additional updates?
+    // FIXME: We might send a whole bunch of notifications without forcing
+    // an update. If the update is not acked, then we should start sending
+    // dummy notifications.
     debug!("An MLS update reminder.");
     client
-        .update(group_name.clone())
+        .perform_update(group_name.clone())
         .expect("Could not force an MLS update!");
+    // We must save state between the calls to perform_update() and send_update().
+    // This is to make sure we don't end up sending an update to the app, which
+    // we have not successfully committed/saved on our end.
     client.save_groups_state();
+    client.send_update(group_name.clone())
+        .expect("Could not send the pending update!");
 
     let info_notify = VideoNetInfo::new_notification(video_info.timestamp);
 

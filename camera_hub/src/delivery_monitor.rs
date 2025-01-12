@@ -22,6 +22,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+use privastead_client_lib::user::User;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct VideoInfo {
@@ -77,11 +78,24 @@ impl DeliveryMonitor {
         }
     }
 
+    /// See the notes for save_groups_state() in client_lib/src/user.rs
+    /// about the algorithm used to determine file names.
     pub fn save_state(&self) {
+        let current_timestamp = Self::now_in_nanos();
         let data = bincode::serialize(&self).unwrap();
-        let pathname = self.state_dir.clone() + "/delivery_monitor";
+        
+        let pathname = self.state_dir.clone() + "/delivery_monitor_" + &current_timestamp.to_string();
         let mut file = fs::File::create(pathname).expect("Could not create file");
-        let _ = file.write_all(&data);
+        file.write_all(&data).unwrap();
+        file.flush().unwrap();
+        file.sync_all().unwrap();
+
+        //delete old state files
+        let d_files = User::get_state_files_sorted(&self.state_dir, "delivery_monitor_").unwrap();
+        assert!(d_files[0] == "delivery_monitor_".to_owned() + &current_timestamp.to_string());
+        for f in &d_files[1..] {
+            let _ = fs::remove_file(self.state_dir.clone() + "/" + f);
+        }        
     }
 
     pub fn send_event(&mut self, mut video_info: VideoInfo) {
@@ -158,6 +172,13 @@ impl DeliveryMonitor {
             .duration_since(UNIX_EPOCH)
             .expect("Could not convert time")
             .as_secs()
+    }
+
+    fn now_in_nanos() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Could not convert time")
+            .as_nanos()
     }
 }
 

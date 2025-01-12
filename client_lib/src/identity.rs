@@ -48,7 +48,10 @@ impl Identity {
             let sig_keys = SignatureKeyPair::new(ciphersuite.signature_algorithm()).unwrap();
             sig_keys.store(crypto.storage()).unwrap();
             let mut file = fs::File::create(pathname).expect("Could not create file");
-            let _ = file.write_all(&bincode::serialize(&sig_keys.public()).unwrap());
+            file.write_all(&bincode::serialize(&sig_keys.public()).unwrap())
+                .unwrap();
+            file.flush().unwrap();
+            file.sync_all().unwrap();
             sig_keys
         } else {
             let file = fs::File::open(pathname).expect("Could not open file");

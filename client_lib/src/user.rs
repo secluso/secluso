@@ -29,6 +29,7 @@ use std::fs;
 use std::io;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, collections::HashMap};
 use tls_codec::{Deserialize as TlsDeserialize, TlsVecU16};
 
@@ -73,6 +74,7 @@ impl User {
     /// if first_time, create a new user with the given name and a fresh set of credentials.
     /// else, restore existing client.
     /// user_credentials: the user credentials needed to authenticate with the server. Different from OpenMLS credentials.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         username: String,
         server_stream: TcpStream,
@@ -90,9 +92,25 @@ impl User {
             Self::restore_groups_state(file_dir.clone(), tag.clone())
         };
         if !first_time {
-            let file = fs::File::open(file_dir.clone() + "/key_store_" + &tag.clone())
-                .expect("Could not open file");
-            crypto.load_keystore(&file).unwrap();
+            let ks_files = Self::get_state_files_sorted(
+                &file_dir,
+                &("key_store_".to_string() + &tag.clone() + "_"),
+            )
+            .unwrap();
+            let mut load_successful = false;
+            for f in &ks_files {
+                let ks_pathname = file_dir.clone() + "/" + f;
+                let file = fs::File::open(ks_pathname).expect("Could not open file");
+                let result = crypto.load_keystore(&file);
+                if result.is_ok() {
+                    load_successful = true;
+                    break;
+                }
+            }
+
+            if !load_successful {
+                panic!("Could not successfully load the key store from file.");
+            }
         }
 
         let mut out = Self {
@@ -133,8 +151,24 @@ impl User {
             .delete_signature_key(self.file_dir.clone(), self.tag.clone());
 
         let _ = fs::remove_file(self.file_dir.clone() + "/registration_done");
-        let _ = fs::remove_file(self.file_dir.clone() + "/groups_state_" + &self.tag.clone());
-        let _ = fs::remove_file(self.file_dir.clone() + "/key_store_" + &self.tag.clone());
+
+        let g_files = Self::get_state_files_sorted(
+            &self.file_dir,
+            &("groups_state_".to_string() + &self.tag.clone() + "_"),
+        )
+        .unwrap();
+        for f in &g_files[..] {
+            let _ = fs::remove_file(self.file_dir.clone() + "/" + f);
+        }
+
+        let ks_files = Self::get_state_files_sorted(
+            &self.file_dir,
+            &("key_store_".to_string() + &self.tag.clone() + "_"),
+        )
+        .unwrap();
+        for f in &ks_files[..] {
+            let _ = fs::remove_file(self.file_dir.clone() + "/" + f);
+        }
 
         Ok(())
     }
@@ -159,8 +193,7 @@ impl User {
     /// Get a list of clients in the group to send messages to.
     /// This is currently very simple: return the only_contact
     fn recipients(&self, group: &Group) -> Vec<Vec<u8>> {
-        let mut recipients = Vec::new();
-        recipients.push(group.only_contact.as_ref().unwrap().id.clone());
+        let recipients = vec![group.only_contact.as_ref().unwrap().id.clone()];
         recipients
     }
 
@@ -290,7 +323,11 @@ impl User {
         if mls_group.members().count() != 2 {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
-                format!("Unexpected group size in the invitation {:?}", mls_group.members().count())));
+                format!(
+                    "Unexpected group size in the invitation {:?}",
+                    mls_group.members().count()
+                ),
+            ));
         }
 
         // Check to ensure the welcome message is from the contact we expect.
@@ -302,7 +339,7 @@ impl User {
             encryption_key: _,
             signature_key: _,
             credential,
-            } in mls_group.members()
+        } in mls_group.members()
         {
             let credential = BasicCredential::try_from(credential).unwrap();
             if expected_inviter.id == credential.identity() {
@@ -315,7 +352,8 @@ impl User {
         if !inviter_confirmed || !invitee_confirmed {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
-                "Unexpected inviter/invitee identity"));
+                "Unexpected inviter/invitee identity",
+            ));
         }
 
         let group = Group {
@@ -333,25 +371,127 @@ impl User {
         }
     }
 
+    /// Saves the groups and key store in persistent storage.
+    /// Earlier versions of this function would simply reuse the same file names.
+    /// However, we would every once in a while end up with a corrupted file (mainly key store):
+    /// The old file was gone and the new one was not fully written.
+    /// To mitigate that, we write the state in a file with a new file name,
+    /// which has the current timestamp, appended to it.
+    /// Only when that file is written and persisted, we delete the old ones.
+    /// When using these files at initialization time, we use the one with the
+    /// largest timestamp (we could end up with multiple files at initialization
+    /// time if this function is not fully executed).
     pub fn save_groups_state(&mut self) {
-        let data = bincode::serialize(&self.groups.get_mut()).unwrap();
-        let pathname = self.file_dir.clone() + "/groups_state_" + &self.tag.clone();
-        let mut file = fs::File::create(pathname).expect("Could not create file");
-        let _ = file.write_all(&data);
+        // Use nanos in order to ensure that each time this function is called, we will use a new file name.
+        // This does make some assumptions about the execution speed, but those assumptions are reasonable (for now).
+        let current_timestamp: u128 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Could not convert time")
+            .as_nanos();
 
-        let ks_pathname = self.file_dir.clone() + "/key_store_" + &self.tag.clone();
-        let ks_file = fs::File::create(ks_pathname).expect("Could not create file");
+        let data = bincode::serialize(&self.groups.get_mut()).unwrap();
+        let pathname = self.file_dir.clone()
+            + "/groups_state_"
+            + &self.tag.clone()
+            + "_"
+            + &current_timestamp.to_string();
+        let mut file = fs::File::create(pathname.clone()).expect("Could not create file");
+        file.write_all(&data).unwrap();
+        file.flush().unwrap();
+        file.sync_all().unwrap();
+
+        let ks_pathname = self.file_dir.clone()
+            + "/key_store_"
+            + &self.tag.clone()
+            + "_"
+            + &current_timestamp.to_string();
+        let mut ks_file = fs::File::create(ks_pathname.clone()).expect("Could not create file");
         self.provider.save_keystore(&ks_file).unwrap();
+        ks_file.flush().unwrap();
+        ks_file.sync_all().unwrap();
+
+        //delete old groups state files
+        let g_files = Self::get_state_files_sorted(
+            &self.file_dir,
+            &("groups_state_".to_string() + &self.tag.clone() + "_"),
+        )
+        .unwrap();
+        assert!(
+            g_files[0]
+                == "groups_state_".to_owned()
+                    + &self.tag.clone()
+                    + "_"
+                    + &current_timestamp.to_string()
+        );
+        for f in &g_files[1..] {
+            let _ = fs::remove_file(self.file_dir.clone() + "/" + f);
+        }
+
+        let ks_files = Self::get_state_files_sorted(
+            &self.file_dir,
+            &("key_store_".to_string() + &self.tag.clone() + "_"),
+        )
+        .unwrap();
+        assert!(
+            ks_files[0]
+                == "key_store_".to_owned()
+                    + &self.tag.clone()
+                    + "_"
+                    + &current_timestamp.to_string()
+        );
+        for f in &ks_files[1..] {
+            let _ = fs::remove_file(self.file_dir.clone() + "/" + f);
+        }
     }
 
     pub fn restore_groups_state(file_dir: String, tag: String) -> RefCell<HashMap<Vec<u8>, Group>> {
-        let pathname = file_dir + "/groups_state_" + &tag;
-        let file = fs::File::open(pathname).expect("Could not open file");
-        let mut reader =
-            BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
-        let data = reader.fill_buf().unwrap();
+        let g_files =
+            Self::get_state_files_sorted(&file_dir, &("groups_state_".to_string() + &tag + "_"))
+                .unwrap();
+        for f in &g_files {
+            let pathname = file_dir.clone() + "/" + f;
+            let file = fs::File::open(pathname).expect("Could not open file");
+            let mut reader =
+                BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
+            let data = reader.fill_buf().unwrap();
+            let deserialize_result = bincode::deserialize(data);
+            if let Ok(deserialized_data) = deserialize_result {
+                return RefCell::new(deserialized_data);
+            }
+        }
 
-        RefCell::new(bincode::deserialize(data).unwrap())
+        panic!("Could not successfully load the groups state from file.");
+    }
+
+    pub fn get_state_files_sorted(dir_path: &str, pattern: &str) -> std::io::Result<Vec<String>> {
+        let mut matching_files: Vec<(String, u128)> = Vec::new();
+
+        for entry in fs::read_dir(dir_path)? {
+            let entry = entry?;
+            let file_name = entry.file_name();
+            let file_name_str = file_name.to_string_lossy();
+
+            if file_name_str.starts_with(pattern) {
+                if let Some(timestamp) = Self::extract_timestamp(&file_name_str, pattern) {
+                    matching_files.push((file_name_str.to_string(), timestamp));
+                }
+            }
+        }
+
+        matching_files.sort_by(|a, b| b.1.cmp(&a.1));
+        let sorted_files: Vec<String> = matching_files.into_iter().map(|(name, _)| name).collect();
+
+        Ok(sorted_files)
+    }
+
+    fn extract_timestamp(file_name: &str, pattern: &str) -> Option<u128> {
+        file_name
+            .strip_prefix(pattern)?
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse::<u128>()
+            .ok()
     }
 
     pub fn add_contact(&mut self, name: String, key_packages: KeyPackages) -> io::Result<Contact> {
@@ -376,7 +516,7 @@ impl User {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
                     "Contact already exists".to_string(),
-                ))
+                ));
             }
         }
 
@@ -385,7 +525,9 @@ impl User {
 
     pub fn get_group_name(&self, only_contact_name: String) -> io::Result<String> {
         for (_, group) in self.groups.borrow().iter() {
-            if group.only_contact.is_some() && group.only_contact.as_ref().unwrap().username == only_contact_name {
+            if group.only_contact.is_some()
+                && group.only_contact.as_ref().unwrap().username == only_contact_name
+            {
                 return Ok(group.group_name.clone());
             }
         }
@@ -396,10 +538,40 @@ impl User {
         ))
     }
 
-    /// Force an MLS update
+    /// Perform an MLS update
     /// Returns true if new update is performed
-    /// Returns false if pending update is re-sent
-    pub fn update(&mut self, group_name: String) -> io::Result<bool> {
+    /// Returns false if there is a pending update
+    pub fn perform_update(&mut self, group_name: String) -> io::Result<bool> {
+        let groups = self.groups.borrow();
+        let group = match groups.get(group_name.as_bytes()) {
+            Some(g) => g,
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Unknown group".to_string(),
+                ))
+            }
+        };
+
+        if group.pcs_initiator.is_some() {
+            let mut pcs_initiator = group.pcs_initiator.as_ref().unwrap().borrow_mut();
+            if pcs_initiator.has_pending_update() {
+                Ok(false)
+            } else {
+                let msg = self.update_commit(group)?;
+                pcs_initiator.updated(&msg);
+                Ok(true)
+            }
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Only the PCS initiator can force an update.",
+            ))
+        }
+    }
+
+    /// Send pending update
+    pub fn send_update(&mut self, group_name: String) -> io::Result<()> {
         let groups = self.groups.borrow();
         let group = match groups.get(group_name.as_bytes()) {
             Some(g) => g,
@@ -418,60 +590,20 @@ impl User {
                 if msg.is_ok() {
                     // Send the MlsMessages to the group.
                     self.backend.send_msg(&msg.unwrap(), false)?;
-                    Ok(false)
+                    Ok(())
                 } else {
                     panic!("Has pending update but returns error for msg!");
                 }
             } else {
-                let msg = self.update_commit(group)?;
-                pcs_initiator.updated(&msg);
-                let msg_copy = pcs_initiator.get_pending_update_msg();
-                if msg_copy.is_ok() {
-                    // Send the MlsMessages to the group.
-                    self.backend.send_msg(&msg_copy.unwrap(), false)?;
-                    Ok(true)
-                } else {
-                    panic!("Couldn't retrieve the update msg!");
-                }
-            }
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Only the PCS initiator can force an update.",
-            ))
-        }
-    }
-
-    /// For testing only.
-    /// Force an MLS update, but does not send the update to other group members.
-    pub fn update_no_send(&mut self, group_name: String) -> io::Result<()> {
-        let groups = self.groups.borrow();
-        let group = match groups.get(group_name.as_bytes()) {
-            Some(g) => g,
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Unknown group".to_string(),
-                ))
-            }
-        };
-
-        if group.pcs_initiator.is_some() {
-            let mut pcs_initiator = group.pcs_initiator.as_ref().unwrap().borrow_mut();
-            if !pcs_initiator.has_pending_update() {
-                let msg = self.update_commit(group)?;
-                pcs_initiator.updated(&msg);
-                Ok(())
-            } else {
                 Err(io::Error::new(
                     io::ErrorKind::Other,
-                    "There is already a pending update.",
+                    "No pending update to send.",
                 ))
             }
         } else {
             Err(io::Error::new(
                 io::ErrorKind::Other,
-                "Only the PCS initiator can force an update.",
+                "Only the PCS initiator can send an update.",
             ))
         }
     }
@@ -662,7 +794,8 @@ impl User {
             match message.extract() {
                 MlsMessageBodyIn::Welcome(welcome) => {
                     if process_welcome {
-                        self.join_group(welcome, expected_inviter.clone().unwrap()).unwrap();
+                        self.join_group(welcome, expected_inviter.clone().unwrap())
+                            .unwrap();
                         welcome_count += 1;
                     }
                 }
@@ -700,7 +833,8 @@ impl User {
         let callback = |_msg_bytes: Vec<u8>, _contact_name: String| -> io::Result<()> { Ok(()) };
 
         loop {
-            let (_msg_count, welcome_count) = self.receive_core(callback, false, None, true, Some(expected_inviter.clone()))?;
+            let (_msg_count, welcome_count) =
+                self.receive_core(callback, false, None, true, Some(expected_inviter.clone()))?;
             if welcome_count > 0 {
                 break;
             }
@@ -717,7 +851,8 @@ impl User {
     {
         match TlsVecU16::<MlsMessageIn>::tls_deserialize(&mut fcm_payload.as_slice()) {
             Ok(r) => {
-                let (msg_count, _welcome_count) = self.receive_core(callback, true, Some(r.into()), false, None)?;
+                let (msg_count, _welcome_count) =
+                    self.receive_core(callback, true, Some(r.into()), false, None)?;
                 Ok(msg_count)
             }
             Err(e) => {

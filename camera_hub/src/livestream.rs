@@ -103,9 +103,14 @@ pub fn is_there_livestream_start_request(client: &mut User) -> io::Result<bool> 
 
 pub fn livestream(client: &mut User, group_name: String, ip_camera: &IpCamera) -> io::Result<()> {
     let new_update = client
-        .update(group_name.clone())
+        .perform_update(group_name.clone())
         .expect("Could not force an MLS update!");
+    // We must save state between the calls to perform_update() and send_update().
+    // This is to make sure we don't end up sending an update to the app, which
+    // we have not successfully committed/saved on our end.
     client.save_groups_state();
+    client.send_update(group_name.clone())
+        .expect("Could not send the pending update!");
     if !new_update {
         // We don't want the attacker to force us to do more than one livestream session without an update.
         info!("Sent pending update. Will not livestream until update is acked (indirectly).");
@@ -125,9 +130,9 @@ pub fn livestream(client: &mut User, group_name: String, ip_camera: &IpCamera) -
 
         let heartbeat = client.send(&data, group_name.clone()).map_err(|e| {
             error!("send() returned error:");
+            client.save_groups_state();
             e
         })?;
-        client.save_groups_state();
 
         if !heartbeat && !first_send {
             info!("Ending livestream.");
@@ -136,6 +141,7 @@ pub fn livestream(client: &mut User, group_name: String, ip_camera: &IpCamera) -
 
         first_send = false;
     }
+    client.save_groups_state();
 
     Ok(())
 }

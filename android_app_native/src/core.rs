@@ -167,7 +167,9 @@ fn get_app_name(first_time: bool, file_dir: String, filename: String) -> String 
 
         let mut file =
             fs::File::create(file_dir.clone() + "/" + &filename).expect("Could not create file");
-        let _ = file.write_all(aname.as_bytes());
+        file.write_all(aname.as_bytes()).unwrap();
+        file.flush().unwrap();
+        file.sync_all().unwrap();
 
         aname
     } else {
@@ -624,13 +626,13 @@ pub fn receive(
             Ok(mc) => mc,
             Err(e) => {
                 my_log(logger, format!("Error: {e}"));
+                clients.as_mut().unwrap().client_motion.save_groups_state();
                 //We shouldn't drain the messages here. We might end up here when the read blocks
                 //since Android blocks network activity. If we try to read here, we'll keep getting
                 //blocked.
                 return "Error".to_string();
             }
         };
-        clients.as_mut().unwrap().client_motion.save_groups_state();
 
         if callback_error {
             my_log(logger, "Error: Detected callback error.".to_string());
@@ -654,11 +656,12 @@ pub fn receive(
                     }
                     Err(e) => {
                         my_log(logger, format!("Error: {e}"));
+                        clients.as_mut().unwrap().client_motion.save_groups_state();
                         return "Error".to_string();
                     }
                 };
-                clients.as_mut().unwrap().client_motion.save_groups_state();
             }
+            clients.as_mut().unwrap().client_motion.save_groups_state();
             return "Error".to_string();
         }
 
@@ -668,6 +671,12 @@ pub fn receive(
             break;
         }
     }
+
+    // We need to save groups/key store state after all the receive and before any send.
+    // This is because our calls to receive might have processed a staged commit.
+    // When we send a message, the camera will assume that we have received and merged
+    // the commit. That's why we need to save state here so that the assumption is correct.
+    clients.as_mut().unwrap().client_motion.save_groups_state();
 
     if !recvd_videos.is_empty() {
         response = "".to_string();
@@ -701,8 +710,8 @@ pub fn receive(
                 my_log(logger, format!("Error: Failed to send ack message ({e})"));
             }
         }
-        clients.as_mut().unwrap().client_motion.save_groups_state();
     }
+    clients.as_mut().unwrap().client_motion.save_groups_state();
 
     response
 }
