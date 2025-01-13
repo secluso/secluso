@@ -231,8 +231,7 @@ fn pair_with_camera(
 ) -> io::Result<(KeyPackages, KeyPackages, KeyPackages)> {
     //FIXME: port number hardcoded.
     let addr = SocketAddr::from_str(&(camera_ip + ":12348")).expect("Invalid IP address/port");
-    let timeout = Duration::from_secs(5);
-    let mut stream = TcpStream::connect_timeout(&addr, timeout)?;
+    let mut stream = TcpStream::connect(&addr)?;
     let camera_motion_key_packages =
         perform_pairing_handshake(&mut stream, app_motion_key_packages, secret)?;
     let camera_livestream_key_packages =
