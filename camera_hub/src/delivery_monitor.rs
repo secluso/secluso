@@ -59,22 +59,27 @@ pub struct DeliveryMonitor {
 
 impl DeliveryMonitor {
     pub fn from_file_or_new(video_dir: String, state_dir: String, renotify_threshold: u64) -> Self {
-        let pathname = state_dir.clone() + "/delivery_monitor";
-        if Path::new(&pathname).exists() {
+        let d_files =
+            User::get_state_files_sorted(&state_dir, "delivery_monitor_")
+                .unwrap();
+        for f in &d_files {
+            let pathname = state_dir.clone() + "/" + f;
             let file = fs::File::open(pathname).expect("Could not open file");
             let mut reader =
                 BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
             let data = reader.fill_buf().unwrap();
-
-            bincode::deserialize(data).unwrap()
-        } else {
-            Self {
-                watch_list: HashMap::new(),
-                last_ack_timestamp: None,
-                video_dir,
-                state_dir,
-                renotify_threshold,
+            let deserialize_result = bincode::deserialize(data);
+            if let Ok(deserialized_data) = deserialize_result {
+                return deserialized_data;
             }
+        }
+
+        Self {
+            watch_list: HashMap::new(),
+            last_ack_timestamp: None,
+            video_dir,
+            state_dir,
+            renotify_threshold,
         }
     }
 
