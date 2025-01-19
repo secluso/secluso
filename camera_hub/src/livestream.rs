@@ -52,7 +52,7 @@ impl AsyncWrite for LivestreamWriter {
 
         self.buffer.extend_from_slice(buf);
 
-        if self.buffer.len() >= min_buf_size {
+        while self.buffer.len() >= min_buf_size {
             let len_to_send = if self.buffer.len() > max_buf_size {
                 max_buf_size
             } else {
