@@ -308,6 +308,10 @@ pub fn initialize(
     }
 
     if motion_stream.is_none() || livestream_stream.is_none() || fcm_stream.is_none() {
+        my_log(
+            logger,
+            format!("Error: could not connect to the server!"),
+        );
         return false;
     }
 
@@ -333,7 +337,13 @@ pub fn initialize(
             token,
         ) {
             Ok(c) => c,
-            Err(_) => return false,
+            Err(e) => {
+                my_log(
+                    logger,
+                    format!("Error: initialize() failed: {e}"),
+                );
+                return false;
+            },
         },
     ));
 
