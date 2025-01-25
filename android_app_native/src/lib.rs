@@ -34,7 +34,7 @@ pub mod android {
     use std::collections::HashMap;
 
     use crate::core::{
-        add_camera, decode, deregister, initialize, livestream_end, livestream_read,
+        add_camera, decrypt, deregister, initialize, livestream_end, livestream_read,
         livestream_start, receive, update_token, Clients, LivestreamSession, my_log
     };
     use crate::logger::AndroidLogger;
@@ -52,6 +52,7 @@ pub mod android {
         name: JString,
         first: jboolean,
         credentials: jbyteArray,
+        network: jboolean,
     ) -> jboolean {
         // First, wait for any ongoing JNI calls to finish.
         let mut clients = CLIENTS.lock().unwrap();
@@ -77,6 +78,7 @@ pub mod android {
             .into();
         let first_time: bool = first == JNI_TRUE;
         let user_credentials: Vec<u8> = env.convert_byte_array(credentials).unwrap();
+        let need_network: bool = network == JNI_TRUE;
 
         if (*clients).is_none() {
             *clients = Some(HashMap::new());
@@ -91,6 +93,7 @@ pub mod android {
             file_dir,
             first_time,
             user_credentials,
+            need_network,
             Some(&logger),
         );
 
@@ -219,7 +222,7 @@ pub mod android {
     }
 
     #[no_mangle]
-    pub unsafe extern "C" fn Java_privastead_camera_RustNative_decode(
+    pub unsafe extern "C" fn Java_privastead_camera_RustNative_decrypt(
         env: JNIEnv,
         _: JClass,
         name: JString,
@@ -227,7 +230,7 @@ pub mod android {
     ) -> jstring {
         let mut clients = CLIENTS.lock().unwrap();
 
-        let logger = AndroidLogger::new(env, "Privastead Camera: RustNative_decode")
+        let logger = AndroidLogger::new(env, "Privastead Camera: RustNative_decrypt")
             .expect("Couldn't create logger object");
 
         let camera_name: String = env
@@ -245,7 +248,7 @@ pub mod android {
 
         let camera_clients = (*clients).as_mut().unwrap().entry(camera_name.clone()).or_insert(Mutex::new(None)).lock().unwrap();
 
-        let ret = decode(camera_clients, message, Some(&logger));
+        let ret = decrypt(camera_clients, message, Some(&logger));
 
         let output = env.new_string(ret).expect("Couldn't create jstring!");
         output.into_raw()

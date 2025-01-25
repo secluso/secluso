@@ -581,7 +581,7 @@ fn reset(
 
     match User::new(
         camera_motion_name,
-        server_motion_stream,
+        Some(server_motion_stream),
         first_time,
         reregister,
         STATE_DIR.to_string(),
@@ -604,7 +604,7 @@ fn reset(
 
     match User::new(
         camera_livestream_name,
-        server_livestream_stream,
+        Some(server_livestream_stream),
         first_time,
         reregister,
         STATE_DIR.to_string(),
@@ -627,7 +627,7 @@ fn reset(
 
     match User::new(
         camera_fcm_name,
-        server_fcm_stream,
+        Some(server_fcm_stream),
         first_time,
         reregister,
         STATE_DIR.to_string(),
@@ -699,7 +699,7 @@ fn core(
 
     let mut client_motion = User::new(
         camera_motion_name,
-        server_motion_stream,
+        Some(server_motion_stream),
         first_time,
         reregister,
         STATE_DIR.to_string(),
@@ -715,7 +715,7 @@ fn core(
 
     let mut client_livestream = User::new(
         camera_livestream_name,
-        server_livestream_stream,
+        Some(server_livestream_stream),
         first_time,
         reregister,
         STATE_DIR.to_string(),
@@ -731,7 +731,7 @@ fn core(
 
     let mut client_fcm = User::new(
         camera_fcm_name,
-        server_fcm_stream,
+        Some(server_fcm_stream),
         first_time,
         reregister,
         STATE_DIR.to_string(),

@@ -64,7 +64,7 @@ pub struct User {
     pub(crate) username: String,
     pub(crate) groups: RefCell<HashMap<Vec<u8>, Group>>,
     pub(crate) identity: RefCell<Identity>,
-    backend: Backend,
+    backend: Option<Backend>,
     provider: OpenMlsRustPersistentCrypto,
     file_dir: String,
     tag: String,
@@ -77,7 +77,7 @@ impl User {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         username: String,
-        server_stream: TcpStream,
+        server_stream: Option<TcpStream>,
         first_time: bool,
         reregister: bool,
         file_dir: String,
@@ -113,6 +113,11 @@ impl User {
             }
         }
 
+        let backend = match server_stream {
+            Some(stream) => Some(Backend::new(stream)),
+            None => None
+        };
+
         let mut out = Self {
             username: username.clone(),
             groups,
@@ -124,27 +129,39 @@ impl User {
                 file_dir.clone(),
                 tag.clone(),
             )),
-            backend: Backend::new(server_stream),
+            backend,
             provider: crypto,
             file_dir,
             tag,
         };
 
-        // Authenticate with the server first for a new connection.
-        out.backend.auth_server(user_credentials)?;
+        if out.backend.is_some() {
+            // Authenticate with the server first for a new connection.
+            out.backend.as_mut().unwrap().auth_server(user_credentials)?;
 
-        // Inform the server whether this connection should be kept alive if idle
-        out.backend.keep_alive(keep_alive)?;
+            // Inform the server whether this connection should be kept alive if idle
+            out.backend.as_mut().unwrap().keep_alive(keep_alive)?;
 
-        if reregister {
-            out.backend.register_client(out.key_packages())?;
+            if reregister {
+                let key_packages = out.key_packages();
+                out.backend.as_mut().unwrap().register_client(key_packages)?;
+            }
         }
 
         Ok(out)
     }
 
     pub fn deregister(&mut self) -> io::Result<()> {
+        if self.backend.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Backend not initialized.",
+            ));
+        }
+
         self.backend
+            .as_mut()
+            .unwrap()
             .deregister_client(self.identity.borrow().identity())?;
         self.identity
             .borrow()
@@ -186,7 +203,16 @@ impl User {
 
     /// Update FCM token in the server.
     pub fn update_token(&mut self, token: String) -> io::Result<()> {
+        if self.backend.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Backend not initialized.",
+            ));
+        }
+
         self.backend
+            .as_mut()
+            .unwrap()
             .update_token(self.identity.borrow().identity(), token)
     }
 
@@ -240,6 +266,13 @@ impl User {
 
     /// Invite a contact to a group.
     pub fn invite(&mut self, contact: &Contact, group_name: String) -> io::Result<()> {
+        if self.backend.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Backend not initialized.",
+            ));
+        }
+
         let joiner_key_package = contact.key_packages[0].1.clone();
 
         // Build a proposal with this key package and do the MLS bits.
@@ -289,7 +322,7 @@ impl User {
 
         // Second, send Welcome to the joiner.
         log::trace!("Sending welcome");
-        self.backend.send_welcome(&welcome)?;
+        self.backend.as_mut().unwrap().send_welcome(&welcome)?;
 
         group.only_contact = Some(contact.clone());
 
@@ -572,6 +605,13 @@ impl User {
 
     /// Send pending update
     pub fn send_update(&mut self, group_name: String) -> io::Result<()> {
+        if self.backend.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Backend not initialized.",
+            ));
+        }
+
         let groups = self.groups.borrow();
         let group = match groups.get(group_name.as_bytes()) {
             Some(g) => g,
@@ -589,7 +629,7 @@ impl User {
                 let msg = pcs_initiator.get_pending_update_msg();
                 if msg.is_ok() {
                     // Send the MlsMessages to the group.
-                    self.backend.send_msg(&msg.unwrap(), false)?;
+                    self.backend.as_mut().unwrap().send_msg(&msg.unwrap(), false)?;
                     Ok(())
                 } else {
                     panic!("Has pending update but returns error for msg!");
@@ -643,6 +683,13 @@ impl User {
     /// Returns true if receiver's heartbeat was received recently, false otherwise.
     /// FIXME/TODO: the heartbeat algorithm only works if there's one recipient.
     fn send_core(&mut self, bytes: &[u8], group_name: String, fcm: bool) -> io::Result<bool> {
+        if self.backend.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Backend not initialized.",
+            ));
+        }
+
         let groups = self.groups.borrow();
         let group = match groups.get(group_name.as_bytes()) {
             Some(g) => g,
@@ -662,7 +709,7 @@ impl User {
 
         let msg = GroupMessage::new(message_out.into(), &self.recipients(group));
         log::debug!(" >>> send: {:?}", msg);
-        self.backend.send_msg(&msg, fcm)
+        self.backend.as_mut().unwrap().send_msg(&msg, fcm)
     }
 
     /// Send an array of bytes to the group.
@@ -765,6 +812,13 @@ impl User {
             }
         };
 
+        if !fcm && self.backend.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Backend not initialized.",
+            ));
+        }
+
         if process_welcome && expected_inviter.is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -786,7 +840,7 @@ impl User {
                 }
             }
         } else {
-            self.backend.recv_msgs(self.identity.borrow().identity())?
+            self.backend.as_mut().unwrap().recv_msgs(self.identity.borrow().identity())?
         };
 
         for message in msgs.drain(..) {

@@ -63,11 +63,11 @@ pub struct Clients {
 impl Clients {
     pub fn new(
         app_motion_name: String,
-        server_motion_stream: TcpStream,
+        server_motion_stream: Option<TcpStream>,
         app_livestream_name: String,
-        server_livestream_stream: TcpStream,
+        server_livestream_stream: Option<TcpStream>,
         app_fcm_name: String,
-        server_fcm_stream: TcpStream,
+        server_fcm_stream: Option<TcpStream>,
         first_time: bool,
         file_dir: String,
         user_credentials: Vec<u8>,
@@ -268,6 +268,7 @@ pub fn initialize(
     file_dir: String,
     first_time: bool,
     user_credentials: Vec<u8>,
+    need_network: bool,
     logger: Option<&AndroidLogger>,
 ) -> bool {
     *clients = None;
@@ -286,33 +287,35 @@ pub fn initialize(
     let mut livestream_stream: Option<TcpStream> = None;
     let mut fcm_stream: Option<TcpStream> = None;
 
-    match TcpStream::connect(delivery_service_addr.clone()) {
-        Ok(stream) => motion_stream = Some(stream),
-        Err(_) => {
-            let _ = fs::remove_file(file_dir.clone() + "/registration_done");
+    if need_network {
+        match TcpStream::connect(delivery_service_addr.clone()) {
+            Ok(stream) => motion_stream = Some(stream),
+            Err(_) => {
+                let _ = fs::remove_file(file_dir.clone() + "/registration_done");
+            }
         }
-    }
 
-    match TcpStream::connect(delivery_service_addr.clone()) {
-        Ok(stream) => livestream_stream = Some(stream),
-        Err(_) => {
-            let _ = fs::remove_file(file_dir.clone() + "/registration_done");
+        match TcpStream::connect(delivery_service_addr.clone()) {
+            Ok(stream) => livestream_stream = Some(stream),
+            Err(_) => {
+                let _ = fs::remove_file(file_dir.clone() + "/registration_done");
+            }
         }
-    }
 
-    match TcpStream::connect(delivery_service_addr) {
-        Ok(stream) => fcm_stream = Some(stream),
-        Err(_) => {
-            let _ = fs::remove_file(file_dir.clone() + "/registration_done");
+        match TcpStream::connect(delivery_service_addr) {
+            Ok(stream) => fcm_stream = Some(stream),
+            Err(_) => {
+                let _ = fs::remove_file(file_dir.clone() + "/registration_done");
+            }
         }
-    }
 
-    if motion_stream.is_none() || livestream_stream.is_none() || fcm_stream.is_none() {
-        my_log(
-            logger,
-            format!("Error: could not connect to the server!"),
-        );
-        return false;
+        if motion_stream.is_none() || livestream_stream.is_none() || fcm_stream.is_none() {
+            my_log(
+                logger,
+                format!("Error: could not connect to the server!"),
+            );
+            return false;
+        }
     }
 
     let app_motion_name = get_app_name(first_time, file_dir.clone(), "app_motion_name".to_string());
@@ -326,11 +329,11 @@ pub fn initialize(
     *clients = Some(Box::new(
         match Clients::new(
             app_motion_name,
-            motion_stream.unwrap(),
+            motion_stream,
             app_livestream_name,
-            livestream_stream.unwrap(),
+            livestream_stream,
             app_fcm_name,
-            fcm_stream.unwrap(),
+            fcm_stream,
             first_time,
             file_dir,
             user_credentials,
@@ -725,7 +728,7 @@ pub fn receive(
     response
 }
 
-pub fn decode(
+pub fn decrypt(
     mut clients: MutexGuard<'_, Option<Box<Clients>>>,
     message: Vec<u8>,
     logger: Option<&AndroidLogger>,
