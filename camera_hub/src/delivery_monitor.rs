@@ -169,6 +169,9 @@ impl DeliveryMonitor {
             }
         }
 
+        resend_list.sort_by_key(|key| key.timestamp);
+        renotify_list.sort_by_key(|key| key.timestamp);
+
         (resend_list, renotify_list)
     }
 

@@ -846,20 +846,22 @@ fn core(
                 if any_ack || delivery_check_iterations_to_skip == 0 {
                     let (resend_list, renotify_list) = delivery_monitor.videos_to_resend_renotify();
 
-                    let mut any_resend = false;
-                    for video_info in resend_list {
-                        any_resend = true;
+                    if !resend_list.is_empty() {
                         send_motion_triggered_video(
                             &mut client_motion,
                             group_motion_name.clone(),
-                            video_info,
+                            resend_list[0].clone(),
                             &mut delivery_monitor,
                         )?;
+
+                        for video_info in &resend_list[1..] {
+                            delivery_monitor.send_event(video_info.clone());
+                        }
                     }
 
                     // If we resend any videos above, that ends up sending a notification
                     // to the app anyway.
-                    if !any_resend && !renotify_list.is_empty() {
+                    if resend_list.is_empty() && !renotify_list.is_empty() {
                         // It's enough to send one notification
                         // We just want to send an FCM message in order to get the app to fetch the messages.
                         debug!("Sending the FCM notification.");
@@ -872,7 +874,7 @@ fn core(
                         send_video_notification(
                             &mut client_motion,
                             group_motion_name.clone(),
-                            renotify_list.first().unwrap().clone(),
+                            renotify_list[0].clone(),
                             &mut delivery_monitor,
                         )?;
 
