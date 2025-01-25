@@ -72,6 +72,7 @@ impl Clients {
         file_dir: String,
         user_credentials: Vec<u8>,
         token: String,
+        need_network: bool,
     ) -> io::Result<Self> {
         let reregister: bool = !Path::new(&(file_dir.clone() + "/registration_done")).exists();
 
@@ -113,7 +114,7 @@ impl Clients {
             false,
         )?;
 
-        if reregister {
+        if need_network && reregister {
             client_fcm.update_token(token)?;
         }
         client_fcm.save_groups_state();
@@ -338,6 +339,7 @@ pub fn initialize(
             file_dir,
             user_credentials,
             token,
+            need_network,
         ) {
             Ok(c) => c,
             Err(e) => {
