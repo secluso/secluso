@@ -20,7 +20,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use privastead_client_lib::user::User;
 
