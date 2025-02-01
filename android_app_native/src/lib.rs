@@ -120,6 +120,10 @@ pub mod android {
         let camera_clients = (*clients).as_mut().unwrap().entry(camera_name.clone()).or_insert(Mutex::new(None)).lock().unwrap();
 
         deregister(camera_clients, Some(&logger));
+
+        if (*clients).as_mut().unwrap().remove(&camera_name).is_none() {
+            my_log(Some(&logger), "Error: could not remove the clients from hashmap!");
+        }
     }
 
     #[no_mangle]
