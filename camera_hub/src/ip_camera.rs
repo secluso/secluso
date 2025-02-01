@@ -72,6 +72,7 @@ use std::sync::Arc;
 use std::collections::VecDeque;
 use std::sync::{Mutex, mpsc::{self, Sender}};
 use std::time::{Duration, SystemTime};
+use crate::Camera;
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
@@ -220,10 +221,7 @@ struct Frame {
 
 impl IpCamera {
     pub fn new(
-        ip_addr: String,
-        rtsp_port: String,
-        username: String,
-        password: String,
+        camera: &Camera,
         dir: String,
     ) -> io::Result<Self> {
         let pull_url = if Path::new(&(dir.clone() + "/onvif_subscription_url")).exists() {
@@ -235,7 +233,7 @@ impl IpCamera {
 
             String::from_utf8(url_bytes.to_vec()).unwrap()
         } else {
-            let url = Self::set_up_pull_point(ip_addr.clone(), username.clone(), password.clone())?;
+            let url = Self::set_up_pull_point(camera)?;
 
             let mut file = fs::File::create(dir.clone() + "/onvif_subscription_url")
                 .expect("Could not create file");
@@ -248,8 +246,11 @@ impl IpCamera {
         log::debug!("pull_url: {}", pull_url);
 
         let frame_queue: Arc<Mutex<VecDeque<Frame>>> = Arc::new(Mutex::new(VecDeque::new()));
-        let username_clone = username.clone();
-        let password_clone = password.clone();
+        let username_clone = camera.username.clone();
+        let password_clone = camera.password.clone();
+        let camera_ip = camera.ip.clone();
+        let camera_rtsp_port = camera.rtsp_port;
+
         let frame_queue_clone = Arc::clone(&frame_queue);
         let (video_params_tx, video_params_rx) = mpsc::channel::<VideoParameters>();
         let (audio_params_tx, audio_params_rx) = mpsc::channel::<AudioParameters>();
@@ -259,7 +260,7 @@ impl IpCamera {
             let future = Self::start_camera_stream(
                 username_clone,
                 password_clone,
-                "rtsp://".to_owned() + &ip_addr + ":" + &rtsp_port,
+                format!("rtsp://{}:{}", camera_ip, camera_rtsp_port),
                 frame_queue_clone,
                 video_params_tx,
                 audio_params_tx,
@@ -272,8 +273,8 @@ impl IpCamera {
         let audio_params = audio_params_rx.recv().unwrap();
 
         Ok(Self {
-            username,
-            password,
+            username: camera.to_owned().username,
+            password: camera.to_owned().password,
             pull_url,
             dir,
             frame_queue,
@@ -287,17 +288,15 @@ impl IpCamera {
     }
 
     fn set_up_pull_point(
-        ip_addr: String,
-        username: String,
-        password: String,
+        camera: &Camera,
     ) -> io::Result<String> {
         // URL for creating subscription
-        let subscription_url = "http://".to_owned() + &ip_addr + "/onvif/event_service";
+        let subscription_url = "http://".to_owned() + &*camera.ip + "/onvif/event_service";
 
         // Create pull-point subscription request
         let create_subscription_request = Self::create_pull_point_subscription_request(
-            username,
-            password,
+            camera.username.clone(),
+            camera.password.clone(),
             subscription_url.clone(),
         );
 
@@ -306,10 +305,10 @@ impl IpCamera {
 
         log::debug!("Create subscription response: {}", response);
         if response.contains("Invalid username or password") {
-            println!("Invalid username or password for the IP camera!");
+            println!("[{}] Invalid username or password for the IP camera!", camera.name);
             process::exit(0);
         } else if response.contains("Wsse authorized time check failed") {
-            println!("Camera's date/time is out of sync with the hub! Resync them and run the hub again.");
+            println!("[{}] Camera's date/time is out of sync with the hub! Resync them and run the hub again.", camera.name);
             process::exit(0);
         }
 

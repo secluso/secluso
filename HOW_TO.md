@@ -186,16 +186,33 @@ You are now done configuring the camera. Make sure to connect the machine to the
 
 ### Step 5: Configuring and running camera hub
 
+Copy over the example_cameras.yaml file into cameras.yaml
+```
+cp example_cameras.yaml cameras.yaml
+```
+
+You can add as many cameras as you want by copy and pasting the individual camera blocks
+```
+  - name: "Front Door"
+    ip: "IP address of camera configured in Step 3"
+    rtsp_port: 554
+    username: "username here"
+    password: "password here"
+```
+
+You may choose to omit the username and password, which will instead prompt you upon executing the program below.
+
+The RTSP port is usually 554, but may vary depending on your camera.
+
 ```
 mv /address/to/user_credentials /path-to-privastead/camera_hub
 cd /path-to-privastead/camera_hub
-cargo run --release -- --server-ip [Server IP address] --ip-camera-ip [IP address of the IP camera] --ip-camera-rtsp-port [IP camera's RTSP port (typically 554)]
+cargo run --release --
 ```
 
-The IP address of the camera is the one you recorded in Step 3.
-The Privastead hub will now run and ask you for the username and password of the IP camera.
-After providing them, it will create a QR code containing a secret needed for pairing (camera_hub/camera_secret_qrcode.png).
-It then waits to be paired with the app.
+The Privastead hub will now run and ask you for the username and password for each IP camera if not provided originally in the configuration file. 
+After providing them, it will create a QR code containing a secret needed for pairing (camera_hub/camera_name_secret_qrcode.png).
+Each camera then waits to be paired with the app.
 
 ### Step 6: Building and installing the app
 
@@ -205,7 +222,7 @@ Fetch the app from our repo:
 git clone https://github.com/privastead/android_app.git
 ```
 
-Then copy the the google-services.json generated in an earlier step into the app source code:
+Then copy the google-services.json generated in an earlier step into the app source code:
 
 ```
 mv /path-to-json-file/google-services.json /path-to-app-source/android_app/app/
@@ -237,13 +254,13 @@ Now you need to build the app and install it on the device.
 We recommend using the Android Studio.
 We don't provide more details on that here since there are plenty of resources online.
 
-### Step 7: Pairing the app with the the hub
+### Step 7: Pairing the app with the hub
 
 When you first run the app, it will ask you for the IP address of teh server and credentials needed to access the server in the form of a QR code.
 Enter the IP address.
 Then scan user_credentials_qrcode.png file that you generated in Step 1.
 Note that the app will ask you for permission to access the camera in order to scan the QR code.
-It is enough to give a one-time access to the app.
+It is enough to give one-time access to the app.
 It does not need the camera other than for scanning QR codes (also needed when pairing with the camera).
 
 Next, the app will ask you for notifications permissions.
@@ -257,14 +274,14 @@ The IP address is the address of the hub (not the IP camera!).
 The smartphone running the app and the machine running the hub need to be connected to the same network for the pairing process.
 Therefore, make sure they are both connected to the same router.
 To find the IP address of the hub, you can again use the ifconfig command.
-The QR code is the one that the camera hub generated (camera_hub/camera_secret_qrcode.png).
+The QR code is the one that the camera hub generated (camera_hub/camera_name_secret_qrcode.png).
 Once you've provided all, click on ADD CAMERA.
 The camera hub and the app should be paired now.
 The camera hub will also print:
 
 ```
-Pairing successful.
-Running...
+[Camera Name] Pairing successful.
+[Camera Name] Running...
 ```
 
 At this point, the system is operational.

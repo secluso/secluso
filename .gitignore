@@ -1,2 +1,13 @@
 Cargo.lock
 target
+
+# Exclude RustRover and Mac-based meta files
+.DS_Store
+.idea
+
+# Exclude all credential, video or state based data
+user_credentials
+user_credentials_qrcode.png
+pending_videos
+state
+cameras.yaml
