@@ -60,7 +60,6 @@ use tokio::runtime::Runtime;
 use anyhow::{anyhow, bail, Context, Error};
 use bytes::BytesMut;
 use futures::StreamExt;
-use log::info;
 use retina::{
     client::SetupOptions,
     codec::{AudioParameters, CodecItem, ParametersRef, VideoParameters},
@@ -70,6 +69,9 @@ use url::Url;
 use std::convert::TryFrom;
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Mutex, mpsc::{self, Sender}};
+use std::time::{Duration, SystemTime};
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
@@ -199,12 +201,21 @@ struct FaultReason {
 }
 
 pub struct IpCamera {
-    ip_addr: String,
-    rtsp_port: String,
     username: String,
     password: String,
     pull_url: String,
     dir: String,
+    frame_queue: Arc<Mutex<VecDeque<Frame>>>,
+    video_params: VideoParameters,
+    audio_params: AudioParameters,
+}
+
+struct Frame {
+    frame: Vec<u8>,
+    frame_timestamp: u64, // timestamp sent by the camera
+    timestamp: SystemTime, // timestamp used to manage frames in the queue
+    is_video: bool,
+    is_random_access_point: bool,
 }
 
 impl IpCamera {
@@ -236,13 +247,38 @@ impl IpCamera {
         };
         log::debug!("pull_url: {}", pull_url);
 
+        let frame_queue: Arc<Mutex<VecDeque<Frame>>> = Arc::new(Mutex::new(VecDeque::new()));
+        let username_clone = username.clone();
+        let password_clone = password.clone();
+        let frame_queue_clone = Arc::clone(&frame_queue);
+        let (video_params_tx, video_params_rx) = mpsc::channel::<VideoParameters>();
+        let (audio_params_tx, audio_params_rx) = mpsc::channel::<AudioParameters>();
+        thread::spawn(move || {
+            let rt = Runtime::new().unwrap();
+
+            let future = Self::start_camera_stream(
+                username_clone,
+                password_clone,
+                "rtsp://".to_owned() + &ip_addr + ":" + &rtsp_port,
+                frame_queue_clone,
+                video_params_tx,
+                audio_params_tx,
+            );
+
+            rt.block_on(future).unwrap();
+        });
+
+        let video_params = video_params_rx.recv().unwrap();
+        let audio_params = audio_params_rx.recv().unwrap();
+
         Ok(Self {
-            ip_addr,
-            rtsp_port,
             username,
             password,
             pull_url,
             dir,
+            frame_queue,
+            video_params,
+            audio_params,
         })
     }
 
@@ -445,11 +481,11 @@ impl IpCamera {
         let rt = Runtime::new()?;
 
         let future = Self::write_mp4(
-            self.username.clone(),
-            self.password.clone(),
-            "rtsp://".to_owned() + &self.ip_addr + ":" + &self.rtsp_port,
             dir + "/" + &info.filename,
             20,
+            Arc::clone(&self.frame_queue),
+            self.video_params.clone(),
+            self.audio_params.clone(),
         );
 
         rt.block_on(future).unwrap();
@@ -458,19 +494,22 @@ impl IpCamera {
     }
 
     pub fn launch_livestream(&self, livestream_writer: LivestreamWriter) -> io::Result<()> {
-        let username = self.username.clone();
-        let password = self.password.clone();
-        let ip_addr = self.ip_addr.clone();
-        let rtsp_port = self.rtsp_port.clone();
+        // Drop all the frames from the queue since we won't need them for livestreaming
+        let mut queue = self.frame_queue.lock().unwrap();
+        queue.clear();
+        drop(queue);
 
+        let frame_queue = Arc::clone(&self.frame_queue);
+        let video_params = self.video_params.clone();
+        let audio_params = self.audio_params.clone();
         thread::spawn(move || {
             let rt = Runtime::new().unwrap();
 
             let future = Self::write_fmp4(
-                username,
-                password,
-                "rtsp://".to_owned() + &ip_addr + ":" + &rtsp_port,
                 livestream_writer,
+                frame_queue,
+                video_params,
+                audio_params,
             );
 
             rt.block_on(future).unwrap();
@@ -479,13 +518,77 @@ impl IpCamera {
         Ok(())
     }
 
-    /// Writes the `.mp4`, including trying to finish or clean up the file.
-    async fn write_mp4(
+    fn add_frame_and_drop_old(
+        frame_queue: Arc<Mutex<VecDeque<Frame>>>,
+        frame: Frame,
+    ) {
+        let time_window = Duration::new(5, 0); // We want to record 5 seconds of frames prior to detection of motion
+        let mut queue = frame_queue.lock().unwrap();
+        queue.push_back(frame);
+
+        // Remove old entries
+        let now = SystemTime::now();
+        while let Some(front) = queue.front() {
+            if now.duration_since(front.timestamp).unwrap_or_default() > time_window {
+                queue.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Copies packets from the IP camera session to the frame queue
+    async fn stream_loop<'a>(
+        session: &'a mut retina::client::Demuxed,
+        frame_queue: Arc<Mutex<VecDeque<Frame>>>,
+    ) -> Result<(), Error> {
+        loop {
+            tokio::select! {
+                pkt = session.next() => {
+                    match pkt.ok_or_else(|| anyhow!("EOF"))?? {
+                        CodecItem::VideoFrame(f) => {
+                            let frame = Frame {
+                                frame: f.data().to_vec(),
+                                frame_timestamp: f.timestamp().timestamp().try_into().unwrap(),
+                                timestamp: SystemTime::now(),
+                                is_video: true,
+                                is_random_access_point: f.is_random_access_point(),
+                            };
+
+                            let frame_queue_clone = Arc::clone(&frame_queue);
+                            Self::add_frame_and_drop_old(frame_queue_clone, frame);
+                        },
+                        CodecItem::AudioFrame(f) => {
+                            let frame = Frame {
+                                frame: f.data().to_vec(),
+                                frame_timestamp: f.timestamp().timestamp().try_into().unwrap(),
+                                timestamp: SystemTime::now(),
+                                is_video: false,
+                                is_random_access_point: false,
+                            };
+
+                            let frame_queue_clone = Arc::clone(&frame_queue);
+                            Self::add_frame_and_drop_old(frame_queue_clone, frame);
+                        },
+                        CodecItem::Rtcp(rtcp) => {
+                            if let (Some(_t), Some(Ok(Some(_sr)))) = (rtcp.rtp_timestamp(), rtcp.pkts().next().map(retina::rtcp::PacketRef::as_sender_report)) {
+                            }
+                        },
+                        _ => continue,
+                    };
+                },
+            }
+        }
+    }
+
+    /// Streams frames from the IP camera.
+    async fn start_camera_stream_attempt(
         username: String,
         password: String,
         url: String,
-        filename: String,
-        duration: u64,
+        frame_queue: Arc<Mutex<VecDeque<Frame>>>,
+        video_params_tx: Option<Sender<VideoParameters>>,
+        audio_params_tx: Option<Sender<AudioParameters>>,
     ) -> Result<(), Error> {
         let (session, video_params, audio_params) =
             Self::get_stream(username, password, url).await?;
@@ -500,6 +603,61 @@ impl IpCamera {
             .await?
             .demuxed()?;
 
+        if let Some(vtx) = video_params_tx {
+            let _ = vtx.send(video_params);
+        }
+        if let Some(atx) = audio_params_tx {
+            let _ = atx.send(audio_params);
+        }
+
+        Self::stream_loop(&mut session, frame_queue).await?;
+
+        // FIXME: do we need to wait for teardown here?
+
+        Ok(())
+    }
+
+    /// Start the camera stream in a loop
+    async fn start_camera_stream(
+        username: String,
+        password: String,
+        url: String,
+        frame_queue: Arc<Mutex<VecDeque<Frame>>>,
+        video_params_tx: Sender<VideoParameters>,
+        audio_params_tx: Sender<AudioParameters>,
+    ) -> Result<(), Error> {
+        let _ = Self::start_camera_stream_attempt(
+            username.clone(),
+            password.clone(),
+            url.clone(),
+            Arc::clone(&frame_queue),
+            Some(video_params_tx),
+            Some(audio_params_tx),
+        ).await?;
+
+        loop {
+            println!("IP camera stream stopped or didn't start. Will try to restart soon.");
+            thread::sleep(Duration::from_secs(5));
+
+            let _ = Self::start_camera_stream_attempt(
+                username.clone(),
+                password.clone(),
+                url.clone(),
+                Arc::clone(&frame_queue),
+                None,
+                None,
+            ).await?;
+        }
+    }
+
+    /// Writes the `.mp4`, including trying to finish or clean up the file.
+    async fn write_mp4(
+        filename: String,
+        duration: u64,
+        frame_queue: Arc<Mutex<VecDeque<Frame>>>,
+        video_params: VideoParameters,
+        audio_params: AudioParameters,
+    ) -> Result<(), Error> {
         let out = tokio::fs::File::create(&filename).await?;
         let mut mp4 = Mp4Writer::new(
             IpCameraVideoParameters::new(video_params),
@@ -507,7 +665,7 @@ impl IpCamera {
             out,
         )
         .await?;
-        Self::copy(&mut session, &mut mp4, Some(duration)).await?;
+        Self::copy(&mut mp4, Some(duration), frame_queue).await?;
         mp4.finish().await?;
 
         // FIXME: do we need to wait for teardown here?
@@ -522,24 +680,11 @@ impl IpCamera {
 
     /// Streams fmp4 video.
     async fn write_fmp4(
-        username: String,
-        password: String,
-        url: String,
         livestream_writer: LivestreamWriter,
+        frame_queue: Arc<Mutex<VecDeque<Frame>>>,
+        video_params: VideoParameters,
+        audio_params: AudioParameters,
     ) -> Result<(), Error> {
-        let (session, video_params, audio_params) =
-            Self::get_stream(username, password, url).await?;
-
-        let mut session = session
-            .play(
-                retina::client::PlayOptions::default()
-                    .initial_timestamp(retina::client::InitialTimestampPolicy::Default)
-                    .enforce_timestamps_with_max_jump_secs(NonZeroU32::new(10).unwrap())
-                    .unknown_rtcp_ssrc(retina::client::UnknownRtcpSsrcPolicy::Default),
-            )
-            .await?
-            .demuxed()?;
-
         let mut fmp4 = Fmp4Writer::new(
             IpCameraVideoParameters::new(video_params),
             IpCameraAudioParameters::new(audio_params),
@@ -547,7 +692,7 @@ impl IpCamera {
         )
         .await?;
         fmp4.finish_header().await?;
-        Self::copy(&mut session, &mut fmp4, None).await?;
+        Self::copy(&mut fmp4, None, frame_queue).await?;
 
         // FIXME: do we need to wait for teardown here?
 
@@ -556,50 +701,57 @@ impl IpCamera {
 
     /// Copies packets from `session` to `mp4` without handling any cleanup on error.
     async fn copy<'a, M: Mp4>(
-        session: &'a mut retina::client::Demuxed,
         mp4: &'a mut M,
         duration: Option<u64>,
+        frame_queue: Arc<Mutex<VecDeque<Frame>>>
     ) -> Result<(), Error> {
-        let sleep = match duration {
-            Some(secs) => futures::future::Either::Left(tokio::time::sleep(
-                std::time::Duration::from_secs(secs),
-            )),
-            None => futures::future::Either::Right(futures::future::pending()),
+        let recording_window = match duration {
+            Some(secs) => Some(Duration::new(secs, 0)),
+            None => None,
         };
-        tokio::pin!(sleep);
+        let recording_start_time = SystemTime::now();
+        let mut first_frame_found = false;
+
         loop {
-            tokio::select! {
-                pkt = session.next() => {
-                    match pkt.ok_or_else(|| anyhow!("EOF"))?? {
-                        CodecItem::VideoFrame(f) => {
-                            if f.is_random_access_point() {
-                                if let Err(_e) = mp4.finish_fragment().await {
-                                    // This will be executed when livestream ends.
-                                    // This is a no op for recording an .mp4 file
-                                    // log::error!(".mp4 finish failed: {}", e);
-                                    break;
-                                }
-                            }
-                            let start_ctx = *f.start_ctx();
-                            mp4.video(f.data(), f.timestamp().timestamp().try_into().unwrap(), f.is_random_access_point()).await.with_context(
-                                || format!("Error processing video frame starting with {start_ctx}"))?;
-                        },
-                        CodecItem::AudioFrame(f) => {
-                            let ctx = *f.ctx();
-                            mp4.audio(f.data(), f.timestamp().timestamp().try_into().unwrap()).await.with_context(
-                                || format!("Error processing audio frame, {ctx}"))?;
-                        },
-                        CodecItem::Rtcp(rtcp) => {
-                            if let (Some(_t), Some(Ok(Some(_sr)))) = (rtcp.rtp_timestamp(), rtcp.pkts().next().map(retina::rtcp::PacketRef::as_sender_report)) {
-                            }
-                        },
-                        _ => continue,
-                    };
-                },
-                _ = &mut sleep => {
-                    info!("Stopping after {} seconds", duration.unwrap());
+            let mut queue = frame_queue.lock().unwrap();
+            let frame = match queue.pop_front() {
+                Some(f) => f,
+                None => {
+                    drop(queue);
+                    thread::sleep(Duration::from_secs(1));
+                    continue;
+                }
+            };
+
+            if frame.is_video {
+                if frame.is_random_access_point {
+                    first_frame_found = true;
+                    if let Err(_e) = mp4.finish_fragment().await {
+                        // This will be executed when livestream ends.
+                        // This is a no op for recording an .mp4 file
+                        // log::error!(".mp4 finish failed: {}", e);
+                        break;
+                    }
+                }
+
+                if first_frame_found {
+                    mp4.video(&frame.frame, frame.frame_timestamp, frame.is_random_access_point).await.with_context(
+                        || "Error processing video frame")?;
+                }
+                drop(queue);
+            } else { // audio
+                if first_frame_found {
+                    mp4.audio(&frame.frame, frame.frame_timestamp).await.with_context(
+                        || "Error processing audio frame")?;
+                }
+                drop(queue);
+            }
+
+            if let Some(window) = recording_window {   
+                if frame.timestamp.duration_since(recording_start_time).unwrap_or_default() > window {
+                    log::info!("Stopping the recording.");
                     break;
-                },
+                }
             }
         }
         Ok(())
