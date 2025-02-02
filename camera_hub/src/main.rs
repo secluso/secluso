@@ -31,21 +31,30 @@ use privastead_client_lib::user::{KeyPackages, User};
 use privastead_client_lib::video_net_info::{VideoAckInfo, VideoNetInfo};
 use qrcode::QrCode;
 use rand::Rng;
-use rpassword::read_password;
 use std::fs;
 use std::io;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::{thread, time::Duration};
+use std::collections::HashMap;
+use std::fs::File;
+use std::process::exit;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
+use rpassword::read_password;
+use serde_yml::Value;
 
 mod ip_camera;
+
 use crate::ip_camera::IpCamera;
 
 mod delivery_monitor;
+
 use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
 
 mod livestream;
+
 use crate::livestream::{is_there_livestream_start_request, livestream};
 
 mod fmp4;
@@ -58,8 +67,27 @@ mod traits;
 // our security guarantees. Will only cause availability issues.
 const NUM_RANDOM_CHARS: u8 = 16;
 
-const STATE_DIR: &str = "state";
-const VIDEO_DIR: &str = "pending_videos";
+const STATE_DIR_GENERAL: &str = "state";
+const VIDEO_DIR_GENERAL: &str = "pending_videos";
+
+// A counter representing the amount of active camera threads
+static GLOBAL_THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+// Used to ensure there can't be attempted concurrent pairing
+static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+
+// Represents the data for each camera
+#[derive(Debug, Clone)]
+pub struct Camera {
+    name: String,
+    ip: String,
+    rtsp_port: u16,
+    username: String,
+    password: String,
+    state_dir: String,
+    video_dir: String,
+}
 
 fn write_varying_len(stream: &mut TcpStream, msg: &[u8]) {
     // FIXME: is u64 necessary?
@@ -96,7 +124,7 @@ fn perform_pairing_handshake(
     app_key_packages
 }
 
-fn generate_camera_secret() -> Vec<u8> {
+fn generate_camera_secret(camera: Camera) -> Vec<u8> {
     let crypto = OpenMlsRustCrypto::default();
     let secret = crypto
         .crypto()
@@ -106,26 +134,27 @@ fn generate_camera_secret() -> Vec<u8> {
     // Save as QR code to be shown to the app
     let code = QrCode::new(secret.clone()).unwrap();
     let image = code.render::<Luma<u8>>().build();
-    image.save("camera_secret_qrcode.png").unwrap();
-
-    // FIXME: Remove. For testing only.
-    let mut file = fs::File::create("camera_secret").expect("Could not create file");
-    let _ = file.write_all(&secret);
+    image.save(format!("camera_{}_secret_qrcode.png", camera.name.replace(" ", "_").to_lowercase())).unwrap();
 
     secret
 }
 
 fn pair_with_app(
+    camera: &Camera,
     camera_motion_key_packages: KeyPackages,
     camera_livestream_key_packages: KeyPackages,
     camera_fcm_key_packages: KeyPackages,
 ) -> (KeyPackages, KeyPackages, KeyPackages) {
-    let secret = generate_camera_secret();
+
+    // Ensure that two cameras don't attempt to pair at the same time (as this would introduce an error when opening two of the same port simultaneously)
+    let _lock = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+
+    let secret = generate_camera_secret(camera.clone());
     if secret.len() != pairing::NUM_SECRET_BYTES {
         panic!("Invalid number of bytes in secret!");
     }
 
-    println!("File camera_secret_qrcode.png was just created. Use the QR code in the app to pair.");
+    println!("[{}] File camera_{}_secret_qrcode.png was just created. Use the QR code in the app to pair.", camera.name, camera.name.replace(" ", "_").to_lowercase());
 
     let mut camera_secret = [0u8; pairing::NUM_SECRET_BYTES];
     camera_secret.copy_from_slice(&secret[..]);
@@ -140,8 +169,7 @@ fn pair_with_app(
     let app_fcm_key_packages =
         perform_pairing_handshake(&mut stream, camera_fcm_key_packages, camera_secret);
 
-    let _ = fs::remove_file("camera_secret_qrcode.png");
-    let _ = fs::remove_file("camera_secret");
+    let _ = fs::remove_file(format!("camera_{}_secret_qrcode.png", camera.name.replace(" ", "_").to_lowercase()));
 
     (
         app_motion_key_packages,
@@ -151,6 +179,7 @@ fn pair_with_app(
 }
 
 fn create_group_and_invite(
+    camera: &Camera,
     client: &mut User,
     group_name: String,
     app_key_packages: KeyPackages,
@@ -169,12 +198,13 @@ fn create_group_and_invite(
     client.save_groups_state();
     debug!("App invited to the group.");
 
-    fs::File::create(STATE_DIR.to_owned() + "/first_time_done").expect("Could not create file");
+    fs::File::create(camera.state_dir.clone() + "/first_time_done").expect("Could not create file");
 
     Ok(())
 }
 
 fn create_camera_groups(
+    camera: &Camera,
     client_motion: &mut User,
     client_livestream: &mut User,
     client_fcm: &mut User,
@@ -184,34 +214,41 @@ fn create_camera_groups(
 ) -> io::Result<()> {
     let (app_motion_key_packages, app_livestream_key_packages, app_fcm_key_packages) =
         pair_with_app(
+            camera,
             client_motion.key_packages(),
             client_livestream.key_packages(),
             client_fcm.key_packages(),
         );
 
-    create_group_and_invite(client_motion, group_motion_name, app_motion_key_packages)?;
+    create_group_and_invite(camera, client_motion, group_motion_name, app_motion_key_packages)?;
     create_group_and_invite(
+        camera,
         client_livestream,
         group_livestream_name,
         app_livestream_key_packages,
     )?;
-    create_group_and_invite(client_fcm, group_fcm_name, app_fcm_key_packages)?;
+    create_group_and_invite(camera, client_fcm, group_fcm_name, app_fcm_key_packages)?;
 
     Ok(())
 }
 
 fn get_names(
+    camera: &Camera,
     first_time: bool,
     camera_filename: String,
     group_filename: String,
 ) -> (String, String) {
+    let state_dir = Path::new(&camera.state_dir);
+    let camera_path = state_dir.join(camera_filename);
+    let group_path = state_dir.join(group_filename);
+
     let (camera_name, group_name) = if first_time {
         let mut rng = rand::thread_rng();
         let cname: String = (0..NUM_RANDOM_CHARS)
             .map(|_| rng.sample(rand::distributions::Alphanumeric) as char)
             .collect();
 
-        let mut file = fs::File::create(STATE_DIR.to_owned() + "/" + &camera_filename)
+        let mut file = fs::File::create(camera_path)
             .expect("Could not create file");
         file.write_all(cname.as_bytes()).unwrap();
         file.flush().unwrap();
@@ -222,7 +259,7 @@ fn get_names(
             .map(|_| rng.sample(rand::distributions::Alphanumeric) as char)
             .collect();
 
-        file = fs::File::create(STATE_DIR.to_owned() + "/" + &group_filename)
+        file = fs::File::create(group_path)
             .expect("Could not create file");
         file.write_all(gname.as_bytes()).unwrap();
         file.flush().unwrap();
@@ -230,13 +267,13 @@ fn get_names(
 
         (cname, gname)
     } else {
-        let file = fs::File::open(STATE_DIR.to_owned() + "/" + &camera_filename)
+        let file = fs::File::open(camera_path)
             .expect("Cannot open file to send");
         let mut reader =
             BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
         let cname = reader.fill_buf().unwrap();
 
-        let file = fs::File::open(STATE_DIR.to_owned() + "/" + &group_filename)
+        let file = fs::File::open(group_path)
             .expect("Cannot open file to send");
         let mut reader =
             BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
@@ -262,6 +299,7 @@ fn get_user_credentials() -> Vec<u8> {
 }
 
 fn send_motion_triggered_video(
+    camera: &Camera,
     client: &mut User,
     group_name: String,
     video_info: VideoInfo,
@@ -286,10 +324,14 @@ fn send_motion_triggered_video(
         return Ok(());
     }
 
+    let video_dir = Path::new(&camera.video_dir);
+    let video_file = video_dir.join(&video_info.filename);
+
     debug!("Starting to send video.");
-    let file = fs::File::open(VIDEO_DIR.to_owned() + "/" + &video_info.filename.clone())
+    let file = fs::File::open(video_file)
         .expect("Cannot open file to send");
     let file_len = file.metadata().unwrap().len();
+
     // We want each encrypted message to fit within one TCP packet (max size: 64 kB or 65535 B).
     // With these numbers, some experiments show that the encrypted message will have the max
     // size of 64687 B.
@@ -403,6 +445,178 @@ fn send_video_notification(
     Ok(())
 }
 
+const USAGE: &str = "
+Privastead camera hub: connects to an IP camera and send videos to the privastead app end-to-end encrypted (through an untrusted server).
+
+Usage:
+  privastead-camera-hub
+  privastead-camera-hub --reset
+  privastead-camera-hub (--version | -v)
+  privastead-camera-hub (--help | -h)
+
+Options:
+    --server-ip SERVERIP                        IP address of the server
+    --ip-camera-ip CAMERAIP                     IP address of the IP camera
+    --ip-camera-rtsp-port CAMERARTSPPORT        RTSP port on the IP camera
+    --provide-username-password                 Provide the username and password of the IP camera. If not set, they need to be entered on prompt.
+    --ip-camera-username USERNAME               Username of the IP camera.
+    --ip-camera-password PASSWORD               Password of the IP camera.
+    --reset                                     Wipe all the state
+    --version, -v                               Show version
+    --help, -h                                  Show help
+";
+
+#[derive(Debug, Clone, Deserialize)]
+struct Args {
+    flag_reset: bool,
+}
+
+fn main() -> io::Result<()> {
+    let version = env!("CARGO_PKG_NAME").to_string() + ", version: " + env!("CARGO_PKG_VERSION");
+    env_logger::init();
+
+    let args: Args = Docopt::new(USAGE)
+        .map(|d| d.help(true))
+        .map(|d| d.version(Some(version)))
+        .and_then(|d| d.deserialize())
+        .unwrap_or_else(|e| e.exit());
+
+    let credentials = get_user_credentials();
+
+    // Retrieve the cameras.yaml file. If it doesn't exist, print an error message for the user.
+    let cameras_file = match File::open("cameras.yaml") {
+        Ok(file) => {
+            file
+        }
+
+        Err(_error) => {
+            println!("Error retrieving cameras.yaml file, see the example_cameras.yaml for an example configuration.");
+            exit(1);
+        }
+    };
+
+    // Load the yml file in for analysis
+    let loaded_cameras: HashMap<String, Value> = serde_yml::from_reader(cameras_file)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    // Extract the server IP and cameras
+    let server_section = loaded_cameras.get("server").expect("Server section is missing from cameras.yaml");
+    let cameras_section = loaded_cameras.get("cameras").expect("Cameras section is missing from cameras.yaml");
+    let server_ip = server_section.get("ip").expect("Missing IP for server")
+        .as_str().unwrap();
+
+    // Create the general outer directories (where we'll have inner directories representing each camera)
+    fs::create_dir_all(STATE_DIR_GENERAL).unwrap();
+    fs::create_dir_all(VIDEO_DIR_GENERAL).unwrap();
+
+    // Iterate through every camera in the cameras.yaml file, accumulating structs representing their data
+    let delivery_service_addr: String = server_ip.to_owned() + ":12346";
+    let mut camera_list: Vec<Camera> = Vec::new();
+    if let Value::Sequence(cameras) = cameras_section {
+        for camera in cameras {
+            if let Value::Mapping(map) = camera {
+                let camera_name = map.get(&Value::String("name".to_string())).expect("Missing camera name").as_str().unwrap();
+                let camera_ip = map.get(&Value::String("ip".to_string())).expect("Missing IP for camera").as_str().unwrap();
+                let camera_rtsp_port = map.get(&Value::String("rtsp_port".to_string())).expect("Missing RTSP port").as_u64().unwrap() as u16;
+                let mut camera_username = map.get(&Value::String("username".to_string())).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let mut camera_password = map.get(&Value::String("password".to_string())).and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+                if camera_username.is_empty() {
+                    camera_username = ask_user(format!("Enter the username for the IP camera {:?}: ", camera_name)).unwrap();
+                }
+
+                if camera_password.is_empty() {
+                    camera_password = ask_user_password(format!("Enter the password for the IP camera {:?}: ", camera_name)).unwrap();
+                }
+
+                let camera_struct = Camera {
+                    name: camera_name.parse().unwrap(),
+                    ip: camera_ip.parse().unwrap(),
+                    rtsp_port: camera_rtsp_port,
+                    username: camera_username.parse().unwrap(),
+                    password: camera_password.parse().unwrap(),
+                    video_dir: format!("{}/{}", VIDEO_DIR_GENERAL, camera_name.replace(" ", "_").to_lowercase()),
+                    state_dir: format!("{}/{}", STATE_DIR_GENERAL, camera_name.replace(" ", "_").to_lowercase()),
+                };
+
+                fs::create_dir_all(camera_struct.video_dir.clone()).unwrap();
+                fs::create_dir_all(camera_struct.state_dir.clone()).unwrap();
+
+                camera_list.push(camera_struct);
+            }
+        }
+    }
+
+    // Iterate through each camera struct and spawn in a thread to manage each individual one
+    for camera in camera_list.clone() {
+        println!("Starting to instantiate camera: {:?}", camera.name);
+
+        let delivery_service_addr = delivery_service_addr.clone();
+        let credentials = credentials.clone();
+        let args = args.clone();
+        GLOBAL_THREAD_COUNT.fetch_add(1, Ordering::SeqCst);
+        thread::spawn(move || {
+            loop {
+                let motion_stream: Option<TcpStream> = try_connect(&camera, &delivery_service_addr);
+                let livestream_stream: Option<TcpStream> = try_connect(&camera, &delivery_service_addr);
+                let fcm_stream: Option<TcpStream> = try_connect(&camera, &delivery_service_addr);
+
+                if motion_stream.is_some() && livestream_stream.is_some() && fcm_stream.is_some() {
+                    if args.flag_reset {
+                        reset(
+                            &camera,
+                            motion_stream.unwrap(),
+                            livestream_stream.unwrap(),
+                            fcm_stream.unwrap(),
+                            credentials.clone(),
+                        );
+
+                        // Deduct one from our thread count for main thread to know when to exit (when all are finished)
+                        GLOBAL_THREAD_COUNT.fetch_sub(1, Ordering::SeqCst);
+                        return;
+                    } else {
+                        match core(
+                            &camera,
+                            motion_stream.unwrap(),
+                            livestream_stream.unwrap(),
+                            fcm_stream.unwrap(),
+                            credentials.clone(),
+                        ) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                error!("core() returned with: {e}");
+                            }
+                        }
+                    }
+                }
+                println!("There was a problem with the connection to the server. Will try to connect again soon.");
+                let _ = fs::remove_file(camera.state_dir.clone() + "/registration_done");
+                thread::sleep(Duration::from_secs(10));
+            }
+        });
+    }
+
+    // Terminate when no cameras are left running
+    while GLOBAL_THREAD_COUNT.load(Ordering::SeqCst) != 0 {
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    Ok(())
+}
+
+/// Helper function to try connecting to the TCP server.
+fn try_connect(camera: &Camera, address: &str) -> Option<TcpStream> {
+    match TcpStream::connect(address) {
+        Ok(stream) => Some(stream),
+        Err(_) => {
+            let state_dir = Path::new(&camera.state_dir);
+            let registration_done_path = state_dir.join("registration_done");
+            let _ = fs::remove_file(registration_done_path);
+            None
+        }
+    }
+}
+
 fn ask_user(prompt: String) -> io::Result<String> {
     print!("{prompt}");
     // Make sure the prompt is displayed before reading input
@@ -424,127 +638,9 @@ fn ask_user_password(prompt: String) -> io::Result<String> {
     Ok(password.trim().to_string())
 }
 
-const USAGE: &str = "
-Privastead camera hub: connects to an IP camera and send videos to the privastead app end-to-end encrypted (through an untrusted server).
-
-Usage:
-  privastead-camera-hub --server-ip SERVERIP --ip-camera-ip CAMERAIP --ip-camera-rtsp-port CAMERARTSPPORT
-  privastead-camera-hub --server-ip SERVERIP --ip-camera-ip CAMERAIP --ip-camera-rtsp-port CAMERARTSPPORT --provide-username-password --ip-camera-username USERNAME --ip-camera-password PASSWORD
-  privastead-camera-hub --reset --server-ip SERVERIP
-  privastead-camera-hub (--version | -v)
-  privastead-camera-hub (--help | -h)
-
-Options:
-    --server-ip SERVERIP                        IP address of the server
-    --ip-camera-ip CAMERAIP                     IP address of the IP camera
-    --ip-camera-rtsp-port CAMERARTSPPORT        RTSP port on the IP camera
-    --provide-username-password                 Provide the username and password of the IP camera. If not set, they need to be entered on prompt.
-    --ip-camera-username USERNAME               Username of the IP camera.
-    --ip-camera-password PASSWORD               Password of the IP camera.
-    --reset                                     Wipe all the state
-    --version, -v                               Show version
-    --help, -h                                  Show help
-";
-
-#[derive(Debug, Deserialize)]
-struct Args {
-    flag_server_ip: String,
-    flag_ip_camera_ip: String,
-    flag_ip_camera_rtsp_port: u16,
-    flag_provide_username_password: bool,
-    flag_ip_camera_username: String,
-    flag_ip_camera_password: String,
-    flag_reset: bool,
-}
-
-fn main() -> io::Result<()> {
-    let version = env!("CARGO_PKG_NAME").to_string() + ", version: " + env!("CARGO_PKG_VERSION");
-    env_logger::init();
-
-    let args: Args = Docopt::new(USAGE)
-        .map(|d| d.help(true))
-        .map(|d| d.version(Some(version)))
-        .and_then(|d| d.deserialize())
-        .unwrap_or_else(|e| e.exit());
-
-    let credentials = get_user_credentials();
-
-    let (ip_camera_username, ip_camera_password) = if args.flag_reset {
-        ("".to_string(), "".to_string())
-    } else if args.flag_provide_username_password {
-        (args.flag_ip_camera_username, args.flag_ip_camera_password)
-    } else {
-        (
-            ask_user("Enter the username for the IP camera: ".to_string()).unwrap(),
-            ask_user_password("Enter the password for the IP camera: ".to_string()).unwrap(),
-        )
-    };
-
-    fs::create_dir_all(STATE_DIR).unwrap();
-    fs::create_dir_all(VIDEO_DIR).unwrap();
-
-    let delivery_service_addr: String = args.flag_server_ip + ":12346";
-
-    loop {
-        let mut motion_stream: Option<TcpStream> = None;
-        let mut livestream_stream: Option<TcpStream> = None;
-        let mut fcm_stream: Option<TcpStream> = None;
-
-        match TcpStream::connect(delivery_service_addr.clone()) {
-            Ok(stream) => motion_stream = Some(stream),
-            Err(_) => {
-                let _ = fs::remove_file(STATE_DIR.to_owned() + "/registration_done");
-            }
-        }
-
-        match TcpStream::connect(delivery_service_addr.clone()) {
-            Ok(stream) => livestream_stream = Some(stream),
-            Err(_) => {
-                let _ = fs::remove_file(STATE_DIR.to_owned() + "/registration_done");
-            }
-        }
-
-        match TcpStream::connect(delivery_service_addr.clone()) {
-            Ok(stream) => fcm_stream = Some(stream),
-            Err(_) => {
-                let _ = fs::remove_file(STATE_DIR.to_owned() + "/registration_done");
-            }
-        }
-
-        if motion_stream.is_some() && livestream_stream.is_some() && fcm_stream.is_some() {
-            if args.flag_reset {
-                reset(
-                    motion_stream.unwrap(),
-                    livestream_stream.unwrap(),
-                    fcm_stream.unwrap(),
-                    credentials,
-                );
-                return Ok(());
-            } else {
-                match core(
-                    motion_stream.unwrap(),
-                    livestream_stream.unwrap(),
-                    fcm_stream.unwrap(),
-                    credentials.clone(),
-                    args.flag_ip_camera_ip.clone(),
-                    args.flag_ip_camera_rtsp_port,
-                    ip_camera_username.clone(),
-                    ip_camera_password.clone(),
-                ) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        error!("core() returned with: {e}");
-                    }
-                }
-            }
-        }
-        println!("There was a problem with the connection to the server. Will try to connect again soon.");
-        let _ = fs::remove_file(STATE_DIR.to_owned() + "/registration_done");
-        thread::sleep(Duration::from_secs(10));
-    }
-}
 
 fn reset(
+    camera: &Camera,
     server_motion_stream: TcpStream,
     server_livestream_stream: TcpStream,
     server_fcm_stream: TcpStream,
@@ -552,7 +648,9 @@ fn reset(
 ) {
     // First, deregister from the server
     // FIXME: has some code copy/pasted from core()
-    let first_time: bool = !Path::new(&(STATE_DIR.to_owned() + "/first_time_done")).exists();
+    let state_dir = Path::new(&camera.state_dir);
+    let first_time_done_path = state_dir.join("first_time_done");
+    let first_time: bool = first_time_done_path.exists();
 
     if first_time {
         println!("There's no state to reset!");
@@ -562,18 +660,21 @@ fn reset(
     let reregister = false;
 
     let (camera_motion_name, _group_motion_name) = get_names(
+        camera,
         first_time,
         "camera_motion_name".to_string(),
         "group_motion_name".to_string(),
     );
 
     let (camera_livestream_name, _group_livestream_name) = get_names(
+        camera,
         first_time,
         "camera_livestream_name".to_string(),
         "group_livestream_name".to_string(),
     );
 
     let (camera_fcm_name, _group_fcm_name) = get_names(
+        camera,
         first_time,
         "camera_fcm_name".to_string(),
         "group_fcm_name".to_string(),
@@ -584,7 +685,7 @@ fn reset(
         Some(server_motion_stream),
         first_time,
         reregister,
-        STATE_DIR.to_string(),
+        camera.state_dir.clone(),
         "motion".to_string(),
         credentials.clone(),
         false,
@@ -607,7 +708,7 @@ fn reset(
         Some(server_livestream_stream),
         first_time,
         reregister,
-        STATE_DIR.to_string(),
+        camera.state_dir.clone(),
         "livestream".to_string(),
         credentials.clone(),
         false,
@@ -630,7 +731,7 @@ fn reset(
         Some(server_fcm_stream),
         first_time,
         reregister,
-        STATE_DIR.to_string(),
+        camera.state_dir.to_string(),
         "fcm".to_string(),
         credentials,
         false,
@@ -649,11 +750,11 @@ fn reset(
     };
 
     //Second, delete all the local state files.
-    let state_dir_path = Path::new(STATE_DIR);
+    let state_dir_path = Path::new(&camera.state_dir);
     let _ = fs::remove_dir_all(state_dir_path);
 
     //Third, delete all the pending videos (those that were never successfully delivered)
-    let video_dir_path = Path::new(VIDEO_DIR);
+    let video_dir_path = Path::new(&camera.video_dir);
     let _ = fs::remove_dir_all(video_dir_path);
 
     println!("Reset finished.");
@@ -661,19 +762,17 @@ fn reset(
 
 #[allow(clippy::too_many_arguments)]
 fn core(
+    camera: &Camera,
     server_motion_stream: TcpStream,
     server_livestream_stream: TcpStream,
     server_fcm_stream: TcpStream,
     credentials: Vec<u8>,
-    ip_camera_ip: String,
-    ip_camera_rtsp_port: u16,
-    ip_camera_username: String,
-    ip_camera_password: String,
 ) -> io::Result<()> {
-    let first_time: bool = !Path::new(&(STATE_DIR.to_owned() + "/first_time_done")).exists();
-    let reregister: bool = !Path::new(&(STATE_DIR.to_owned() + "/registration_done")).exists();
+    let first_time: bool = !Path::new(&(camera.state_dir.clone() + "/first_time_done")).exists();
+    let reregister: bool = !Path::new(&(camera.state_dir.clone() + "/registration_done")).exists();
 
     let (camera_motion_name, group_motion_name) = get_names(
+        camera,
         first_time,
         "camera_motion_name".to_string(),
         "group_motion_name".to_string(),
@@ -682,6 +781,7 @@ fn core(
     debug!("group_motion_name = {}", group_motion_name);
 
     let (camera_livestream_name, group_livestream_name) = get_names(
+        camera,
         first_time,
         "camera_livestream_name".to_string(),
         "group_livestream_name".to_string(),
@@ -690,6 +790,7 @@ fn core(
     debug!("group_livestream_name = {}", group_livestream_name);
 
     let (camera_fcm_name, group_fcm_name) = get_names(
+        camera,
         first_time,
         "camera_fcm_name".to_string(),
         "group_fcm_name".to_string(),
@@ -702,15 +803,15 @@ fn core(
         Some(server_motion_stream),
         first_time,
         reregister,
-        STATE_DIR.to_string(),
+        camera.state_dir.clone(),
         "motion".to_string(),
         credentials.clone(),
         true,
     )
-    .map_err(|e| {
-        error!("User::new() returned error:");
-        e
-    })?;
+        .map_err(|e| {
+            error!("User::new() returned error:");
+            e
+        })?;
     debug!("Motion client created.");
 
     let mut client_livestream = User::new(
@@ -718,15 +819,15 @@ fn core(
         Some(server_livestream_stream),
         first_time,
         reregister,
-        STATE_DIR.to_string(),
+        camera.state_dir.clone(),
         "livestream".to_string(),
         credentials.clone(),
         true,
     )
-    .map_err(|e| {
-        error!("User::new() returned error:");
-        e
-    })?;
+        .map_err(|e| {
+            error!("User::new() returned error:");
+            e
+        })?;
     debug!("Livestream client created.");
 
     let mut client_fcm = User::new(
@@ -734,22 +835,23 @@ fn core(
         Some(server_fcm_stream),
         first_time,
         reregister,
-        STATE_DIR.to_string(),
+        camera.state_dir.clone(),
         "fcm".to_string(),
         credentials,
         true,
     )
-    .map_err(|e| {
-        error!("User::new() returned error:");
-        e
-    })?;
+        .map_err(|e| {
+            error!("User::new() returned error:");
+            e
+        })?;
     debug!("FCM client created.");
 
-    fs::File::create(STATE_DIR.to_owned() + "/registration_done").expect("Could not create file");
+    fs::File::create(camera.state_dir.clone() + "/registration_done").expect("Could not create file");
 
     if first_time {
-        println!("Waiting to be paired with the mobile app.");
+        println!("[{}] Waiting to be paired with the mobile app.", camera.name);
         create_camera_groups(
+            camera,
             &mut client_motion,
             &mut client_livestream,
             &mut client_fcm,
@@ -757,23 +859,20 @@ fn core(
             group_livestream_name.clone(),
             group_fcm_name.clone(),
         )?;
-        println!("Pairing successful.");
+        println!("[{}] Pairing successful.", camera.name);
     }
 
-    println!("Running...");
+    println!("[{}] Running...", camera.name);
 
     let mut motion_check_iterations_to_skip: u8 = 0;
     let mut delivery_check_iterations_to_skip: u8 = 0;
     let mut delivery_monitor =
-        DeliveryMonitor::from_file_or_new(VIDEO_DIR.to_string(), STATE_DIR.to_string(), 60);
+        DeliveryMonitor::from_file_or_new(camera.video_dir.clone(), camera.state_dir.clone(), 60);
 
     loop {
         let ip_camera_result = IpCamera::new(
-            ip_camera_ip.clone(),
-            ip_camera_rtsp_port.to_string(),
-            ip_camera_username.clone(),
-            ip_camera_password.clone(),
-            STATE_DIR.to_string(),
+            camera,
+            camera.state_dir.clone(),
         );
         if ip_camera_result.is_err() {
             // Wait and try again
@@ -803,7 +902,7 @@ fn core(
                         group_fcm_name.clone(),
                     )?;
                     client_fcm.save_groups_state();
-                    match ip_camera.record_motion_video(VIDEO_DIR.to_string(), &video_info) {
+                    match ip_camera.record_motion_video(camera.video_dir.to_string(), &video_info) {
                         Ok(_) => {
                             info!("Sending the FCM notification to start downloading.");
                             //Timestamp of 0 tells the app it's time to start downloading.
@@ -814,6 +913,7 @@ fn core(
                             )?;
                             client_fcm.save_groups_state();
                             send_motion_triggered_video(
+                                camera,
                                 &mut client_motion,
                                 group_motion_name.clone(),
                                 video_info,
@@ -848,6 +948,7 @@ fn core(
 
                     if !resend_list.is_empty() {
                         send_motion_triggered_video(
+                            camera,
                             &mut client_motion,
                             group_motion_name.clone(),
                             resend_list[0].clone(),
