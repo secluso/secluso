@@ -5,13 +5,16 @@ server:
 # List cameras in form of name, IP, RTSP port and username/password.
 # Username and password do not need to be included here. They can be left blank / removed and then entered in at runtime.
 # 554 is the default RTSP port
+# Motion FPS is the amount of times per second that we run our motion detection algorithm against the most recent frame
 cameras:
   - name: "Camera One"
     ip: "192.168.1.2"
     rtsp_port: 554
+    motion_fps: 5
     username: "example"
     password: "example"
 
   - name: "Camera Two"
     ip: "192.168.1.3"
     rtsp_port: 554
+    motion_fps: 10

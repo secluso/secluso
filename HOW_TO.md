@@ -174,13 +174,11 @@ Choose a strong password.
 
 In the camera's web interface, do the following (note that these instructions are for the aforementioned Amcrest camera):
 
-1) Go Setup -> Camera -> Video -> Main Stream. Set the Encode Mode to H.264, Smart Codec to Off, resolution to 1280x720(720P), framerate to 10, Bit Rate Type to CBR, and Bit Rate to Customized. Then uncheck Watermark Settings, and disable Sub stream. Make sure to press Save. These suggestions (and the ones below for audio) are simply based on my experience. With these, the videos have adequate quality and Privastead achieves good performance. You might need to change these based on your network connection's bandwidth.
+1) **Go Setup -> Camera -> Video -> Main Stream**. Set the Encode Mode to H.264, Smart Codec to Off, resolution to 1280x720(720P), framerate to 10, Bit Rate Type to CBR, and Bit Rate to Customized. Then uncheck Watermark Settings, and ensure Sub stream is enabled. We suggest using the following parameters for substream: Encode Mode: MJPEG, Resolution: VGA, frame rate: 10, bit rate: 1024. Make sure to press Save. These suggestions (and the ones below for audio) are simply based on my experience. With these, the videos have adequate quality and Privastead achieves good performance. You might need to change these based on your network connection's bandwidth.
 
-2) Then go to Setup -> Camera -> Audio. Under Main Stream, set Encode Mode to AAC and sampling frequency to 8000. Disable Sub Stream. Press Save.
+2) **Go to Setup -> Camera -> Audio**. Under Main Stream, set Encode Mode to AAC and sampling frequency to 8000. Disable Sub Stream. Press Save.
 
-3) Go Setup -> Camera -> Video -> Overlay. Disable Channel Title, Time, and Logo Overlay to remove clutter from the video.
-
-4) Go to Setup -> System -> General -> Date&Time. Set the date (including the correct timezone) and press on PC Sync. The latter syncs the time on the camera to that of the local machine.This step is needed since without it, the Privastead hub cannot authenticate to the IP camera through the ONVIF interface. (Quite annoyingly) you'll have to redo this last step (the PC Sync) whenever you reset the camera (e.g., unplug/plug).
+3) **Go Setup -> Camera -> Video -> Overlay**. Disable Channel Title, Time, and Logo Overlay to remove clutter from the video, and reduce any effects this might have on built-in motion detection.
 
 You are now done configuring the camera. Make sure to connect the machine to the Internet using WiFi.
 
@@ -196,6 +194,7 @@ You can add as many cameras as you want by copy and pasting the individual camer
   - name: "Front Door"
     ip: "IP address of camera configured in Step 3"
     rtsp_port: 554
+    motion_fps: 5
     username: "username here"
     password: "password here"
 ```
@@ -203,6 +202,8 @@ You can add as many cameras as you want by copy and pasting the individual camer
 You may choose to omit the username and password, which will instead prompt you upon executing the program below.
 
 The RTSP port is usually 554, but may vary depending on your camera.
+
+Motion FPS is the amount of times per second that we run our motion detection algorithm against the most recent frame.
 
 ```
 mv /address/to/user_credentials /path-to-privastead/camera_hub
