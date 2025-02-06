@@ -43,14 +43,13 @@ They mean that if the key used to encrypt a video between the hub and the app is
 ## Supported Cameras
 
 Privastead camera can theoretically support any IP camera (or any other camera that has an open interface).
-The current prototype relies on RTSP and ONVIF support by the camera.
-The former is used for streaming videos from the camera and the latter is used for querying events.
+The current prototype relies on RTSP and MJPEG support by the camera.
+The former is used for streaming videos from the camera and the latter is used for a custom motion detection implementation.
 So far, the following cameras have been tested:
 
 * Amcrest, model: IP4M-1041W ([Link](https://www.amazon.com/Amcrest-UltraHD-Security-4-Megapixel-IP4M-1041W/dp/B095XD17K5/) on Amazon)
     * Software Version: V2.800.00AC006.0.R, Build Date: 2023-10-27
     * WEB Version: V3.2.1.18144
-    * ONVIF Version: 21.12(V3.1.0.1207744)
 
 ## Supported mobile OSes
 
@@ -73,6 +72,7 @@ So far, the following cameras have been tested:
 
 ## (Current) key limitations
 
+* The camera hub relies on MJPEG instead of H.264 frames for custom motion detection
 * The camera hub pairs with one app instance only.
 * Performance may become a bottleneck for high camera resolutions and frame rates.
 

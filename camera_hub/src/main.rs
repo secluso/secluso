@@ -39,9 +39,12 @@ use std::path::Path;
 use std::{thread, time::Duration};
 use std::collections::HashMap;
 use std::fs::File;
+use std::ops::Add;
 use std::process::exit;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::thread::sleep;
+use std::time::SystemTime;
 use rpassword::read_password;
 use serde_yml::Value;
 
@@ -52,6 +55,7 @@ use crate::ip_camera::IpCamera;
 mod delivery_monitor;
 
 use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
+use crate::detect_motion::MotionDetection;
 
 mod livestream;
 
@@ -60,6 +64,7 @@ use crate::livestream::{is_there_livestream_start_request, livestream};
 mod fmp4;
 mod mp4;
 mod traits;
+mod detect_motion;
 
 // Used to generate random names.
 // With 16 alphanumeric characters, the probability of collision is very low.
@@ -87,6 +92,7 @@ pub struct Camera {
     password: String,
     state_dir: String,
     video_dir: String,
+    motion_fps: u64
 }
 
 fn write_varying_len(stream: &mut TcpStream, msg: &[u8]) {
@@ -520,6 +526,7 @@ fn main() -> io::Result<()> {
                 let camera_rtsp_port = map.get(&Value::String("rtsp_port".to_string())).expect("Missing RTSP port").as_u64().unwrap() as u16;
                 let mut camera_username = map.get(&Value::String("username".to_string())).and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let mut camera_password = map.get(&Value::String("password".to_string())).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let camera_motion_fps = map.get(&Value::String("motion_fps".to_string())).expect("Missing Motion FPS").as_u64().unwrap();
 
                 if camera_username.is_empty() {
                     camera_username = ask_user(format!("Enter the username for the IP camera {:?}: ", camera_name)).unwrap();
@@ -537,6 +544,7 @@ fn main() -> io::Result<()> {
                     password: camera_password.parse().unwrap(),
                     video_dir: format!("{}/{}", VIDEO_DIR_GENERAL, camera_name.replace(" ", "_").to_lowercase()),
                     state_dir: format!("{}/{}", STATE_DIR_GENERAL, camera_name.replace(" ", "_").to_lowercase()),
+                    motion_fps: camera_motion_fps
                 };
 
                 fs::create_dir_all(camera_struct.video_dir.clone()).unwrap();
@@ -864,29 +872,34 @@ fn core(
 
     println!("[{}] Running...", camera.name);
 
-    let mut motion_check_iterations_to_skip: u8 = 0;
-    let mut delivery_check_iterations_to_skip: u8 = 0;
+    let mut locked_motion_check_time: Option<SystemTime> = None;
+    let mut locked_delivery_check_time: Option<SystemTime> = None;
     let mut delivery_monitor =
         DeliveryMonitor::from_file_or_new(camera.video_dir.clone(), camera.state_dir.clone(), 60);
 
     loop {
         let ip_camera_result = IpCamera::new(
-            camera,
-            camera.state_dir.clone(),
+            camera
         );
-        if ip_camera_result.is_err() {
+
+        let motion_detection_result = MotionDetection::new(
+            camera
+        );
+
+        if ip_camera_result.is_err() || motion_detection_result.is_err() {
             // Wait and try again
             println!("Failed to connect to the IP camera. Will try again in a little bit. Consider resetting the camera.");
             thread::sleep(Duration::from_millis(10000));
         } else {
+            debug!("Entered motion detection loop");
             let ip_camera = ip_camera_result.unwrap();
+            let mut motion_detection = motion_detection_result.unwrap();
             // Used for anti-dither for motion detection
             loop {
-                let motion_event_result = ip_camera.is_there_onvif_motion_event();
+                let motion_event_result = motion_detection.handle_motion_event();
+               // For testing without trying to detect motion: let motion_event_result: Result<bool, &'static str> = Ok(true);
                 if motion_event_result.is_err() {
-                    // The pull point might be invalid now.
-                    // Remove the saved pull url, exit the inner loop, and recreate the ip camera
-                    ip_camera.delete_pull_url_file();
+                    //TODO: handle an error
                     break;
                 }
 
@@ -894,7 +907,7 @@ fn core(
                 let motion_event = motion_event_result.unwrap();
 
                 // Send motion events only if we haven't sent one in the past minute
-                if motion_event && motion_check_iterations_to_skip == 0 {
+                if motion_event && (locked_motion_check_time.is_none() || locked_motion_check_time.unwrap().le(&SystemTime::now())) {
                     let video_info = VideoInfo::new();
                     info!("Sending the FCM notification with timestamp.");
                     client_fcm.send_fcm(
@@ -919,18 +932,15 @@ fn core(
                                 video_info,
                                 &mut delivery_monitor,
                             )?;
-                            motion_check_iterations_to_skip = 60;
+                            locked_motion_check_time = Some(SystemTime::now().add(Duration::from_secs(60)));
                         }
                         Err(e) => {
                             error!("Error recording motion video: {e}");
                         }
                     }
-                } else {
-                    motion_check_iterations_to_skip =
-                        motion_check_iterations_to_skip.saturating_sub(1);
                 }
 
-                // Livestream requeset? Start it.
+                // Livestream request? Start it.
                 if is_there_livestream_start_request(&mut client_livestream)? {
                     livestream(
                         &mut client_livestream,
@@ -943,7 +953,7 @@ fn core(
                 let any_ack = process_motion_acks(&mut client_motion, &mut delivery_monitor)?;
 
                 // Check with the delivery service every minute
-                if any_ack || delivery_check_iterations_to_skip == 0 {
+                if any_ack || (locked_delivery_check_time.is_none() || locked_delivery_check_time.unwrap().le(&SystemTime::now())) {
                     let (resend_list, renotify_list) = delivery_monitor.videos_to_resend_renotify();
 
                     if !resend_list.is_empty() {
@@ -985,10 +995,10 @@ fn core(
                         }
                     }
 
-                    delivery_check_iterations_to_skip = 60;
-                } else {
-                    delivery_check_iterations_to_skip -= 1;
+                    locked_delivery_check_time = Some(SystemTime::now().add(Duration::from_secs(60)));
                 }
+
+                sleep(Duration::from_millis(10)); // Introduce a small delay since we don't need this constantly checked
             }
         }
     }

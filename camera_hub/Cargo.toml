@@ -34,3 +34,7 @@ anyhow = "1.0.41"
 bytes = "1.0.1"
 futures = "0.3.14"
 serde_yml = "0.0.12"
+ndarray = "0.15" # This has to be 0.15 to support linfa
+linfa = "0.7.1"
+linfa-clustering = "0.7.1"
+http-auth = "0.1"

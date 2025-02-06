@@ -136,7 +136,7 @@ impl TcpServer {
                             }
                         }
                         Err(e) => {
-                            panic!("Could not read file from directory: {:?}", e);
+                            panic!("This may have to do with you not putting your user_credentials file within a folder called user_credentials (the file can be renamed to anything). Could not read file from directory: {:?}", e);
                         }
                     }
                 }
