@@ -42,7 +42,8 @@ use crate::delivery_monitor::VideoInfo;
 use crate::fmp4::Fmp4Writer;
 use crate::livestream::LivestreamWriter;
 use crate::mp4::Mp4Writer;
-use crate::traits::{CodecParameters, Mp4};
+use crate::traits::{CodecParameters, Mp4, Camera};
+use std::fs;
 use std::io;
 use std::thread;
 use tokio::runtime::Runtime;
@@ -56,19 +57,25 @@ use retina::{
 };
 use url::Url;
 
+use std::convert::TryFrom;
 use std::num::NonZeroU32;
 use std::sync::Arc;
+
 use std::collections::VecDeque;
 use std::process::exit;
 use std::sync::{Mutex, mpsc::{self, Sender}};
 use std::time::{Duration, SystemTime};
-use crate::Camera;
+use crate::motion_detection::MotionDetection;
 
 
 pub struct IpCamera {
+    name: String,
+    state_dir: String,
+    video_dir: String,
     frame_queue: Arc<Mutex<VecDeque<Frame>>>,
     video_params: VideoParameters,
     audio_params: AudioParameters,
+    motion_detection: MotionDetection,
 }
 
 
@@ -83,25 +90,30 @@ struct Frame {
 
 impl IpCamera {
     pub fn new(
-        camera: &Camera,
+        name: String,
+        ip: String,
+        rtsp_port: u16,
+        username: String,
+        password: String,
+        state_dir: String,
+        video_dir: String,
+        motion_fps: u64,
     ) -> io::Result<Self> {
         let frame_queue: Arc<Mutex<VecDeque<Frame>>> = Arc::new(Mutex::new(VecDeque::new()));
-        let username_clone = camera.username.clone();
-        let password_clone = camera.password.clone();
-        let camera_ip = camera.ip.clone();
-        let camera_rtsp_port = camera.rtsp_port;
-
         let frame_queue_clone = Arc::clone(&frame_queue);
         let (video_params_tx, video_params_rx) = mpsc::channel::<VideoParameters>();
         let (audio_params_tx, audio_params_rx) = mpsc::channel::<AudioParameters>();
 
+        let ip_clone = ip.clone();
+        let username_clone = username.clone();
+        let password_clone = password.clone();
         thread::spawn(move || {
             let rt = Runtime::new().unwrap();
 
             let future = Self::start_camera_stream(
                 username_clone,
                 password_clone,
-                format!("rtsp://{}:{}", camera_ip, camera_rtsp_port),
+                format!("rtsp://{}:{}", ip_clone, rtsp_port),
                 frame_queue_clone,
                 video_params_tx,
                 audio_params_tx,
@@ -114,7 +126,7 @@ impl IpCamera {
         match video_params_prior {
             Ok(_) => {}
             Err(e) => {
-                println!("[{}] You most likely entered invalid credentials", camera.name);
+                println!("[{}] You most likely entered invalid credentials", name.clone());
                 debug!("{}", e);
                 exit(1);
             }
@@ -123,51 +135,20 @@ impl IpCamera {
         let video_params = video_params_prior.unwrap();
         let audio_params = audio_params_rx.recv().unwrap();
 
+        fs::create_dir_all(state_dir.clone()).unwrap();
+        fs::create_dir_all(video_dir.clone()).unwrap();
+
+        let motion_detection = MotionDetection::new(ip, username, password, motion_fps).unwrap();
+
         Ok(Self {
+            name,
+            state_dir,
+            video_dir,
             frame_queue,
             video_params,
             audio_params,
+            motion_detection,
         })
-    }
-
-    pub fn record_motion_video(&self, dir: String, info: &VideoInfo) -> io::Result<()> {
-        let rt = Runtime::new()?;
-
-        let future = Self::write_mp4(
-            dir + "/" + &info.filename,
-            20,
-            Arc::clone(&self.frame_queue),
-            self.video_params.clone(),
-            self.audio_params.clone(),
-        );
-
-        rt.block_on(future).unwrap();
-        Ok(())
-    }
-
-    pub fn launch_livestream(&self, livestream_writer: LivestreamWriter) -> io::Result<()> {
-        // Drop all the frames from the queue since we won't need them for livestreaming
-        let mut queue = self.frame_queue.lock().unwrap();
-        queue.clear();
-        drop(queue);
-
-        let frame_queue = Arc::clone(&self.frame_queue);
-        let video_params = self.video_params.clone();
-        let audio_params = self.audio_params.clone();
-        thread::spawn(move || {
-            let rt = Runtime::new().unwrap();
-
-            let future = Self::write_fmp4(
-                livestream_writer,
-                frame_queue,
-                video_params,
-                audio_params,
-            );
-
-            rt.block_on(future).unwrap();
-        });
-
-        Ok(())
     }
 
     fn add_frame_and_drop_old(
@@ -517,6 +498,64 @@ impl IpCamera {
     }
 }
 
+impl Camera for IpCamera {
+    fn record_motion_video(&self, info: &VideoInfo) -> io::Result<()> {
+        let rt = Runtime::new()?;
+
+        let future = Self::write_mp4(
+            self.video_dir.clone() + "/" + &info.filename,
+            20,
+            Arc::clone(&self.frame_queue),
+            self.video_params.clone(),
+            self.audio_params.clone(),
+        );
+
+        rt.block_on(future).unwrap();
+        Ok(())
+    }
+
+    fn launch_livestream(&self, livestream_writer: LivestreamWriter) -> io::Result<()> {
+        // Drop all the frames from the queue since we won't need them for livestreaming
+        let mut queue = self.frame_queue.lock().unwrap();
+        queue.clear();
+        drop(queue);
+
+        let frame_queue = Arc::clone(&self.frame_queue);
+        let video_params = self.video_params.clone();
+        let audio_params = self.audio_params.clone();
+        thread::spawn(move || {
+            let rt = Runtime::new().unwrap();
+
+            let future = Self::write_fmp4(
+                livestream_writer,
+                frame_queue,
+                video_params,
+                audio_params,
+            );
+
+            rt.block_on(future).unwrap();
+        });
+
+        Ok(())
+    }
+
+    fn is_there_motion(&mut self) -> io::Result<bool> {
+        self.motion_detection.handle_motion_event()
+    }
+
+    fn get_name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn get_state_dir(&self) -> String {
+        self.state_dir.clone()
+    }
+
+    fn get_video_dir(&self) -> String {
+        self.video_dir.clone()
+    }
+}
+
 struct IpCameraVideoParameters {
     parameters: VideoParameters,
 }
@@ -528,7 +567,7 @@ impl IpCameraVideoParameters {
 }
 
 impl CodecParameters for IpCameraVideoParameters {
-    fn write_codec_box(&self, buf: &mut BytesMut) {
+    fn write_codec_box(&self, buf: &mut BytesMut) -> Result<(), Error> {
         let e = self
             .parameters
             .mp4_sample_entry()
@@ -542,6 +581,8 @@ impl CodecParameters for IpCameraVideoParameters {
             })
             .unwrap();
         buf.extend_from_slice(&e);
+
+        Ok(())
     }
 
     // Not used
@@ -569,7 +610,7 @@ impl IpCameraAudioParameters {
 }
 
 impl CodecParameters for IpCameraAudioParameters {
-    fn write_codec_box(&self, buf: &mut BytesMut) {
+    fn write_codec_box(&self, buf: &mut BytesMut) -> Result<(), Error> {
         buf.extend_from_slice(
             &self
                 .parameters
@@ -577,6 +618,8 @@ impl CodecParameters for IpCameraAudioParameters {
                 .build()
                 .expect("all added streams have sample entries"),
         );
+
+        Ok(())
     }
 
     fn get_clock_rate(&self) -> u32 {

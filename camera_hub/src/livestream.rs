@@ -15,7 +15,7 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::ip_camera::IpCamera;
+use crate::Camera;
 use privastead_client_lib::user::User;
 use std::io;
 use std::pin::Pin;
@@ -101,7 +101,7 @@ pub fn is_there_livestream_start_request(client: &mut User) -> io::Result<bool> 
     Ok(livestream_start)
 }
 
-pub fn livestream(client: &mut User, group_name: String, ip_camera: &IpCamera) -> io::Result<()> {
+pub fn livestream<C: Camera>(client: &mut User, group_name: String, camera: &C) -> io::Result<()> {
     let new_update = client
         .perform_update(group_name.clone())
         .expect("Could not force an MLS update!");
@@ -119,7 +119,7 @@ pub fn livestream(client: &mut User, group_name: String, ip_camera: &IpCamera) -
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let livestream_writer = LivestreamWriter::new(tx);
-    ip_camera.launch_livestream(livestream_writer).unwrap();
+    camera.launch_livestream(livestream_writer).unwrap();
 
     // The first read blocks for the stream to be ready.
     // We want to start the heartbeat tracker after that.

@@ -1,4 +1,5 @@
 //! Privastead MP4 Writer.
+//! FIXME: shares a lot of code with fmp4.rs
 //!
 //! Copyright (C) 2024  Ardalan Amiri Sani
 //!
@@ -175,7 +176,13 @@ impl TrakTracker {
         self.core.sizes.push(size);
         self.next_pos = Some(byte_pos + size);
         if let Some(last_pts) = self.core.last_pts.replace(timestamp) {
-            let duration = timestamp.checked_sub(last_pts).unwrap();
+            let duration = match timestamp.checked_sub(last_pts) {
+                Some(c) => c,
+                None => {
+                    println!("checked_sub returned None!");
+                    0
+                }
+            };
             self.core.tot_duration += duration;
             let duration = u32::try_from(duration)?;
             match self.core.durations.last_mut() {
@@ -271,7 +278,7 @@ impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Mp4WriterCor
                         write_box!(buf, b"stsd", {
                             buf.put_u32(0); // version
                             buf.put_u32(1); // entry_count
-                            self.video_params.write_codec_box(buf);
+                            self.video_params.write_codec_box(buf)?;
                         });
                         video_trak_core.write_common_stbl_parts(buf)?;
                         write_box!(buf, b"stss", {
@@ -353,7 +360,7 @@ impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Mp4WriterCor
                         write_box!(buf, b"stsd", {
                             buf.put_u32(0); // version
                             buf.put_u32(1); // entry_count
-                            self.audio_params.write_codec_box(buf);
+                            self.audio_params.write_codec_box(buf)?;
                         });
                         audio_trak_core.write_common_stbl_parts(buf)?;
 

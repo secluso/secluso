@@ -30,7 +30,6 @@ use linfa_clustering::AppxDbscan;
 use ndarray::{Array, Array2, Ix1, OwnedRepr};
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{CONTENT_TYPE, HeaderValue};
-use crate::Camera;
 
 const ALPHA: f32 = 0.05; // Background update rate
 const THRESHOLD: u8 = 70; // Motion detection threshold
@@ -44,7 +43,7 @@ pub struct MotionDetection {
     latest_frame: Arc<Mutex<Option<MPEGFrame>>>,
     motion: Option<BackgroundSubtractor>,
     last_detection: Option<SystemTime>, // This is meant for checking the last frame we ran motion detection on against the current frame timestamp.
-    camera: Camera, // We store this for checking the motion FPS later on
+    motion_fps: u64,
 }
 
 pub(crate) struct MPEGFrame {
@@ -101,28 +100,37 @@ impl BackgroundSubtractor {
 }
 
 impl MotionDetection {
-    pub fn new(camera: &Camera) -> io::Result<Self> {
+    pub fn new(
+        ip: String,
+        username: String,
+        password: String,
+        motion_fps: u64
+    ) -> io::Result<Self> {
         let latest_frame: Arc<Mutex<Option<MPEGFrame>>> = Arc::new(Mutex::new(None));
         let latest_frame_clone = Arc::clone(&latest_frame);
-        let camera_clone = camera.clone();
 
         thread::spawn(move || {
             debug!("Starting MJPEG motion detection background thread");
-            Self::process_mjpeg_stream(&latest_frame_clone, camera_clone);
+            Self::process_mjpeg_stream(&latest_frame_clone, ip, username, password);
         });
 
         Ok(Self {
             latest_frame,
             motion: None,
             last_detection: None,
-            camera: camera.clone(),
+            motion_fps,
         })
     }
 
     /// Reads the multipart/x-mixed-replace stream, printing debug info for each line,
     /// and attempts to parse `Content-Length` to read JPEG frames.
-    fn process_mjpeg_stream(latest_frame: &Arc<Mutex<Option<MPEGFrame>>>, camera: Camera) {
-        let url = format!("http://{}/cgi-bin/mjpg/video.cgi?subtype=1", camera.ip);
+    fn process_mjpeg_stream(
+        latest_frame: &Arc<Mutex<Option<MPEGFrame>>>,
+        ip: String,
+        username: String,
+        password: String,
+    ) {
+        let url = format!("http://{}/cgi-bin/mjpg/video.cgi?subtype=1", ip);
         let url_req = reqwest::Url::try_from(url.as_str()).unwrap();
 
         // We make an initial request to get the Digest Auth challenge
@@ -144,8 +152,8 @@ impl MotionDetection {
         let mut pw_client = http_auth::PasswordClient::try_from(www_authenticate).expect("Unable to instantiate PasswordClient from www_authenticate for MJPEG stream");
         let authorization = pw_client
             .respond(&http_auth::PasswordParams {
-                username: camera.username.clone().as_str(),
-                password: camera.password.clone().as_str(),
+                username: username.as_str(),
+                password: password.as_str(),
                 uri: url_req.path(),
                 method: reqwest::Method::GET.as_str(),
                 body: Some(&[]),
@@ -287,7 +295,7 @@ impl MotionDetection {
 
             // Ensure that either no detection has occurred before, or that this isn't the same frame as last time.
             if self.last_detection.is_none() ||
-                self.last_detection.map(|last_time| latest_video_time.duration_since(last_time).map(|d| d >= Duration::from_millis(1000.div(self.camera.motion_fps))).unwrap_or(false)).unwrap_or(false) {
+                self.last_detection.map(|last_time| latest_video_time.duration_since(last_time).map(|d| d >= Duration::from_millis(1000.div(self.motion_fps))).unwrap_or(false)).unwrap_or(false) {
                 let decoded = ImageReader::new(io::Cursor::new(latest_video))
                     .with_guessed_format()
                     .expect("Could not guess JPEG format")

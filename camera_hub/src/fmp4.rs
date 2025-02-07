@@ -162,8 +162,10 @@ impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Fmp4Writer<W
             });
             self.core
                 .write_video_trak(&mut buf, &self.video_trak.core)?;
+            /* disable audio for now
             self.core
                 .write_audio_trak(&mut buf, &self.audio_trak.core)?;
+            */
             write_box!(&mut buf, b"mvex", {
                 write_box!(&mut buf, b"trex", {
                     buf.put_u32(1 << 24); // version, flags
@@ -173,6 +175,7 @@ impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Fmp4Writer<W
                     buf.put_u32(0); // default sample size
                     buf.put_u32(0); // default sample flags
                 });
+                /* disable audio for now
                 write_box!(&mut buf, b"trex", {
                     buf.put_u32(1 << 24); // version, flags
                     buf.put_u32(2); // track id
@@ -181,6 +184,7 @@ impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Fmp4Writer<W
                     buf.put_u32(0); // default sample size
                     buf.put_u32(0); // default sample flags
                 });
+                */
             });
         });
         self.core.inner.write_all(&buf).await?;

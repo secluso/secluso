@@ -45,17 +45,23 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::sleep;
 use std::time::SystemTime;
+#[cfg(target_arch = "x86_64")]
 use rpassword::read_password;
 use serde_yml::Value;
 
+#[cfg(target_arch = "x86_64")]
 mod ip_camera;
-
+#[cfg(target_arch = "x86_64")]
 use crate::ip_camera::IpCamera;
+
+#[cfg(target_arch = "aarch64")]
+mod raspberry_pi_camera;
+#[cfg(target_arch = "aarch64")]
+use crate::raspberry_pi_camera::RaspberryPiCamera;
 
 mod delivery_monitor;
 
 use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
-use crate::detect_motion::MotionDetection;
 
 mod livestream;
 
@@ -64,7 +70,11 @@ use crate::livestream::{is_there_livestream_start_request, livestream};
 mod fmp4;
 mod mp4;
 mod traits;
-mod detect_motion;
+
+#[cfg(target_arch = "x86_64")]
+mod motion_detection;
+
+use crate::traits::Camera;
 
 // Used to generate random names.
 // With 16 alphanumeric characters, the probability of collision is very low.
@@ -81,7 +91,7 @@ static GLOBAL_THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
 // Used to ensure there can't be attempted concurrent pairing
 static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-
+/*
 // Represents the data for each camera
 #[derive(Debug, Clone)]
 pub struct Camera {
@@ -92,8 +102,9 @@ pub struct Camera {
     password: String,
     state_dir: String,
     video_dir: String,
-    motion_fps: u64
+    motion_fps: u64,
 }
+*/
 
 fn write_varying_len(stream: &mut TcpStream, msg: &[u8]) {
     // FIXME: is u64 necessary?
@@ -130,7 +141,7 @@ fn perform_pairing_handshake(
     app_key_packages
 }
 
-fn generate_camera_secret(camera: Camera) -> Vec<u8> {
+fn generate_camera_secret<C: Camera>(camera: &C) -> Vec<u8> {
     let crypto = OpenMlsRustCrypto::default();
     let secret = crypto
         .crypto()
@@ -140,13 +151,13 @@ fn generate_camera_secret(camera: Camera) -> Vec<u8> {
     // Save as QR code to be shown to the app
     let code = QrCode::new(secret.clone()).unwrap();
     let image = code.render::<Luma<u8>>().build();
-    image.save(format!("camera_{}_secret_qrcode.png", camera.name.replace(" ", "_").to_lowercase())).unwrap();
+    image.save(format!("camera_{}_secret_qrcode.png", camera.get_name().replace(" ", "_").to_lowercase())).unwrap();
 
     secret
 }
 
-fn pair_with_app(
-    camera: &Camera,
+fn pair_with_app<C: Camera>(
+    camera: &C,
     camera_motion_key_packages: KeyPackages,
     camera_livestream_key_packages: KeyPackages,
     camera_fcm_key_packages: KeyPackages,
@@ -155,12 +166,12 @@ fn pair_with_app(
     // Ensure that two cameras don't attempt to pair at the same time (as this would introduce an error when opening two of the same port simultaneously)
     let _lock = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
 
-    let secret = generate_camera_secret(camera.clone());
+    let secret = generate_camera_secret(camera);
     if secret.len() != pairing::NUM_SECRET_BYTES {
         panic!("Invalid number of bytes in secret!");
     }
 
-    println!("[{}] File camera_{}_secret_qrcode.png was just created. Use the QR code in the app to pair.", camera.name, camera.name.replace(" ", "_").to_lowercase());
+    println!("[{}] File camera_{}_secret_qrcode.png was just created. Use the QR code in the app to pair.", camera.get_name(), camera.get_name().replace(" ", "_").to_lowercase());
 
     let mut camera_secret = [0u8; pairing::NUM_SECRET_BYTES];
     camera_secret.copy_from_slice(&secret[..]);
@@ -175,7 +186,7 @@ fn pair_with_app(
     let app_fcm_key_packages =
         perform_pairing_handshake(&mut stream, camera_fcm_key_packages, camera_secret);
 
-    let _ = fs::remove_file(format!("camera_{}_secret_qrcode.png", camera.name.replace(" ", "_").to_lowercase()));
+    let _ = fs::remove_file(format!("camera_{}_secret_qrcode.png", camera.get_name().replace(" ", "_").to_lowercase()));
 
     (
         app_motion_key_packages,
@@ -184,8 +195,8 @@ fn pair_with_app(
     )
 }
 
-fn create_group_and_invite(
-    camera: &Camera,
+fn create_group_and_invite<C: Camera>(
+    camera: &C,
     client: &mut User,
     group_name: String,
     app_key_packages: KeyPackages,
@@ -204,13 +215,13 @@ fn create_group_and_invite(
     client.save_groups_state();
     debug!("App invited to the group.");
 
-    fs::File::create(camera.state_dir.clone() + "/first_time_done").expect("Could not create file");
+    fs::File::create(camera.get_state_dir() + "/first_time_done").expect("Could not create file");
 
     Ok(())
 }
 
-fn create_camera_groups(
-    camera: &Camera,
+fn create_camera_groups<C: Camera>(
+    camera: &C,
     client_motion: &mut User,
     client_livestream: &mut User,
     client_fcm: &mut User,
@@ -238,15 +249,16 @@ fn create_camera_groups(
     Ok(())
 }
 
-fn get_names(
-    camera: &Camera,
+fn get_names<C: Camera>(
+    camera: &C,
     first_time: bool,
     camera_filename: String,
     group_filename: String,
 ) -> (String, String) {
-    let state_dir = Path::new(&camera.state_dir);
-    let camera_path = state_dir.join(camera_filename);
-    let group_path = state_dir.join(group_filename);
+    let state_dir = camera.get_state_dir();
+    let state_dir_path = Path::new(&state_dir);
+    let camera_path = state_dir_path.join(camera_filename);
+    let group_path = state_dir_path.join(group_filename);
 
     let (camera_name, group_name) = if first_time {
         let mut rng = rand::thread_rng();
@@ -304,8 +316,8 @@ fn get_user_credentials() -> Vec<u8> {
     data.to_vec()
 }
 
-fn send_motion_triggered_video(
-    camera: &Camera,
+fn send_motion_triggered_video<C: Camera>(
+    camera: &C,
     client: &mut User,
     group_name: String,
     video_info: VideoInfo,
@@ -330,8 +342,9 @@ fn send_motion_triggered_video(
         return Ok(());
     }
 
-    let video_dir = Path::new(&camera.video_dir);
-    let video_file = video_dir.join(&video_info.filename);
+    let video_dir = camera.get_video_dir();
+    let video_dir_path = Path::new(&video_dir);
+    let video_file = video_dir_path.join(&video_info.filename);
 
     debug!("Starting to send video.");
     let file = fs::File::open(video_file)
@@ -461,12 +474,6 @@ Usage:
   privastead-camera-hub (--help | -h)
 
 Options:
-    --server-ip SERVERIP                        IP address of the server
-    --ip-camera-ip CAMERAIP                     IP address of the IP camera
-    --ip-camera-rtsp-port CAMERARTSPPORT        RTSP port on the IP camera
-    --provide-username-password                 Provide the username and password of the IP camera. If not set, they need to be entered on prompt.
-    --ip-camera-username USERNAME               Username of the IP camera.
-    --ip-camera-password PASSWORD               Password of the IP camera.
     --reset                                     Wipe all the state
     --version, -v                               Show version
     --help, -h                                  Show help
@@ -517,47 +524,87 @@ fn main() -> io::Result<()> {
 
     // Iterate through every camera in the cameras.yaml file, accumulating structs representing their data
     let delivery_service_addr: String = server_ip.to_owned() + ":12346";
-    let mut camera_list: Vec<Camera> = Vec::new();
+    #[cfg(target_arch = "x86_64")]
+    let mut camera_list: Vec<IpCamera> = Vec::new();
+    #[cfg(target_arch = "aarch64")]
+    let mut camera_list: Vec<RaspberryPiCamera> = Vec::new();
+    #[cfg(target_arch = "aarch64")]
+    let mut num_raspberry_pi = 0;
     if let Value::Sequence(cameras) = cameras_section {
         for camera in cameras {
             if let Value::Mapping(map) = camera {
+                let camera_type = map.get(&Value::String("type".to_string())).expect("Missing camera type (IP or RaspberryPi)").as_str().unwrap();
                 let camera_name = map.get(&Value::String("name".to_string())).expect("Missing camera name").as_str().unwrap();
-                let camera_ip = map.get(&Value::String("ip".to_string())).expect("Missing IP for camera").as_str().unwrap();
-                let camera_rtsp_port = map.get(&Value::String("rtsp_port".to_string())).expect("Missing RTSP port").as_u64().unwrap() as u16;
-                let mut camera_username = map.get(&Value::String("username".to_string())).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let mut camera_password = map.get(&Value::String("password".to_string())).and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let camera_motion_fps = map.get(&Value::String("motion_fps".to_string())).expect("Missing Motion FPS").as_u64().unwrap();
+                if camera_type == "IP" {
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        let camera_ip = map.get(&Value::String("ip".to_string())).expect("Missing IP for camera").as_str().unwrap();
+                        let camera_rtsp_port = map.get(&Value::String("rtsp_port".to_string())).expect("Missing RTSP port").as_u64().unwrap() as u16;
+                        let mut camera_username = map.get(&Value::String("username".to_string())).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let mut camera_password = map.get(&Value::String("password".to_string())).and_then(|v| v.as_str()).unwrap_or("").to_string();                    
 
-                if camera_username.is_empty() {
-                    camera_username = ask_user(format!("Enter the username for the IP camera {:?}: ", camera_name)).unwrap();
-                }
+                        if camera_username.is_empty() {
+                            camera_username = ask_user(format!("Enter the username for the IP camera {:?}: ", camera_name)).unwrap();
+                        }
 
-                if camera_password.is_empty() {
-                    camera_password = ask_user_password(format!("Enter the password for the IP camera {:?}: ", camera_name)).unwrap();
-                }
+                        if camera_password.is_empty() {
+                            camera_password = ask_user_password(format!("Enter the password for the IP camera {:?}: ", camera_name)).unwrap();
+                        }
 
-                let camera_struct = Camera {
-                    name: camera_name.parse().unwrap(),
-                    ip: camera_ip.parse().unwrap(),
-                    rtsp_port: camera_rtsp_port,
-                    username: camera_username.parse().unwrap(),
-                    password: camera_password.parse().unwrap(),
-                    video_dir: format!("{}/{}", VIDEO_DIR_GENERAL, camera_name.replace(" ", "_").to_lowercase()),
-                    state_dir: format!("{}/{}", STATE_DIR_GENERAL, camera_name.replace(" ", "_").to_lowercase()),
-                    motion_fps: camera_motion_fps
+                        let ip_camera_result = IpCamera::new(
+                            camera_name.parse().unwrap(),
+                            camera_ip.parse().unwrap(),
+                            camera_rtsp_port,
+                            camera_username.parse().unwrap(),
+                            camera_password.parse().unwrap(),
+                            format!("{}/{}", STATE_DIR_GENERAL, camera_name.replace(" ", "_").to_lowercase()),
+                            format!("{}/{}", VIDEO_DIR_GENERAL, camera_name.replace(" ", "_").to_lowercase()),
+                            camera_motion_fps,
+                        );
+                        match ip_camera_result {
+                            Ok(c) => {
+                                camera_list.push(c);
+                            },
+                            Err(err) => {
+                                panic!("Failed to initialize the IP camera object. Consider resetting the camera. (Error: {err})");
+                            },
+                        }
+                    }
+                    #[cfg(not(target_arch = "x86_64"))]
+                    {
+                        panic!("IP cameras are only supported on the x86_64 architecture.")    
+                    }
+                } else if camera_type == "RaspberryPi" {
+                    #[cfg(target_arch = "aarch64")]
+                    { 
+                        if num_raspberry_pi > 0 {
+                            panic!("cameras.yaml can only specify for Raspberry Pi camera!");
+                        }
+                        num_raspberry_pi += 1;
+
+                        let camera = RaspberryPiCamera::new(
+                            camera_name.parse().unwrap(),
+                            STATE_DIR_GENERAL.to_string(),
+                            VIDEO_DIR_GENERAL.to_string(),
+                            camera_motion_fps,
+                        );
+                        camera_list.push(camera);
+                    }
+                    #[cfg(not(target_arch = "aarch64"))]
+                    {
+                        panic!("Raspberry Pi cameras are only supported on the aarch64 architecture.")    
+                    }
+                } else {
+                    panic!("Unknown camera type ({:?}). Supported types are IP and RaspberryPi", camera_type)
                 };
-
-                fs::create_dir_all(camera_struct.video_dir.clone()).unwrap();
-                fs::create_dir_all(camera_struct.state_dir.clone()).unwrap();
-
-                camera_list.push(camera_struct);
             }
         }
     }
 
     // Iterate through each camera struct and spawn in a thread to manage each individual one
-    for camera in camera_list.clone() {
-        println!("Starting to instantiate camera: {:?}", camera.name);
+    for mut camera in camera_list {
+        println!("Starting to instantiate camera: {:?}", camera.get_name());
 
         let delivery_service_addr = delivery_service_addr.clone();
         let credentials = credentials.clone();
@@ -584,7 +631,7 @@ fn main() -> io::Result<()> {
                         return;
                     } else {
                         match core(
-                            &camera,
+                            &mut camera,
                             motion_stream.unwrap(),
                             livestream_stream.unwrap(),
                             fcm_stream.unwrap(),
@@ -598,7 +645,7 @@ fn main() -> io::Result<()> {
                     }
                 }
                 println!("There was a problem with the connection to the server. Will try to connect again soon.");
-                let _ = fs::remove_file(camera.state_dir.clone() + "/registration_done");
+                let _ = fs::remove_file(camera.get_state_dir() + "/registration_done");
                 thread::sleep(Duration::from_secs(10));
             }
         });
@@ -613,18 +660,20 @@ fn main() -> io::Result<()> {
 }
 
 /// Helper function to try connecting to the TCP server.
-fn try_connect(camera: &Camera, address: &str) -> Option<TcpStream> {
+fn try_connect<C: Camera>(camera: &C, address: &str) -> Option<TcpStream> {
     match TcpStream::connect(address) {
         Ok(stream) => Some(stream),
         Err(_) => {
-            let state_dir = Path::new(&camera.state_dir);
-            let registration_done_path = state_dir.join("registration_done");
+            let state_dir = camera.get_state_dir();
+            let state_dir_path = Path::new(&state_dir);
+            let registration_done_path = state_dir_path.join("registration_done");
             let _ = fs::remove_file(registration_done_path);
             None
         }
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn ask_user(prompt: String) -> io::Result<String> {
     print!("{prompt}");
     // Make sure the prompt is displayed before reading input
@@ -636,6 +685,7 @@ fn ask_user(prompt: String) -> io::Result<String> {
     Ok(user_input.trim().to_string())
 }
 
+#[cfg(target_arch = "x86_64")]
 fn ask_user_password(prompt: String) -> io::Result<String> {
     print!("{prompt}");
     // Make sure the prompt is displayed before reading input
@@ -646,9 +696,8 @@ fn ask_user_password(prompt: String) -> io::Result<String> {
     Ok(password.trim().to_string())
 }
 
-
-fn reset(
-    camera: &Camera,
+fn reset<C: Camera>(
+    camera: &C,
     server_motion_stream: TcpStream,
     server_livestream_stream: TcpStream,
     server_fcm_stream: TcpStream,
@@ -656,9 +705,12 @@ fn reset(
 ) {
     // First, deregister from the server
     // FIXME: has some code copy/pasted from core()
-    let state_dir = Path::new(&camera.state_dir);
-    let first_time_done_path = state_dir.join("first_time_done");
-    let first_time: bool = first_time_done_path.exists();
+    let state_dir = camera.get_state_dir();
+    let state_dir_clone = state_dir.clone();
+    let state_dir_path = Path::new(&state_dir_clone);
+    let first_time_done_path = state_dir_path.join("first_time_done");
+    println!("{:?}", first_time_done_path);
+    let first_time: bool = !first_time_done_path.exists();
 
     if first_time {
         println!("There's no state to reset!");
@@ -693,7 +745,7 @@ fn reset(
         Some(server_motion_stream),
         first_time,
         reregister,
-        camera.state_dir.clone(),
+        state_dir.clone(),
         "motion".to_string(),
         credentials.clone(),
         false,
@@ -716,7 +768,7 @@ fn reset(
         Some(server_livestream_stream),
         first_time,
         reregister,
-        camera.state_dir.clone(),
+        state_dir.clone(),
         "livestream".to_string(),
         credentials.clone(),
         false,
@@ -739,7 +791,7 @@ fn reset(
         Some(server_fcm_stream),
         first_time,
         reregister,
-        camera.state_dir.to_string(),
+        state_dir,
         "fcm".to_string(),
         credentials,
         false,
@@ -758,26 +810,27 @@ fn reset(
     };
 
     //Second, delete all the local state files.
-    let state_dir_path = Path::new(&camera.state_dir);
     let _ = fs::remove_dir_all(state_dir_path);
 
     //Third, delete all the pending videos (those that were never successfully delivered)
-    let video_dir_path = Path::new(&camera.video_dir);
+    let video_dir = camera.get_video_dir();
+    let video_dir_path = Path::new(&video_dir);
     let _ = fs::remove_dir_all(video_dir_path);
 
     println!("Reset finished.");
 }
 
 #[allow(clippy::too_many_arguments)]
-fn core(
-    camera: &Camera,
+fn core<C: Camera>(
+    camera: &mut C,
     server_motion_stream: TcpStream,
     server_livestream_stream: TcpStream,
     server_fcm_stream: TcpStream,
     credentials: Vec<u8>,
 ) -> io::Result<()> {
-    let first_time: bool = !Path::new(&(camera.state_dir.clone() + "/first_time_done")).exists();
-    let reregister: bool = !Path::new(&(camera.state_dir.clone() + "/registration_done")).exists();
+    let state_dir = camera.get_state_dir();
+    let first_time: bool = !Path::new(&(state_dir.clone() + "/first_time_done")).exists();
+    let reregister: bool = !Path::new(&(state_dir.clone() + "/registration_done")).exists();
 
     let (camera_motion_name, group_motion_name) = get_names(
         camera,
@@ -811,7 +864,7 @@ fn core(
         Some(server_motion_stream),
         first_time,
         reregister,
-        camera.state_dir.clone(),
+        state_dir.clone(),
         "motion".to_string(),
         credentials.clone(),
         true,
@@ -827,7 +880,7 @@ fn core(
         Some(server_livestream_stream),
         first_time,
         reregister,
-        camera.state_dir.clone(),
+        state_dir.clone(),
         "livestream".to_string(),
         credentials.clone(),
         true,
@@ -843,7 +896,7 @@ fn core(
         Some(server_fcm_stream),
         first_time,
         reregister,
-        camera.state_dir.clone(),
+        state_dir.clone(),
         "fcm".to_string(),
         credentials,
         true,
@@ -854,10 +907,11 @@ fn core(
         })?;
     debug!("FCM client created.");
 
-    fs::File::create(camera.state_dir.clone() + "/registration_done").expect("Could not create file");
+    fs::File::create(state_dir.clone() + "/registration_done").expect("Could not create file");
 
+    let camera_name = camera.get_name();
     if first_time {
-        println!("[{}] Waiting to be paired with the mobile app.", camera.name);
+        println!("[{}] Waiting to be paired with the mobile app.", camera_name);
         create_camera_groups(
             camera,
             &mut client_motion,
@@ -867,139 +921,120 @@ fn core(
             group_livestream_name.clone(),
             group_fcm_name.clone(),
         )?;
-        println!("[{}] Pairing successful.", camera.name);
+        println!("[{}] Pairing successful.", camera_name);
     }
 
-    println!("[{}] Running...", camera.name);
+    println!("[{}] Running...", camera_name);
 
     let mut locked_motion_check_time: Option<SystemTime> = None;
     let mut locked_delivery_check_time: Option<SystemTime> = None;
+    let video_dir = camera.get_video_dir();
     let mut delivery_monitor =
-        DeliveryMonitor::from_file_or_new(camera.video_dir.clone(), camera.state_dir.clone(), 60);
+        DeliveryMonitor::from_file_or_new(video_dir, state_dir, 60);
 
+    // Used for anti-dither for motion detection
     loop {
-        let ip_camera_result = IpCamera::new(
-            camera
-        );
+        // Check motion events from the IP camera every second
+        let motion_event = match camera.is_there_motion() {
+            Ok(event) => event,
+            Err(e) => {
+                println!("Motion detection error {}", e);
+                continue;
+            }
+        };
 
-        let motion_detection_result = MotionDetection::new(
-            camera
-        );
-
-        if ip_camera_result.is_err() || motion_detection_result.is_err() {
-            // Wait and try again
-            println!("Failed to connect to the IP camera. Will try again in a little bit. Consider resetting the camera.");
-            thread::sleep(Duration::from_millis(10000));
-        } else {
-            debug!("Entered motion detection loop");
-            let ip_camera = ip_camera_result.unwrap();
-            let mut motion_detection = motion_detection_result.unwrap();
-            // Used for anti-dither for motion detection
-            loop {
-                let motion_event_result = motion_detection.handle_motion_event();
-               // For testing without trying to detect motion: let motion_event_result: Result<bool, &'static str> = Ok(true);
-                if motion_event_result.is_err() {
-                    //TODO: handle an error
-                    break;
-                }
-
-                // Check motion events from the IP camera every second
-                let motion_event = motion_event_result.unwrap();
-
-                // Send motion events only if we haven't sent one in the past minute
-                if motion_event && (locked_motion_check_time.is_none() || locked_motion_check_time.unwrap().le(&SystemTime::now())) {
-                    let video_info = VideoInfo::new();
-                    info!("Sending the FCM notification with timestamp.");
+        // Send motion events only if we haven't sent one in the past minute
+        if motion_event && (locked_motion_check_time.is_none() || locked_motion_check_time.unwrap().le(&SystemTime::now())) {
+            let video_info = VideoInfo::new();
+            info!("Sending the FCM notification with timestamp.");
+            client_fcm.send_fcm(
+                &bincode::serialize(&video_info.timestamp).unwrap(),
+                group_fcm_name.clone(),
+            )?;
+            client_fcm.save_groups_state();
+            match camera.record_motion_video(&video_info) {
+                Ok(_) => {
+                    info!("Sending the FCM notification to start downloading.");
+                    //Timestamp of 0 tells the app it's time to start downloading.
+                    let dummy_timestamp: u64 = 0;
                     client_fcm.send_fcm(
-                        &bincode::serialize(&video_info.timestamp).unwrap(),
+                        &bincode::serialize(&dummy_timestamp).unwrap(),
                         group_fcm_name.clone(),
                     )?;
                     client_fcm.save_groups_state();
-                    match ip_camera.record_motion_video(camera.video_dir.to_string(), &video_info) {
-                        Ok(_) => {
-                            info!("Sending the FCM notification to start downloading.");
-                            //Timestamp of 0 tells the app it's time to start downloading.
-                            let dummy_timestamp: u64 = 0;
-                            client_fcm.send_fcm(
-                                &bincode::serialize(&dummy_timestamp).unwrap(),
-                                group_fcm_name.clone(),
-                            )?;
-                            client_fcm.save_groups_state();
-                            send_motion_triggered_video(
-                                camera,
-                                &mut client_motion,
-                                group_motion_name.clone(),
-                                video_info,
-                                &mut delivery_monitor,
-                            )?;
-                            locked_motion_check_time = Some(SystemTime::now().add(Duration::from_secs(60)));
-                        }
-                        Err(e) => {
-                            error!("Error recording motion video: {e}");
-                        }
-                    }
-                }
-
-                // Livestream request? Start it.
-                if is_there_livestream_start_request(&mut client_livestream)? {
-                    livestream(
-                        &mut client_livestream,
-                        group_livestream_name.clone(),
-                        &ip_camera,
+                    send_motion_triggered_video(
+                        camera,
+                        &mut client_motion,
+                        group_motion_name.clone(),
+                        video_info,
+                        &mut delivery_monitor,
                     )?;
+                    locked_motion_check_time = Some(SystemTime::now().add(Duration::from_secs(60)));
                 }
-
-                // Process motion acks
-                let any_ack = process_motion_acks(&mut client_motion, &mut delivery_monitor)?;
-
-                // Check with the delivery service every minute
-                if any_ack || (locked_delivery_check_time.is_none() || locked_delivery_check_time.unwrap().le(&SystemTime::now())) {
-                    let (resend_list, renotify_list) = delivery_monitor.videos_to_resend_renotify();
-
-                    if !resend_list.is_empty() {
-                        send_motion_triggered_video(
-                            camera,
-                            &mut client_motion,
-                            group_motion_name.clone(),
-                            resend_list[0].clone(),
-                            &mut delivery_monitor,
-                        )?;
-
-                        for video_info in &resend_list[1..] {
-                            delivery_monitor.send_event(video_info.clone());
-                        }
-                    }
-
-                    // If we resend any videos above, that ends up sending a notification
-                    // to the app anyway.
-                    if resend_list.is_empty() && !renotify_list.is_empty() {
-                        // It's enough to send one notification
-                        // We just want to send an FCM message in order to get the app to fetch the messages.
-                        debug!("Sending the FCM notification.");
-                        let dummy_timestamp: u64 = 0;
-                        client_fcm.send_fcm(
-                            &bincode::serialize(&dummy_timestamp).unwrap(),
-                            group_fcm_name.clone(),
-                        )?;
-                        client_fcm.save_groups_state();
-                        send_video_notification(
-                            &mut client_motion,
-                            group_motion_name.clone(),
-                            renotify_list[0].clone(),
-                            &mut delivery_monitor,
-                        )?;
-
-                        // For the rest, just tell the delivery_monitor that we sent a notification.
-                        for video_info in &renotify_list[1..] {
-                            delivery_monitor.notify_event(video_info.clone());
-                        }
-                    }
-
-                    locked_delivery_check_time = Some(SystemTime::now().add(Duration::from_secs(60)));
+                Err(e) => {
+                    error!("Error recording motion video: {e}");
                 }
-
-                sleep(Duration::from_millis(10)); // Introduce a small delay since we don't need this constantly checked
             }
         }
+
+        // Livestream request? Start it.
+        if is_there_livestream_start_request(&mut client_livestream)? {
+            livestream(
+                &mut client_livestream,
+                group_livestream_name.clone(),
+                camera,
+            )?;
+        }
+
+        // Process motion acks
+        let any_ack = process_motion_acks(&mut client_motion, &mut delivery_monitor)?;
+
+        // Check with the delivery service every minute
+        if any_ack || (locked_delivery_check_time.is_none() || locked_delivery_check_time.unwrap().le(&SystemTime::now())) {
+            let (resend_list, renotify_list) = delivery_monitor.videos_to_resend_renotify();
+
+            if !resend_list.is_empty() {
+                send_motion_triggered_video(
+                    camera,
+                    &mut client_motion,
+                    group_motion_name.clone(),
+                    resend_list[0].clone(),
+                    &mut delivery_monitor,
+                )?;
+
+                for video_info in &resend_list[1..] {
+                    delivery_monitor.send_event(video_info.clone());
+                }
+            }
+
+            // If we resend any videos above, that ends up sending a notification
+            // to the app anyway.
+            if resend_list.is_empty() && !renotify_list.is_empty() {
+                // It's enough to send one notification
+                // We just want to send an FCM message in order to get the app to fetch the messages.
+                debug!("Sending the FCM notification.");
+                let dummy_timestamp: u64 = 0;
+                client_fcm.send_fcm(
+                    &bincode::serialize(&dummy_timestamp).unwrap(),
+                    group_fcm_name.clone(),
+                )?;
+                client_fcm.save_groups_state();
+                send_video_notification(
+                    &mut client_motion,
+                    group_motion_name.clone(),
+                    renotify_list[0].clone(),
+                    &mut delivery_monitor,
+                )?;
+
+                // For the rest, just tell the delivery_monitor that we sent a notification.
+                for video_info in &renotify_list[1..] {
+                    delivery_monitor.notify_event(video_info.clone());
+                }
+            }
+
+            locked_delivery_check_time = Some(SystemTime::now().add(Duration::from_secs(60)));
+        }
+
+        sleep(Duration::from_millis(10)); // Introduce a small delay since we don't need this constantly checked
     }
 }
