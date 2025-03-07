@@ -1,5 +1,5 @@
 //! Code to implement custom motion detection for the IP camera(s)
-//! Assumes the cameras supports MJPEG
+//! Assumes the cameras supports MJPEG codec
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani
 //!
