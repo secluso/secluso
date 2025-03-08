@@ -52,6 +52,8 @@ use serde_yml::Value;
 #[cfg(target_arch = "x86_64")]
 mod ip_camera;
 #[cfg(target_arch = "x86_64")]
+mod ip_motion_detection;
+#[cfg(target_arch = "x86_64")]
 use crate::ip_camera::IpCamera;
 
 #[cfg(target_arch = "aarch64")]
@@ -75,9 +77,6 @@ use crate::livestream::{is_there_livestream_start_request, livestream};
 mod fmp4;
 mod mp4;
 mod traits;
-
-#[cfg(target_arch = "x86_64")]
-mod motion_detection;
 
 use crate::traits::Camera;
 
