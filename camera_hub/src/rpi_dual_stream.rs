@@ -16,20 +16,20 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::{
     io::{BufReader, Read, Write},
     process::{Command, Stdio},
     thread,
     time::{Duration, SystemTime},
 };
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Error};
 use bytes::BytesMut;
 
-pub const WIDTH: u32 = 1920;  //TODO: for YUV420 to work properly with this code, this must be divisible by 64. Consider using padding for other resolution support in the future (if need be)
+pub const WIDTH: u32 = 1920; //TODO: for YUV420 to work properly with this code, this must be divisible by 64. Consider using padding for other resolution support in the future (if need be)
 
 pub const HEIGHT: u32 = 1080;
 pub const FRAMERATE: u32 = 30;
@@ -42,7 +42,6 @@ static LAST_PROCESSED_H264_SEQ: AtomicU64 = AtomicU64::new(0);
 
 static RAW_FRAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LAST_PROCESSED_RAW_SEQ: AtomicU64 = AtomicU64::new(0);
-
 
 pub struct H264RingBuffer {
     inner: Mutex<VecDeque<H264Frame>>,
@@ -96,7 +95,6 @@ impl H264RingBuffer {
         }
     }
 }
-
 
 /// A simple generic ring buffer.
 /// TODO: Combine H264 and the generic ring buffer into each other
@@ -187,7 +185,10 @@ impl SharedCameraStream {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()?;
-        let stdout = libcamera_child.stdout.take().ok_or_else(|| anyhow!("Failed to capture stdout from libcamera-vid"))?;
+        let stdout = libcamera_child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("Failed to capture stdout from libcamera-vid"))?;
         let mut reader = BufReader::new(stdout);
 
         // We have separation of the initial frame and the ending frames in case we need to move to a different implementation at some point
@@ -230,7 +231,9 @@ impl SharedCameraStream {
                         }
                     }
                     // Extract one full frame.
-                    let frame_data = combined_buffer.drain(..FRAME_SIZE_8BIT).collect::<Vec<u8>>();
+                    let frame_data = combined_buffer
+                        .drain(..FRAME_SIZE_8BIT)
+                        .collect::<Vec<u8>>();
                     let raw_frame = RawFrame {
                         data: frame_data,
                         seq: RAW_FRAME_COUNTER.fetch_add(1, Ordering::SeqCst),
@@ -255,8 +258,14 @@ impl SharedCameraStream {
             .stdout(Stdio::piped())
             .spawn()
             .map_err(|e| anyhow!("Failed to spawn ffmpeg: {:?}", e))?;
-        let mut ffmpeg_stdin = ffmpeg_child.stdin.take().ok_or_else(|| anyhow!("Failed to open ffmpeg stdin"))?;
-        let ffmpeg_stdout = ffmpeg_child.stdout.take().ok_or_else(|| anyhow!("Failed to open ffmpeg stdout"))?;
+        let mut ffmpeg_stdin = ffmpeg_child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("Failed to open ffmpeg stdin"))?;
+        let ffmpeg_stdout = ffmpeg_child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("Failed to open ffmpeg stdout"))?;
 
         // Spawn a thread to feed ffmpeg_input_buffer from raw_buffer.
         {
@@ -284,32 +293,31 @@ impl SharedCameraStream {
             });
         }
         {
-    let ffmpeg_input_buffer = Arc::clone(&ffmpeg_input_buffer);
-    thread::spawn(move || {
-        let mut last_written_seq = None;
-        loop {
-            let raw_frame = ffmpeg_input_buffer.acquire();
-            // Verify that the current frame's sequence is greater than the last.
-            if let Some(last_seq) = last_written_seq {
-                if raw_frame.seq <= last_seq {
-                    debug!(
+            let ffmpeg_input_buffer = Arc::clone(&ffmpeg_input_buffer);
+            thread::spawn(move || {
+                let mut last_written_seq = None;
+                loop {
+                    let raw_frame = ffmpeg_input_buffer.acquire();
+                    // Verify that the current frame's sequence is greater than the last.
+                    if let Some(last_seq) = last_written_seq {
+                        if raw_frame.seq <= last_seq {
+                            debug!(
                         "Out-of-order raw frame detected: expected a frame with seq greater than {} but got {}.",
                         last_seq,
                         raw_frame.seq
                     );
-                    // Optionally, skip this frame or handle the error.
-                    continue;
+                            // Optionally, skip this frame or handle the error.
+                            continue;
+                        }
+                    }
+                    if let Err(e) = ffmpeg_stdin.write_all(&raw_frame.data) {
+                        eprintln!("Error writing to ffmpeg stdin: {:?}", e);
+                        break;
+                    }
+                    last_written_seq = Some(raw_frame.seq);
                 }
-            }
-            if let Err(e) = ffmpeg_stdin.write_all(&raw_frame.data) {
-                eprintln!("Error writing to ffmpeg stdin: {:?}", e);
-                break;
-            }
-            last_written_seq = Some(raw_frame.seq);
+            });
         }
-    });
-}
-
 
         // Spawn a thread to read ffmpeg's stdout and extract H.264 frames.
         {
@@ -344,7 +352,10 @@ impl SharedCameraStream {
             });
         }
 
-        Ok(SharedCameraStream { raw_buffer, h264_buffer })
+        Ok(SharedCameraStream {
+            raw_buffer,
+            h264_buffer,
+        })
     }
 
     /// Extract a complete H.264 NAL unit from the buffer.
@@ -360,11 +371,21 @@ impl SharedCameraStream {
             return None;
         };
 
-        let start_code_len = if buffer[start..].starts_with(&start_code) { 4 } else { 3 };
+        let start_code_len = if buffer[start..].starts_with(&start_code) {
+            4
+        } else {
+            3
+        };
         let next_search = start + start_code_len;
-        let next = if let Some(pos) = buffer[next_search..].windows(4).position(|w| w == start_code) {
+        let next = if let Some(pos) = buffer[next_search..]
+            .windows(4)
+            .position(|w| w == start_code)
+        {
             next_search + pos
-        } else if let Some(pos) = buffer[next_search..].windows(3).position(|w| w == alt_start_code) {
+        } else if let Some(pos) = buffer[next_search..]
+            .windows(3)
+            .position(|w| w == alt_start_code)
+        {
             next_search + pos
         } else {
             return None;

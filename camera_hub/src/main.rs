@@ -31,23 +31,23 @@ use privastead_client_lib::user::{KeyPackages, User};
 use privastead_client_lib::video_net_info::{VideoAckInfo, VideoNetInfo};
 use qrcode::QrCode;
 use rand::Rng;
+#[cfg(target_arch = "x86_64")]
+use rpassword::read_password;
+use serde_yml::Value;
+use std::collections::HashMap;
 use std::fs;
+use std::fs::File;
 use std::io;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
-use std::{thread, time::Duration};
-use std::collections::HashMap;
-use std::fs::File;
 use std::ops::Add;
+use std::path::Path;
 use std::process::exit;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::sleep;
 use std::time::SystemTime;
-#[cfg(target_arch = "x86_64")]
-use rpassword::read_password;
-use serde_yml::Value;
+use std::{thread, time::Duration};
 
 #[cfg(target_arch = "x86_64")]
 mod ip_camera;
@@ -64,7 +64,6 @@ mod rpi_dual_stream;
 mod rpi_motion_detection;
 #[cfg(target_arch = "aarch64")]
 use crate::rpi_camera::RaspberryPiCamera;
-
 
 mod delivery_monitor;
 
@@ -155,7 +154,12 @@ fn generate_camera_secret<C: Camera>(camera: &C) -> Vec<u8> {
     // Save as QR code to be shown to the app
     let code = QrCode::new(secret.clone()).unwrap();
     let image = code.render::<Luma<u8>>().build();
-    image.save(format!("camera_{}_secret_qrcode.png", camera.get_name().replace(" ", "_").to_lowercase())).unwrap();
+    image
+        .save(format!(
+            "camera_{}_secret_qrcode.png",
+            camera.get_name().replace(" ", "_").to_lowercase()
+        ))
+        .unwrap();
 
     secret
 }
@@ -166,7 +170,6 @@ fn pair_with_app<C: Camera>(
     camera_livestream_key_packages: KeyPackages,
     camera_fcm_key_packages: KeyPackages,
 ) -> (KeyPackages, KeyPackages, KeyPackages) {
-
     // Ensure that two cameras don't attempt to pair at the same time (as this would introduce an error when opening two of the same port simultaneously)
     let _lock = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
 
@@ -190,7 +193,10 @@ fn pair_with_app<C: Camera>(
     let app_fcm_key_packages =
         perform_pairing_handshake(&mut stream, camera_fcm_key_packages, camera_secret);
 
-    let _ = fs::remove_file(format!("camera_{}_secret_qrcode.png", camera.get_name().replace(" ", "_").to_lowercase()));
+    let _ = fs::remove_file(format!(
+        "camera_{}_secret_qrcode.png",
+        camera.get_name().replace(" ", "_").to_lowercase()
+    ));
 
     (
         app_motion_key_packages,
@@ -241,7 +247,12 @@ fn create_camera_groups<C: Camera>(
             client_fcm.key_packages(),
         );
 
-    create_group_and_invite(camera, client_motion, group_motion_name, app_motion_key_packages)?;
+    create_group_and_invite(
+        camera,
+        client_motion,
+        group_motion_name,
+        app_motion_key_packages,
+    )?;
     create_group_and_invite(
         camera,
         client_livestream,
@@ -270,8 +281,7 @@ fn get_names<C: Camera>(
             .map(|_| rng.sample(rand::distributions::Alphanumeric) as char)
             .collect();
 
-        let mut file = fs::File::create(camera_path)
-            .expect("Could not create file");
+        let mut file = fs::File::create(camera_path).expect("Could not create file");
         file.write_all(cname.as_bytes()).unwrap();
         file.flush().unwrap();
         file.sync_all().unwrap();
@@ -281,22 +291,19 @@ fn get_names<C: Camera>(
             .map(|_| rng.sample(rand::distributions::Alphanumeric) as char)
             .collect();
 
-        file = fs::File::create(group_path)
-            .expect("Could not create file");
+        file = fs::File::create(group_path).expect("Could not create file");
         file.write_all(gname.as_bytes()).unwrap();
         file.flush().unwrap();
         file.sync_all().unwrap();
 
         (cname, gname)
     } else {
-        let file = fs::File::open(camera_path)
-            .expect("Cannot open file to send");
+        let file = fs::File::open(camera_path).expect("Cannot open file to send");
         let mut reader =
             BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
         let cname = reader.fill_buf().unwrap();
 
-        let file = fs::File::open(group_path)
-            .expect("Cannot open file to send");
+        let file = fs::File::open(group_path).expect("Cannot open file to send");
         let mut reader =
             BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
         let gname = reader.fill_buf().unwrap();
@@ -335,7 +342,8 @@ fn send_motion_triggered_video<C: Camera>(
     // This is to make sure we don't end up sending an update to the app, which
     // we have not successfully committed/saved on our end.
     client.save_groups_state();
-    client.send_update(group_name.clone())
+    client
+        .send_update(group_name.clone())
         .expect("Could not send the pending update!");
     if !new_update {
         // We don't want the attacker to force us to send more than one video without an update.
@@ -351,8 +359,7 @@ fn send_motion_triggered_video<C: Camera>(
     let video_file = video_dir_path.join(&video_info.filename);
 
     debug!("Starting to send video.");
-    let file = fs::File::open(video_file)
-        .expect("Cannot open file to send");
+    let file = fs::File::open(video_file).expect("Cannot open file to send");
     let file_len = file.metadata().unwrap().len();
 
     // We want each encrypted message to fit within one TCP packet (max size: 64 kB or 65535 B).
@@ -446,7 +453,8 @@ fn send_video_notification(
     // This is to make sure we don't end up sending an update to the app, which
     // we have not successfully committed/saved on our end.
     client.save_groups_state();
-    client.send_update(group_name.clone())
+    client
+        .send_update(group_name.clone())
         .expect("Could not send the pending update!");
 
     let info_notify = VideoNetInfo::new_notification(video_info.timestamp);
@@ -502,9 +510,7 @@ fn main() -> io::Result<()> {
 
     // Retrieve the cameras.yaml file. If it doesn't exist, print an error message for the user.
     let cameras_file = match File::open("cameras.yaml") {
-        Ok(file) => {
-            file
-        }
+        Ok(file) => file,
 
         Err(_error) => {
             println!("Error retrieving cameras.yaml file, see the example_cameras.yaml for an example configuration.");
@@ -517,10 +523,17 @@ fn main() -> io::Result<()> {
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
     // Extract the server IP and cameras
-    let server_section = loaded_cameras.get("server").expect("Server section is missing from cameras.yaml");
-    let cameras_section = loaded_cameras.get("cameras").expect("Cameras section is missing from cameras.yaml");
-    let server_ip = server_section.get("ip").expect("Missing IP for server")
-        .as_str().unwrap();
+    let server_section = loaded_cameras
+        .get("server")
+        .expect("Server section is missing from cameras.yaml");
+    let cameras_section = loaded_cameras
+        .get("cameras")
+        .expect("Cameras section is missing from cameras.yaml");
+    let server_ip = server_section
+        .get("ip")
+        .expect("Missing IP for server")
+        .as_str()
+        .unwrap();
 
     // Create the general outer directories (where we'll have inner directories representing each camera)
     fs::create_dir_all(STATE_DIR_GENERAL).unwrap();
@@ -537,23 +550,59 @@ fn main() -> io::Result<()> {
     if let Value::Sequence(cameras) = cameras_section {
         for camera in cameras {
             if let Value::Mapping(map) = camera {
-                let camera_type = map.get(&Value::String("type".to_string())).expect("Missing camera type (IP or RaspberryPi)").as_str().unwrap();
-                let camera_name = map.get(&Value::String("name".to_string())).expect("Missing camera name").as_str().unwrap();
-                let camera_motion_fps = map.get(&Value::String("motion_fps".to_string())).expect("Missing Motion FPS").as_u64().unwrap();
+                let camera_type = map
+                    .get(&Value::String("type".to_string()))
+                    .expect("Missing camera type (IP or RaspberryPi)")
+                    .as_str()
+                    .unwrap();
+                let camera_name = map
+                    .get(&Value::String("name".to_string()))
+                    .expect("Missing camera name")
+                    .as_str()
+                    .unwrap();
+                let camera_motion_fps = map
+                    .get(&Value::String("motion_fps".to_string()))
+                    .expect("Missing Motion FPS")
+                    .as_u64()
+                    .unwrap();
                 if camera_type == "IP" {
                     #[cfg(target_arch = "x86_64")]
                     {
-                        let camera_ip = map.get(&Value::String("ip".to_string())).expect("Missing IP for camera").as_str().unwrap();
-                        let camera_rtsp_port = map.get(&Value::String("rtsp_port".to_string())).expect("Missing RTSP port").as_u64().unwrap() as u16;
-                        let mut camera_username = map.get(&Value::String("username".to_string())).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let mut camera_password = map.get(&Value::String("password".to_string())).and_then(|v| v.as_str()).unwrap_or("").to_string();                    
+                        let camera_ip = map
+                            .get(&Value::String("ip".to_string()))
+                            .expect("Missing IP for camera")
+                            .as_str()
+                            .unwrap();
+                        let camera_rtsp_port = map
+                            .get(&Value::String("rtsp_port".to_string()))
+                            .expect("Missing RTSP port")
+                            .as_u64()
+                            .unwrap() as u16;
+                        let mut camera_username = map
+                            .get(&Value::String("username".to_string()))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let mut camera_password = map
+                            .get(&Value::String("password".to_string()))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
 
                         if camera_username.is_empty() {
-                            camera_username = ask_user(format!("Enter the username for the IP camera {:?}: ", camera_name)).unwrap();
+                            camera_username = ask_user(format!(
+                                "Enter the username for the IP camera {:?}: ",
+                                camera_name
+                            ))
+                            .unwrap();
                         }
 
                         if camera_password.is_empty() {
-                            camera_password = ask_user_password(format!("Enter the password for the IP camera {:?}: ", camera_name)).unwrap();
+                            camera_password = ask_user_password(format!(
+                                "Enter the password for the IP camera {:?}: ",
+                                camera_name
+                            ))
+                            .unwrap();
                         }
 
                         let ip_camera_result = IpCamera::new(
@@ -562,26 +611,34 @@ fn main() -> io::Result<()> {
                             camera_rtsp_port,
                             camera_username.parse().unwrap(),
                             camera_password.parse().unwrap(),
-                            format!("{}/{}", STATE_DIR_GENERAL, camera_name.replace(" ", "_").to_lowercase()),
-                            format!("{}/{}", VIDEO_DIR_GENERAL, camera_name.replace(" ", "_").to_lowercase()),
+                            format!(
+                                "{}/{}",
+                                STATE_DIR_GENERAL,
+                                camera_name.replace(" ", "_").to_lowercase()
+                            ),
+                            format!(
+                                "{}/{}",
+                                VIDEO_DIR_GENERAL,
+                                camera_name.replace(" ", "_").to_lowercase()
+                            ),
                             camera_motion_fps,
                         );
                         match ip_camera_result {
                             Ok(c) => {
                                 camera_list.push(c);
-                            },
+                            }
                             Err(err) => {
                                 panic!("Failed to initialize the IP camera object. Consider resetting the camera. (Error: {err})");
-                            },
+                            }
                         }
                     }
                     #[cfg(not(target_arch = "x86_64"))]
                     {
-                        panic!("IP cameras are only supported on the x86_64 architecture.")    
+                        panic!("IP cameras are only supported on the x86_64 architecture.")
                     }
                 } else if camera_type == "RaspberryPi" {
                     #[cfg(target_arch = "aarch64")]
-                    { 
+                    {
                         if num_raspberry_pi > 0 {
                             panic!("cameras.yaml can only specify for Raspberry Pi camera!");
                         }
@@ -597,10 +654,15 @@ fn main() -> io::Result<()> {
                     }
                     #[cfg(not(target_arch = "aarch64"))]
                     {
-                        panic!("Raspberry Pi cameras are only supported on the aarch64 architecture.")    
+                        panic!(
+                            "Raspberry Pi cameras are only supported on the aarch64 architecture."
+                        )
                     }
                 } else {
-                    panic!("Unknown camera type ({:?}). Supported types are IP and RaspberryPi", camera_type)
+                    panic!(
+                        "Unknown camera type ({:?}). Supported types are IP and RaspberryPi",
+                        camera_type
+                    )
                 };
             }
         }
@@ -617,7 +679,8 @@ fn main() -> io::Result<()> {
         thread::spawn(move || {
             loop {
                 let motion_stream: Option<TcpStream> = try_connect(&camera, &delivery_service_addr);
-                let livestream_stream: Option<TcpStream> = try_connect(&camera, &delivery_service_addr);
+                let livestream_stream: Option<TcpStream> =
+                    try_connect(&camera, &delivery_service_addr);
                 let fcm_stream: Option<TcpStream> = try_connect(&camera, &delivery_service_addr);
 
                 if motion_stream.is_some() && livestream_stream.is_some() && fcm_stream.is_some() {
@@ -873,10 +936,10 @@ fn core<C: Camera>(
         credentials.clone(),
         true,
     )
-        .map_err(|e| {
-            error!("User::new() returned error:");
-            e
-        })?;
+    .map_err(|e| {
+        error!("User::new() returned error:");
+        e
+    })?;
     debug!("Motion client created.");
 
     let mut client_livestream = User::new(
@@ -889,10 +952,10 @@ fn core<C: Camera>(
         credentials.clone(),
         true,
     )
-        .map_err(|e| {
-            error!("User::new() returned error:");
-            e
-        })?;
+    .map_err(|e| {
+        error!("User::new() returned error:");
+        e
+    })?;
     debug!("Livestream client created.");
 
     let mut client_fcm = User::new(
@@ -905,17 +968,20 @@ fn core<C: Camera>(
         credentials,
         true,
     )
-        .map_err(|e| {
-            error!("User::new() returned error:");
-            e
-        })?;
+    .map_err(|e| {
+        error!("User::new() returned error:");
+        e
+    })?;
     debug!("FCM client created.");
 
     fs::File::create(state_dir.clone() + "/registration_done").expect("Could not create file");
 
     let camera_name = camera.get_name();
     if first_time {
-        println!("[{}] Waiting to be paired with the mobile app.", camera_name);
+        println!(
+            "[{}] Waiting to be paired with the mobile app.",
+            camera_name
+        );
         create_camera_groups(
             camera,
             &mut client_motion,
@@ -933,8 +999,7 @@ fn core<C: Camera>(
     let mut locked_motion_check_time: Option<SystemTime> = None;
     let mut locked_delivery_check_time: Option<SystemTime> = None;
     let video_dir = camera.get_video_dir();
-    let mut delivery_monitor =
-        DeliveryMonitor::from_file_or_new(video_dir, state_dir, 60);
+    let mut delivery_monitor = DeliveryMonitor::from_file_or_new(video_dir, state_dir, 60);
 
     // Used for anti-dither for motion detection
     loop {
@@ -948,7 +1013,10 @@ fn core<C: Camera>(
         };
 
         // Send motion events only if we haven't sent one in the past minute
-        if motion_event && (locked_motion_check_time.is_none() || locked_motion_check_time.unwrap().le(&SystemTime::now())) {
+        if motion_event
+            && (locked_motion_check_time.is_none()
+                || locked_motion_check_time.unwrap().le(&SystemTime::now()))
+        {
             let video_info = VideoInfo::new();
             info!("Sending the FCM notification with timestamp.");
             client_fcm.send_fcm(
@@ -994,7 +1062,10 @@ fn core<C: Camera>(
         let any_ack = process_motion_acks(&mut client_motion, &mut delivery_monitor)?;
 
         // Check with the delivery service every minute
-        if any_ack || (locked_delivery_check_time.is_none() || locked_delivery_check_time.unwrap().le(&SystemTime::now())) {
+        if any_ack
+            || (locked_delivery_check_time.is_none()
+                || locked_delivery_check_time.unwrap().le(&SystemTime::now()))
+        {
             let (resend_list, renotify_list) = delivery_monitor.videos_to_resend_renotify();
 
             if !resend_list.is_empty() {

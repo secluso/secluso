@@ -42,7 +42,7 @@ use crate::delivery_monitor::VideoInfo;
 use crate::fmp4::Fmp4Writer;
 use crate::livestream::LivestreamWriter;
 use crate::mp4::Mp4Writer;
-use crate::traits::{CodecParameters, Mp4, Camera};
+use crate::traits::{Camera, CodecParameters, Mp4};
 use std::fs;
 use std::io;
 use std::thread;
@@ -61,12 +61,14 @@ use std::convert::TryFrom;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
+use crate::ip_motion_detection::MotionDetection;
 use std::collections::VecDeque;
 use std::process::exit;
-use std::sync::{Mutex, mpsc::{self, Sender}};
+use std::sync::{
+    mpsc::{self, Sender},
+    Mutex,
+};
 use std::time::{Duration, SystemTime};
-use crate::ip_motion_detection::MotionDetection;
-
 
 pub struct IpCamera {
     name: String,
@@ -78,15 +80,13 @@ pub struct IpCamera {
     motion_detection: MotionDetection,
 }
 
-
 struct Frame {
     frame: Vec<u8>,
-    frame_timestamp: u64, // timestamp sent by the camera
+    frame_timestamp: u64,  // timestamp sent by the camera
     timestamp: SystemTime, // timestamp used to manage frames in the queue
     is_video: bool,
     is_random_access_point: bool,
 }
-
 
 impl IpCamera {
     pub fn new(
@@ -126,7 +126,10 @@ impl IpCamera {
         match video_params_prior {
             Ok(_) => {}
             Err(e) => {
-                println!("[{}] You most likely entered invalid credentials", name.clone());
+                println!(
+                    "[{}] You most likely entered invalid credentials",
+                    name.clone()
+                );
                 debug!("{}", e);
                 exit(1);
             }
@@ -151,10 +154,7 @@ impl IpCamera {
         })
     }
 
-    fn add_frame_and_drop_old(
-        frame_queue: Arc<Mutex<VecDeque<Frame>>>,
-        frame: Frame,
-    ) {
+    fn add_frame_and_drop_old(frame_queue: Arc<Mutex<VecDeque<Frame>>>, frame: Frame) {
         // We want to record 5 seconds of frames at any given time.
         let time_window = Duration::new(5, 0);
         let mut queue = frame_queue.lock().unwrap();
@@ -267,7 +267,8 @@ impl IpCamera {
             Arc::clone(&frame_queue),
             Some(video_params_tx),
             Some(audio_params_tx),
-        ).await?;
+        )
+        .await?;
 
         loop {
             println!("IP camera stream stopped or didn't start. Will try to restart soon.");
@@ -280,7 +281,8 @@ impl IpCamera {
                 Arc::clone(&frame_queue),
                 None,
                 None,
-            ).await?;
+            )
+            .await?;
         }
     }
 
@@ -298,7 +300,7 @@ impl IpCamera {
             IpCameraAudioParameters::new(audio_params),
             out,
         )
-            .await?;
+        .await?;
         Self::copy(&mut mp4, Some(duration), frame_queue).await?;
         mp4.finish().await?;
 
@@ -324,7 +326,7 @@ impl IpCamera {
             IpCameraAudioParameters::new(audio_params),
             livestream_writer,
         )
-            .await?;
+        .await?;
         fmp4.finish_header().await?;
         Self::copy(&mut fmp4, None, frame_queue).await?;
 
@@ -369,20 +371,32 @@ impl IpCamera {
                 }
 
                 if first_frame_found {
-                    mp4.video(&frame.frame, frame.frame_timestamp, frame.is_random_access_point).await.with_context(
-                        || "Error processing video frame")?;
+                    mp4.video(
+                        &frame.frame,
+                        frame.frame_timestamp,
+                        frame.is_random_access_point,
+                    )
+                    .await
+                    .with_context(|| "Error processing video frame")?;
                 }
                 drop(queue);
-            } else { // audio
+            } else {
+                // audio
                 if first_frame_found {
-                    mp4.audio(&frame.frame, frame.frame_timestamp).await.with_context(
-                        || "Error processing audio frame")?;
+                    mp4.audio(&frame.frame, frame.frame_timestamp)
+                        .await
+                        .with_context(|| "Error processing audio frame")?;
                 }
                 drop(queue);
             }
 
             if let Some(window) = recording_window {
-                if frame.timestamp.duration_since(recording_start_time).unwrap_or_default() > window {
+                if frame
+                    .timestamp
+                    .duration_since(recording_start_time)
+                    .unwrap_or_default()
+                    > window
+                {
                     log::info!("Stopping the recording.");
                     break;
                 }
@@ -419,7 +433,7 @@ impl IpCamera {
                 .session_group(session_group.clone())
                 .teardown(retina::client::TeardownPolicy::Auto),
         )
-            .await?;
+        .await?;
         let video_stream_i = {
             let s = session.streams().iter().position(|s| {
                 if s.media() == "video" {
@@ -526,12 +540,8 @@ impl Camera for IpCamera {
         thread::spawn(move || {
             let rt = Runtime::new().unwrap();
 
-            let future = Self::write_fmp4(
-                livestream_writer,
-                frame_queue,
-                video_params,
-                audio_params,
-            );
+            let future =
+                Self::write_fmp4(livestream_writer, frame_queue, video_params, audio_params);
 
             rt.block_on(future).unwrap();
         });

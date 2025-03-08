@@ -16,12 +16,12 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use privastead_client_lib::user::User;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
-use privastead_client_lib::user::User;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct VideoInfo {
@@ -58,9 +58,7 @@ pub struct DeliveryMonitor {
 
 impl DeliveryMonitor {
     pub fn from_file_or_new(video_dir: String, state_dir: String, renotify_threshold: u64) -> Self {
-        let d_files =
-            User::get_state_files_sorted(&state_dir, "delivery_monitor_")
-                .unwrap();
+        let d_files = User::get_state_files_sorted(&state_dir, "delivery_monitor_").unwrap();
         for f in &d_files {
             let pathname = state_dir.clone() + "/" + f;
             let file = fs::File::open(pathname).expect("Could not open file");
@@ -87,8 +85,9 @@ impl DeliveryMonitor {
     pub fn save_state(&self) {
         let current_timestamp = Self::now_in_nanos();
         let data = bincode::serialize(&self).unwrap();
-        
-        let pathname = self.state_dir.clone() + "/delivery_monitor_" + &current_timestamp.to_string();
+
+        let pathname =
+            self.state_dir.clone() + "/delivery_monitor_" + &current_timestamp.to_string();
         let mut file = fs::File::create(pathname).expect("Could not create file");
         file.write_all(&data).unwrap();
         file.flush().unwrap();
@@ -99,7 +98,7 @@ impl DeliveryMonitor {
         assert!(d_files[0] == "delivery_monitor_".to_owned() + &current_timestamp.to_string());
         for f in &d_files[1..] {
             let _ = fs::remove_file(self.state_dir.clone() + "/" + f);
-        }        
+        }
     }
 
     pub fn send_event(&mut self, mut video_info: VideoInfo) {

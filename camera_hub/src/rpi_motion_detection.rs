@@ -16,21 +16,20 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-
+use fast_image_resize::images::Image;
+use fast_image_resize::{PixelType, ResizeAlg, ResizeOptions, Resizer};
+use ndarray::parallel::prelude::*;
 use std::{
+    io,
     sync::{Arc, Mutex},
     thread,
     time::{Duration, SystemTime},
-    io,
 };
-use fast_image_resize::{PixelType, ResizeAlg, ResizeOptions, Resizer};
-use fast_image_resize::images::{Image};
-use ndarray::parallel::prelude::*;
 
-use image::{GrayImage};
+use crate::rpi_dual_stream::{RawFrame, SharedCameraStream};
+use image::GrayImage;
 use imageproc::region_labelling::Connectivity;
 use ndarray::{Array2, Zip};
-use crate::rpi_dual_stream::{SharedCameraStream, RawFrame};
 
 const ALPHA: f32 = 0.05; // Background update rate
 const THRESHOLD: u8 = 70; // Motion detection threshold
@@ -38,7 +37,6 @@ const THRESHOLD: u8 = 70; // Motion detection threshold
 const MINIMUM_TOTAL_CLUSTERED_POINTS: usize = 700; // The minimum sum of the points within all the clustered groups to be considered motion
 const MINIMUM_INDIVIDUAL_CLUSTER_POINTS: usize = 400; // The minimum amount of points for a cluster to be considered not noise
 const MINIMUM_GLOBAL_POINTS: usize = 2500; // The minimum amount of individual global points (could be noise) to be considered motion
-
 
 // Frame dimensions (must match what is used in capture)
 const WIDTH: u32 = 1920; //TODO: for YUV420 to work properly with this code, this must be divisible by 64. Consider using padding for other resolution support in the future (if need be)
@@ -145,7 +143,11 @@ impl MotionDetection {
         GrayImage::from_raw(WIDTH, HEIGHT, y_plane)
     }
 
-    pub fn downscale_with_fast_image_resize(src: &GrayImage, target_width: u32, target_height: u32) -> GrayImage {
+    pub fn downscale_with_fast_image_resize(
+        src: &GrayImage,
+        target_width: u32,
+        target_height: u32,
+    ) -> GrayImage {
         let src_width = src.width();
         let src_height = src.height();
         let src_data = src.to_vec();
@@ -160,7 +162,12 @@ impl MotionDetection {
         let mut dst_image = Image::new(target_width, target_height, PixelType::U8);
         let mut resizer = Resizer::new();
 
-        resizer.resize(&src_image, &mut dst_image, &ResizeOptions::new().resize_alg(ResizeAlg::Nearest))
+        resizer
+            .resize(
+                &src_image,
+                &mut dst_image,
+                &ResizeOptions::new().resize_alg(ResizeAlg::Nearest),
+            )
             .expect("Resizing failed");
         GrayImage::from_raw(target_width, target_height, dst_image.buffer().to_vec())
             .expect("Failed to create GrayImage from resized data")
@@ -199,7 +206,10 @@ impl MotionDetection {
                 return Ok(false);
             }
         };
-        println!("Elapsed Time for grayscale: {}ms", gray.elapsed().unwrap().as_millis());
+        println!(
+            "Elapsed Time for grayscale: {}ms",
+            gray.elapsed().unwrap().as_millis()
+        );
 
         // Downscale to 640x480 from 1920x1080 to reduce load on background subtractor & clustering (by a magnitude of ~10x for ~2x the cost)
         let resize = SystemTime::now();
@@ -212,7 +222,10 @@ impl MotionDetection {
             grayscale.clone()
         };
 
-        println!("Elapsed Time for resize: {}ms", resize.elapsed().unwrap().as_millis());
+        println!(
+            "Elapsed Time for resize: {}ms",
+            resize.elapsed().unwrap().as_millis()
+        );
 
         // Initialize the background subtractor on the first frame.
         if self.motion.is_none() {
@@ -226,7 +239,10 @@ impl MotionDetection {
         let diff_result = bgs.apply(&processed);
         self.motion = Some(bgs);
 
-        println!("Elapsed Time for background subtractor result: {}ms", bg_subtract.elapsed().unwrap().as_millis());
+        println!(
+            "Elapsed Time for background subtractor result: {}ms",
+            bg_subtract.elapsed().unwrap().as_millis()
+        );
 
         // Parallelize the check global points
         let start_check_all = SystemTime::now();
@@ -247,7 +263,10 @@ impl MotionDetection {
             })
             .collect();
 
-        println!("Elapsed Time for check global: {}ms", start_check_all.elapsed().unwrap().as_millis());
+        println!(
+            "Elapsed Time for check global: {}ms",
+            start_check_all.elapsed().unwrap().as_millis()
+        );
 
         let total_points = data_points.len();
         let scale_factor: f64 = (w as f64 * h as f64) / (640.0 * 480.0);
@@ -311,8 +330,13 @@ impl MotionDetection {
                 .map(|(_label, &area)| area)
                 .sum();
 
-            println!("Elapsed Time for CCL: {}ms", cluster_time.elapsed().unwrap().as_millis());
-            if (total_clustered_points as f64) >= scale_factor * (MINIMUM_TOTAL_CLUSTERED_POINTS as f64) {
+            println!(
+                "Elapsed Time for CCL: {}ms",
+                cluster_time.elapsed().unwrap().as_millis()
+            );
+            if (total_clustered_points as f64)
+                >= scale_factor * (MINIMUM_TOTAL_CLUSTERED_POINTS as f64)
+            {
                 self.motion = Some(BackgroundSubtractor::new(&processed));
                 eprintln!(
                     "Motion detected (CCL) with {} clustered points (of {} total).",
@@ -320,10 +344,12 @@ impl MotionDetection {
                 );
                 return Ok(true);
             } else {
-                debug!("{} clustered points of {} total", total_clustered_points, total_points)
+                debug!(
+                    "{} clustered points of {} total",
+                    total_clustered_points, total_points
+                )
             }
         }
-
 
         Ok(false)
     }

@@ -16,20 +16,20 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::{io, thread};
+use image::{imageops, GenericImageView, GrayImage, ImageReader};
+use linfa::dataset::Labels;
+use linfa::prelude::Transformer;
+use linfa::Dataset;
+use linfa_clustering::AppxDbscan;
+use ndarray::{Array, Array2, Ix1, OwnedRepr};
+use reqwest::blocking::{Client, Response};
+use reqwest::header::{HeaderValue, CONTENT_TYPE};
 use std::io::{BufRead, BufReader, Read};
 use std::ops::Div;
 use std::process::exit;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
-use image::{GenericImageView, GrayImage, imageops, ImageReader};
-use linfa::Dataset;
-use linfa::dataset::Labels;
-use linfa::prelude::Transformer;
-use linfa_clustering::AppxDbscan;
-use ndarray::{Array, Array2, Ix1, OwnedRepr};
-use reqwest::blocking::{Client, Response};
-use reqwest::header::{CONTENT_TYPE, HeaderValue};
+use std::{io, thread};
 
 const ALPHA: f32 = 0.05; // Background update rate
 const THRESHOLD: u8 = 70; // Motion detection threshold
@@ -62,11 +62,7 @@ impl BackgroundSubtractor {
         let (width, height) = initial_frame.dimensions();
 
         // Directly convert the GrayImage buffer to a ndarray
-        let bg_vec: Vec<f32> = initial_frame
-            .as_raw()
-            .iter()
-            .map(|&p| p as f32)
-            .collect();
+        let bg_vec: Vec<f32> = initial_frame.as_raw().iter().map(|&p| p as f32).collect();
 
         let bg = Array2::from_shape_vec((height as usize, width as usize), bg_vec)
             .expect("Failed to create ndarray from initial frame");
@@ -104,7 +100,7 @@ impl MotionDetection {
         ip: String,
         username: String,
         password: String,
-        motion_fps: u64
+        motion_fps: u64,
     ) -> io::Result<Self> {
         let latest_frame: Arc<Mutex<Option<MPEGFrame>>> = Arc::new(Mutex::new(None));
         let latest_frame_clone = Arc::clone(&latest_frame);
@@ -138,7 +134,10 @@ impl MotionDetection {
         let response = client.get(url_req.clone()).send().expect("");
 
         if response.status() != 401 {
-            println!("Unexpected status from camera MJPEG attempt: {}", response.status());
+            println!(
+                "Unexpected status from camera MJPEG attempt: {}",
+                response.status()
+            );
             exit(1);
         }
 
@@ -149,7 +148,8 @@ impl MotionDetection {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
 
-        let mut pw_client = http_auth::PasswordClient::try_from(www_authenticate).expect("Unable to instantiate PasswordClient from www_authenticate for MJPEG stream");
+        let mut pw_client = http_auth::PasswordClient::try_from(www_authenticate)
+            .expect("Unable to instantiate PasswordClient from www_authenticate for MJPEG stream");
         let authorization = pw_client
             .respond(&http_auth::PasswordParams {
                 username: username.as_str(),
@@ -167,23 +167,27 @@ impl MotionDetection {
         let response = client
             .get(url_req)
             .header(reqwest::header::AUTHORIZATION, authorization)
-            .send().expect("");
+            .send()
+            .expect("");
 
         if !response.status().is_success() {
-            println!("Failed to authenticate to camera MJPEG: HTTP {}", response.status());
+            println!(
+                "Failed to authenticate to camera MJPEG: HTTP {}",
+                response.status()
+            );
             exit(1);
         }
 
         // Detect boundary from Content-Type
-        let boundary = Self::get_mjpeg_boundary(&response)
-            .unwrap_or_else(|| "--myboundary".to_string()); // fallback is "myboundary", seems to be the default in Amcrest cameras
+        let boundary =
+            Self::get_mjpeg_boundary(&response).unwrap_or_else(|| "--myboundary".to_string()); // fallback is "myboundary", seems to be the default in Amcrest cameras
         debug!("Using boundary: {}", boundary);
 
         let mut reader = BufReader::new(response);
         loop {
             // Read lines until we see one that starts with --<boundary> or we reach EOF
-            let maybe_line = Self::read_ascii_line(&mut reader)
-                .expect("Error reading line from camera stream.");
+            let maybe_line =
+                Self::read_ascii_line(&mut reader).expect("Error reading line from camera stream.");
 
             if maybe_line.is_none() {
                 debug!("EOF reached... exiting MJPEG loop.");
@@ -199,8 +203,8 @@ impl MotionDetection {
 
                 // Now read headers until blank line
                 loop {
-                    let hdr_line = Self::read_ascii_line(&mut reader)
-                        .expect("Failed to read header line.");
+                    let hdr_line =
+                        Self::read_ascii_line(&mut reader).expect("Failed to read header line.");
 
                     if hdr_line.is_none() {
                         return;
@@ -250,9 +254,8 @@ impl MotionDetection {
             if let Some(idx) = ct_str.to_lowercase().find("boundary=") {
                 let after = &ct_str[idx + "boundary=".len()..];
                 // Trim semicolons/spaces/quotes
-                let boundary_str = after.trim_matches(|c: char| {
-                    c.is_whitespace() || c == ';' || c == '"'
-                });
+                let boundary_str =
+                    after.trim_matches(|c: char| c.is_whitespace() || c == ';' || c == '"');
                 if !boundary_str.is_empty() {
                     // Ensure the boundary lines in the stream are prefixed with "--",
                     if !boundary_str.starts_with("--") {
@@ -294,8 +297,17 @@ impl MotionDetection {
             let latest_video = latest_frame.frame.clone();
 
             // Ensure that either no detection has occurred before, or that this isn't the same frame as last time.
-            if self.last_detection.is_none() ||
-                self.last_detection.map(|last_time| latest_video_time.duration_since(last_time).map(|d| d >= Duration::from_millis(1000.div(self.motion_fps))).unwrap_or(false)).unwrap_or(false) {
+            if self.last_detection.is_none()
+                || self
+                    .last_detection
+                    .map(|last_time| {
+                        latest_video_time
+                            .duration_since(last_time)
+                            .map(|d| d >= Duration::from_millis(1000.div(self.motion_fps)))
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false)
+            {
                 let decoded = ImageReader::new(io::Cursor::new(latest_video))
                     .with_guessed_format()
                     .expect("Could not guess JPEG format")
@@ -315,7 +327,8 @@ impl MotionDetection {
                     // TODO: We may need to re-think this approach for outdoor cameras.
                     width = 640;
                     height = 480;
-                    grayscale = imageops::resize(&grayscale, 640, 480, imageops::FilterType::Nearest);
+                    grayscale =
+                        imageops::resize(&grayscale, 640, 480, imageops::FilterType::Nearest);
                 }
 
                 // Determine how much we need to scale our constants for minimum point motion detection based on the tested resolution (640x480)
@@ -340,9 +353,14 @@ impl MotionDetection {
                     let total_amt_of_points = targets.len();
 
                     // We don't need to perform DBScan if we have a massive amount of differing points (as noise isn't possible in this quantity)
-                    if total_amt_of_points as f64 >= points_scale_factor * MINIMUM_GLOBAL_POINTS as f64 {
+                    if total_amt_of_points as f64
+                        >= points_scale_factor * MINIMUM_GLOBAL_POINTS as f64
+                    {
                         self.motion = Some(BackgroundSubtractor::new(&grayscale));
-                        debug!("Motion was detected via global analysis with {} total points", total_amt_of_points);
+                        debug!(
+                            "Motion was detected via global analysis with {} total points",
+                            total_amt_of_points
+                        );
 
                         // Should you wish to see the computed motion difference images, uncomment this block (and the other below)
                         /*
@@ -352,18 +370,30 @@ impl MotionDetection {
                         */
 
                         return Ok(true);
-                    } else if total_amt_of_points as f64 >= points_scale_factor * MINIMUM_TOTAL_CLUSTERED_POINTS as f64 {  // We don't need to check the clusters if the global amount of points don't exceed the min clustered amount
+                    } else if total_amt_of_points as f64
+                        >= points_scale_factor * MINIMUM_TOTAL_CLUSTERED_POINTS as f64
+                    {
+                        // We don't need to check the clusters if the global amount of points don't exceed the min clustered amount
                         // Else, if there's less, we may still want to observe to see if there's large *localized* cluster(s) of points that moved
 
                         // We formulate a dataset with these changed points
                         let x: ndarray::ArrayBase<OwnedRepr<f64>, ndarray::Ix2> =
-                            Array::from_shape_vec((total_amt_of_points, 2), data_vec).expect("Was not able to convert to X");
-                        let y: ndarray::ArrayBase<OwnedRepr<f64>, ndarray::Ix1> = Array::from_shape_vec(total_amt_of_points, targets).expect("Was not able to convert to Y");
+                            Array::from_shape_vec((total_amt_of_points, 2), data_vec)
+                                .expect("Was not able to convert to X");
+                        let y: ndarray::ArrayBase<OwnedRepr<f64>, ndarray::Ix1> =
+                            Array::from_shape_vec(total_amt_of_points, targets)
+                                .expect("Was not able to convert to Y");
                         let dataset: Dataset<f64, f64, Ix1> = Dataset::new(x, y);
 
                         // Thus, we compute an approximation of DBScan (the approximation itself seems to not be implemented in linfa yet, but will future-proof our impl),
                         // which can find clusters of *grouped* differing points to determine if we have noise or something that actually moved.
-                        let cluster_memberships = AppxDbscan::params((points_scale_factor * MINIMUM_INDIVIDUAL_CLUSTER_POINTS as f64) as usize).tolerance(points_scale_factor * DBSCAN_TOLERANCE).transform(dataset).unwrap();
+                        let cluster_memberships = AppxDbscan::params(
+                            (points_scale_factor * MINIMUM_INDIVIDUAL_CLUSTER_POINTS as f64)
+                                as usize,
+                        )
+                        .tolerance(points_scale_factor * DBSCAN_TOLERANCE)
+                        .transform(dataset)
+                        .unwrap();
                         let label_count = cluster_memberships.label_count().remove(0);
 
                         let mut total_count = 0;
@@ -374,7 +404,9 @@ impl MotionDetection {
                             }
                         }
 
-                        if total_count as f64 >= points_scale_factor * MINIMUM_TOTAL_CLUSTERED_POINTS as f64 {
+                        if total_count as f64
+                            >= points_scale_factor * MINIMUM_TOTAL_CLUSTERED_POINTS as f64
+                        {
                             // We replace the BackgroundSubtractor with the current image. This helps account for a major change in the image such as a new object being placed, etc.
                             // Should there be no huge change, and the image reverts back to the baseline, it'll just be replaced again shortly after at this same point without ill effect.
                             // This is due to us capping the motion detection notification rate at a minimum of 60 seconds.
@@ -394,7 +426,6 @@ impl MotionDetection {
                 }
             }
         }
-
 
         return Ok(false);
     }

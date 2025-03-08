@@ -109,7 +109,8 @@ pub fn livestream<C: Camera>(client: &mut User, group_name: String, camera: &C) 
     // This is to make sure we don't end up sending an update to the app, which
     // we have not successfully committed/saved on our end.
     client.save_groups_state();
-    client.send_update(group_name.clone())
+    client
+        .send_update(group_name.clone())
         .expect("Could not send the pending update!");
     if !new_update {
         // We don't want the attacker to force us to do more than one livestream session without an update.

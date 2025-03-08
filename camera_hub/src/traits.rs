@@ -15,10 +15,10 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use anyhow::Error;
-use bytes::BytesMut;
 use crate::delivery_monitor::VideoInfo;
 use crate::livestream::LivestreamWriter;
+use anyhow::Error;
+use bytes::BytesMut;
 use std::io;
 
 pub trait CodecParameters {

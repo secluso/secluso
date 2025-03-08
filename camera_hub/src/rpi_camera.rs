@@ -15,23 +15,32 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::Instant;
 use std::{
     collections::VecDeque,
     io,
     sync::{Arc, Mutex},
     thread,
-    time::{Duration}
+    time::Duration,
 };
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::time::Instant;
 
 use anyhow::{Context, Error};
 use bytes::{BufMut, BytesMut};
 use crossbeam_channel::unbounded;
 use tokio::runtime::Runtime;
 
-use crate::{delivery_monitor::VideoInfo, fmp4::Fmp4Writer, livestream::LivestreamWriter, mp4::Mp4Writer, rpi_dual_stream::SharedCameraStream, rpi_motion_detection::MotionDetection, traits::{Camera, CodecParameters}, write_box};
 use crate::traits::Mp4;
+use crate::{
+    delivery_monitor::VideoInfo,
+    fmp4::Fmp4Writer,
+    livestream::LivestreamWriter,
+    mp4::Mp4Writer,
+    rpi_dual_stream::SharedCameraStream,
+    rpi_motion_detection::MotionDetection,
+    traits::{Camera, CodecParameters},
+    write_box,
+};
 
 //These are for our local SPS/PPS channel
 
@@ -78,20 +87,14 @@ pub struct RaspberryPiCamera {
 }
 
 impl RaspberryPiCamera {
-    pub fn new(
-        name: String,
-        state_dir: String,
-        video_dir: String,
-        motion_fps: u64,
-    ) -> Self {
+    pub fn new(name: String, state_dir: String, video_dir: String, motion_fps: u64) -> Self {
         // Frame queue holds recently processed H.264 frames.
         let frame_queue = Arc::new(Mutex::new(VecDeque::new()));
         println!("Initializing Raspberry Pi Camera...");
 
         // Start the new shared stream.
-        let shared_stream = Arc::new(
-            SharedCameraStream::start().expect("Failed to start shared stream"),
-        );
+        let shared_stream =
+            Arc::new(SharedCameraStream::start().expect("Failed to start shared stream"));
 
         // Create a channel to receive SPS/PPS frames.
         let (ps_tx, ps_rx) = unbounded::<VideoFrame>();
@@ -224,12 +227,20 @@ impl RaspberryPiCamera {
             .position(|w| w == start_code)
             .or_else(|| buffer.windows(3).position(|w| w == short_start_code))?;
 
-        let start_code_len = if buffer[start..].starts_with(start_code) { 4 } else { 3 };
+        let start_code_len = if buffer[start..].starts_with(start_code) {
+            4
+        } else {
+            3
+        };
         let next_search_start = start + start_code_len;
         let end = buffer[next_search_start..]
             .windows(4)
             .position(|w| w == start_code)
-            .or_else(|| buffer[next_search_start..].windows(3).position(|w| w == short_start_code))
+            .or_else(|| {
+                buffer[next_search_start..]
+                    .windows(3)
+                    .position(|w| w == short_start_code)
+            })
             .map(|pos| next_search_start + pos)
             .unwrap_or(buffer.len());
 
@@ -258,7 +269,6 @@ impl RaspberryPiCamera {
         output.extend_from_slice(nal); // Append the NAL unit itself
     }
 
-
     /// Writes the `.mp4`, including trying to finish or clean up the file.
     async fn write_mp4(
         filename: String,
@@ -269,11 +279,14 @@ impl RaspberryPiCamera {
     ) -> Result<(), Error> {
         let file = tokio::fs::File::create(&filename).await?;
         let mut mp4 = Mp4Writer::new(
-            RpiCameraVideoParameters::new(sps_frame.data[4..].to_vec(), pps_frame.data[4..].to_vec()),
+            RpiCameraVideoParameters::new(
+                sps_frame.data[4..].to_vec(),
+                pps_frame.data[4..].to_vec(),
+            ),
             RpiCameraAudioParameters::default(),
             file,
         )
-            .await?;
+        .await?;
         Self::copy(&mut mp4, Some(duration), frame_queue).await?;
         mp4.finish().await?;
 
@@ -287,7 +300,6 @@ impl RaspberryPiCamera {
         Ok(())
     }
 
-
     /// Streams fmp4 video.
     async fn write_fmp4(
         livestream_writer: LivestreamWriter,
@@ -297,18 +309,21 @@ impl RaspberryPiCamera {
     ) -> Result<(), Error> {
         let mut fmp4 = Fmp4Writer::new(
             // Removing the 4-byte length prefix
-            RpiCameraVideoParameters::new(sps_frame.data[4..].to_vec(), pps_frame.data[4..].to_vec()),
+            RpiCameraVideoParameters::new(
+                sps_frame.data[4..].to_vec(),
+                pps_frame.data[4..].to_vec(),
+            ),
             RpiCameraAudioParameters::default(),
             livestream_writer,
         )
-            .await?;
+        .await?;
         fmp4.finish_header().await?;
         Self::copy(&mut fmp4, None, frame_queue).await?;
 
         Ok(())
     }
 
-      async fn copy<'a, M: Mp4>(
+    async fn copy<'a, M: Mp4>(
         mp4: &'a mut M,
         duration: Option<u64>,
         frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>,
@@ -343,9 +358,19 @@ impl RaspberryPiCamera {
 
             if first_frame_found {
                 //FIXME: we already determined whether the frame was an i-frame or not. Keep that in a vec to avoid recomputing?
-                let frame_timestamp: u64 = frame.timestamp.duration_since(recording_start_time).as_micros().try_into().unwrap();
-                mp4.video(&frame.data, frame_timestamp / 10, frame.kind == VideoFrameKind::IFrame).await.with_context(
-                || format!("Error processing video frame"))?;
+                let frame_timestamp: u64 = frame
+                    .timestamp
+                    .duration_since(recording_start_time)
+                    .as_micros()
+                    .try_into()
+                    .unwrap();
+                mp4.video(
+                    &frame.data,
+                    frame_timestamp / 10,
+                    frame.kind == VideoFrameKind::IFrame,
+                )
+                .await
+                .with_context(|| format!("Error processing video frame"))?;
             }
             drop(queue);
 
@@ -360,7 +385,6 @@ impl RaspberryPiCamera {
         Ok(())
     }
 }
-
 
 impl Camera for RaspberryPiCamera {
     fn is_there_motion(&mut self) -> io::Result<bool> {
@@ -428,13 +452,9 @@ struct RpiCameraVideoParameters {
 
 impl RpiCameraVideoParameters {
     pub fn new(sps: Vec<u8>, pps: Vec<u8>) -> Self {
-        Self {
-            sps,
-            pps,
-        }
+        Self { sps, pps }
     }
 }
-
 
 //FIXME: Do we need to modify this for the Raspberry PI implementation?
 impl CodecParameters for RpiCameraVideoParameters {
@@ -445,14 +465,15 @@ impl CodecParameters for RpiCameraVideoParameters {
             buf.put_u32(0); // reserved
             buf.put_u64(0); // reserved
             buf.put_u32(0); // reserved
-            //FIXME: hardcoded
+                            //FIXME: hardcoded
             buf.put_u16(1920); // width
             buf.put_u16(1080); // height
             buf.put_u32(0x0048); // horizontal resolution
             buf.put_u32(0x0048); // vertical resolution
             buf.put_u32(0); // reserved
             buf.put_u16(1); // frame count
-            for _ in 0..32 { // compressor name
+            for _ in 0..32 {
+                // compressor name
                 buf.put_u8(0);
             }
             buf.put_u16(0x0018); // depth
@@ -465,7 +486,7 @@ impl CodecParameters for RpiCameraVideoParameters {
                 buf.put_u8(self.sps[3]); // avc level indication
                 buf.put_u8(0xfc | 3); // Reserved (6 bits) + LengthSizeMinusOne (2 bits)
                 buf.put_u8(0xe0 | 1); // Reserved (3 bits) + numOfSequenceParameterSets (5 bits)
-                //sequence_parameter_sets (SPS)
+                                      //sequence_parameter_sets (SPS)
                 buf.extend_from_slice(&(self.sps.len() as u16).to_be_bytes()); // len of sps
                 buf.extend_from_slice(&self.sps);
                 //picture_parameter_sets (PPS)
