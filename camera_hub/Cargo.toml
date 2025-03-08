@@ -32,14 +32,18 @@ anyhow = "1.0.41"
 bytes = "1.0.1"
 futures = "0.3.14"
 serde_yml = "0.0.12"
+ndarray = { version="0.15.6", features = ["rayon"]} # This has to be 0.15 to support linfa
+crossbeam-channel = "0.5.14"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 rpassword = "5.0"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
-ndarray = "0.15" # This has to be 0.15 to support linfa
+http-auth = "0.1"
 linfa = "0.7.1"
 linfa-clustering = "0.7.1"
-http-auth = "0.1"
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 serde_json = "1.0"
+fast_image_resize = { version = "5.1.2", features = ["rayon"] }
+imageproc="0.25.0"
+rayon = "1.10.0"

@@ -65,7 +65,7 @@ use std::collections::VecDeque;
 use std::process::exit;
 use std::sync::{Mutex, mpsc::{self, Sender}};
 use std::time::{Duration, SystemTime};
-use crate::motion_detection::MotionDetection;
+use crate::ip_motion_detection::MotionDetection;
 
 
 pub struct IpCamera {

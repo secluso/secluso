@@ -55,9 +55,14 @@ mod ip_camera;
 use crate::ip_camera::IpCamera;
 
 #[cfg(target_arch = "aarch64")]
-mod raspberry_pi_camera;
+mod rpi_camera;
 #[cfg(target_arch = "aarch64")]
-use crate::raspberry_pi_camera::RaspberryPiCamera;
+mod rpi_dual_stream;
+#[cfg(target_arch = "aarch64")]
+mod rpi_motion_detection;
+#[cfg(target_arch = "aarch64")]
+use crate::rpi_camera::RaspberryPiCamera;
+
 
 mod delivery_monitor;
 
