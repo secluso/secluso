@@ -427,34 +427,6 @@ impl DeliveryService {
             .add_to_outgoing_traffic_meter(resp_buf.len() as u64);
     }
 
-    /// Send a welcome message to a client.
-    /// This takes a serialised `Welcome` message and stores the message for all
-    /// clients in the welcome message.
-    pub fn send_welcome(&mut self, buf: &[u8], resp_buf: &mut Vec<u8>) {
-        if !self.traffic_meter.is_outgoing_traffic_allowed() {
-            return;
-        }
-
-        let welcome_msg = MlsMessageIn::tls_deserialize(&mut &buf[..]).unwrap();
-        let welcome = welcome_msg.clone().into_welcome().unwrap();
-        log::debug!("Storing welcome message: {:?}", welcome_msg);
-
-        for secret in welcome.secrets().iter() {
-            let key_package_hash = &secret.new_member();
-            for (_client_name, client) in self.clients.iter_mut() {
-                for (client_hash, _) in client.client_info.key_packages.0.iter() {
-                    if client_hash.as_slice() == key_package_hash.as_slice() {
-                        client.client_info.welcome_queue.push(welcome_msg.clone());
-                    }
-                }
-            }
-        }
-        let resp: u8 = 0;
-        *resp_buf = bincode::serialize(&resp).unwrap();
-        self.traffic_meter
-            .add_to_outgoing_traffic_meter(resp_buf.len() as u64);
-    }
-
     /// Send an MLS message to a set of clients (group).
     /// This takes a serialised `GroupMessage` and stores the message for each
     /// client in the recipient list.
@@ -548,8 +520,6 @@ impl DeliveryService {
         client.last_recv_timestamp = Utc::now().timestamp();
 
         let mut out: Vec<MlsMessageIn> = Vec::new();
-        let mut welcomes: Vec<MlsMessageIn> = client.client_info.welcome_queue.drain(..).collect();
-        out.append(&mut welcomes);
         // Return one message at a time for now so that the size of the response buffer does not
         // get too big, needing multiple TLS packets.
         if !client.client_info.msgs.is_empty() {

@@ -41,11 +41,13 @@ Helps configure the Privastead server, camera, and app.
 
 Usage:
   privastead-config-tool --generate-user-credentials --dir DIR
+  privastead-config-tool --generate-camera-secret --dir DIR
   privastead-config-tool (--version | -v)
   privastead-config-tool (--help | -h)
 
 Options:
-    --generate-user-credentials     Generate a random 64-byte username and a random 64-byte key to be used to authenticate with the server.
+    --generate-user-credentials     Generate a random username and a random key to be used to authenticate with the server.
+    --generate-camera-secret        Generate a random secret to be used for camera pairing (used for Raspberry Pi cameras).
     --dir DIR                       Directory for storing the camera's secret files.
     --version, -v                   Show tool version.
     --help, -h                      Show this screen.
@@ -54,6 +56,7 @@ Options:
 #[derive(Debug, Deserialize)]
 struct Args {
     flag_generate_user_credentials: bool,
+    flag_generate_camera_secret: bool,
     flag_dir: String,
 }
 
@@ -68,6 +71,8 @@ fn main() -> io::Result<()> {
 
     if args.flag_generate_user_credentials {
         generate_user_credentials(args.flag_dir);
+    } else if args.flag_generate_camera_secret {
+        generate_camera_secret(args.flag_dir);
     } else {
         println!("Unsupported command!");
     }
@@ -92,6 +97,28 @@ fn generate_user_credentials(dir: String) {
     let image = code.render::<Luma<u8>>().build();
     image
         .save(dir.clone() + "/user_credentials_qrcode.png")
+        .unwrap();
+
+    println!("Generated!")
+}
+
+fn generate_camera_secret(dir: String) {
+    let crypto = OpenMlsRustCrypto::default();
+    let secret = crypto
+        .crypto()
+        .random_vec(NUM_SECRET_BYTES)
+        .unwrap();
+
+    // Save in a file to be given to the camera
+    let mut file =
+        fs::File::create(dir.clone() + "/camera_secret").expect("Could not create file");
+    let _ = file.write_all(&secret);
+
+    // Save as QR code to be shown to the app
+    let code = QrCode::new(secret.clone()).unwrap();
+    let image = code.render::<Luma<u8>>().build();
+    image
+        .save(dir.clone() + "/camera_secret_qrcode.png")
         .unwrap();
 
     println!("Generated!")

@@ -17,7 +17,7 @@
 
 use crate::ds::DeliveryService;
 use privastead_client_server_lib::ops::{
-    DEREGISTER_CLIENT, RECV_MSGS, REGISTER_CLIENT, SEND_MSG, SEND_NOTIF, SEND_WELCOME, UPDATE_TOKEN,
+    DEREGISTER_CLIENT, RECV_MSGS, REGISTER_CLIENT, SEND_MSG, SEND_NOTIF, UPDATE_TOKEN,
 };
 use std::cell::RefCell;
 use std::io;
@@ -52,11 +52,6 @@ impl DsInterface {
                 self.ds
                     .borrow_mut()
                     .update_token(&buf[..buf.len() - 1], resp_buf);
-            }
-            SEND_WELCOME => {
-                self.ds
-                    .borrow_mut()
-                    .send_welcome(&buf[..buf.len() - 1], resp_buf);
             }
             SEND_MSG => {
                 self.ds

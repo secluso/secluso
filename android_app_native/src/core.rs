@@ -116,10 +116,9 @@ impl Clients {
 
         if need_network && reregister {
             client_fcm.update_token(token)?;
+            fs::File::create(file_dir.clone() + "/registration_done").expect("Could not create file");
         }
         client_fcm.save_groups_state();
-
-        fs::File::create(file_dir.clone() + "/registration_done").expect("Could not create file");
 
         Ok(Self {
             client_motion,
@@ -223,32 +222,60 @@ fn perform_pairing_handshake(
     Ok(camera_key_packages)
 }
 
+fn send_wifi_info(
+    stream: &mut TcpStream,
+    wifi_ssid: String,
+    wifi_password: String,
+) -> io::Result<()> {
+    write_varying_len(stream, &wifi_ssid.into_bytes())?;
+    write_varying_len(stream, &wifi_password.into_bytes())?;
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn pair_with_camera(
     camera_ip: String,
     app_motion_key_packages: KeyPackages,
     app_livestream_key_packages: KeyPackages,
     app_fcm_key_packages: KeyPackages,
     secret: [u8; pairing::NUM_SECRET_BYTES],
-) -> io::Result<(KeyPackages, KeyPackages, KeyPackages)> {
+    standalone_camera: bool,
+    wifi_ssid: String,
+    wifi_password: String,
+) -> io::Result<(KeyPackages, Vec<u8>, KeyPackages, Vec<u8>, KeyPackages, Vec<u8>)> {
     //FIXME: port number hardcoded.
     let addr = SocketAddr::from_str(&(camera_ip + ":12348")).expect("Invalid IP address/port");
     let mut stream = TcpStream::connect(&addr)?;
+    
     let camera_motion_key_packages =
         perform_pairing_handshake(&mut stream, app_motion_key_packages, secret)?;
+    let camera_motion_welcome_msg = read_varying_len(&mut stream)?;
+
     let camera_livestream_key_packages =
         perform_pairing_handshake(&mut stream, app_livestream_key_packages, secret)?;
+    let camera_livestream_welcome_msg = read_varying_len(&mut stream)?;
+
     let camera_fcm_key_packages =
         perform_pairing_handshake(&mut stream, app_fcm_key_packages, secret)?;
+    let camera_fcm_welcome_msg = read_varying_len(&mut stream)?;
+
+    if standalone_camera {
+        send_wifi_info(&mut stream, wifi_ssid, wifi_password)?;
+    }
 
     Ok((
         camera_motion_key_packages,
+        camera_motion_welcome_msg,
         camera_livestream_key_packages,
+        camera_livestream_welcome_msg,
         camera_fcm_key_packages,
+        camera_fcm_welcome_msg,
     ))
 }
 
-fn receive_welcome_message(client: &mut User, contact: Contact) -> io::Result<()> {
-    client.receive_welcome(contact)?;
+fn process_welcome_message(client: &mut User, contact: Contact, welcome_msg: Vec<u8>) -> io::Result<()> {
+    client.process_welcome(contact, welcome_msg)?;
     client.save_groups_state();
 
     Ok(())
@@ -431,6 +458,9 @@ pub fn add_camera(
     camera_name: String,
     camera_ip: String,
     secret_vec: Vec<u8>,
+    standalone_camera: bool,
+    wifi_ssid: String,
+    wifi_password: String,
     logger: Option<&AndroidLogger>,
 ) -> bool {
     if clients.is_none() {
@@ -469,13 +499,21 @@ pub fn add_camera(
     let mut camera_secret = [0u8; pairing::NUM_SECRET_BYTES];
     camera_secret.copy_from_slice(&secret_vec[..]);
 
-    let (camera_motion_key_packages, camera_livestream_key_packages, camera_fcm_key_packages) =
+    let (camera_motion_key_packages,
+        camera_motion_welcome_msg,
+        camera_livestream_key_packages,
+        camera_livestream_welcome_msg,
+        camera_fcm_key_packages,
+        camera_fcm_welcome_msg) =
         match pair_with_camera(
             camera_ip,
             clients.as_mut().unwrap().client_motion.key_packages(),
             clients.as_mut().unwrap().client_livestream.key_packages(),
             clients.as_mut().unwrap().client_fcm.key_packages(),
             camera_secret,
+            standalone_camera,
+            wifi_ssid,
+            wifi_password,
         ) {
             Ok(c) => c,
             Err(e) => {
@@ -489,40 +527,48 @@ pub fn add_camera(
         .unwrap()
         .client_motion
         .add_contact(camera_name.clone(), camera_motion_key_packages).unwrap();
+
+    match process_welcome_message(
+        &mut clients.as_mut().unwrap().client_motion,
+        motion_contact,
+        camera_motion_welcome_msg,
+    ) {
+        Ok(_) => {}
+        Err(e) => {
+            my_log(logger, format!("Error: {e}"));
+            return false;
+        }
+    }
+
     let livestream_contact = clients
         .as_mut()
         .unwrap()
         .client_livestream
         .add_contact(camera_name.clone(), camera_livestream_key_packages).unwrap();
+    
+    match process_welcome_message(
+        &mut clients.as_mut().unwrap().client_livestream,
+        livestream_contact,
+        camera_livestream_welcome_msg,
+    ) {
+        Ok(_) => {}
+        Err(e) => {
+            my_log(logger, format!("Error: {e}"));
+            return false;
+        }
+    }
+
     let fcm_contact = clients
         .as_mut()
         .unwrap()
         .client_fcm
         .add_contact(camera_name.clone(), camera_fcm_key_packages).unwrap();
 
-    match receive_welcome_message(
-        &mut clients.as_mut().unwrap().client_motion,
-        motion_contact,
+    match process_welcome_message(
+        &mut clients.as_mut().unwrap().client_fcm,
+        fcm_contact,
+        camera_fcm_welcome_msg,
     ) {
-        Ok(_) => {}
-        Err(e) => {
-            my_log(logger, format!("Error: {e}"));
-            return false;
-        }
-    }
-
-    match receive_welcome_message(
-        &mut clients.as_mut().unwrap().client_livestream,
-        livestream_contact,
-    ) {
-        Ok(_) => {}
-        Err(e) => {
-            my_log(logger, format!("Error: {e}"));
-            return false;
-        }
-    }
-
-    match receive_welcome_message(&mut clients.as_mut().unwrap().client_fcm, fcm_contact) {
         Ok(_) => {}
         Err(e) => {
             my_log(logger, format!("Error: {e}"));

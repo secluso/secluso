@@ -206,7 +206,7 @@ impl MotionDetection {
                 return Ok(false);
             }
         };
-        println!(
+        debug!(
             "Elapsed Time for grayscale: {}ms",
             gray.elapsed().unwrap().as_millis()
         );
@@ -222,7 +222,7 @@ impl MotionDetection {
             grayscale.clone()
         };
 
-        println!(
+        debug!(
             "Elapsed Time for resize: {}ms",
             resize.elapsed().unwrap().as_millis()
         );
@@ -239,7 +239,7 @@ impl MotionDetection {
         let diff_result = bgs.apply(&processed);
         self.motion = Some(bgs);
 
-        println!(
+        debug!(
             "Elapsed Time for background subtractor result: {}ms",
             bg_subtract.elapsed().unwrap().as_millis()
         );
@@ -263,7 +263,7 @@ impl MotionDetection {
             })
             .collect();
 
-        println!(
+        debug!(
             "Elapsed Time for check global: {}ms",
             start_check_all.elapsed().unwrap().as_millis()
         );
@@ -274,7 +274,7 @@ impl MotionDetection {
         // We don't need to perform any clustering at all  if we have a massive amount of differing points (as noise isn't possible in this quantity)
         if (total_points as f64) >= scale_factor * (MINIMUM_GLOBAL_POINTS as f64) {
             self.motion = Some(BackgroundSubtractor::new(&processed));
-            eprintln!(
+            debug!(
                 "Motion detected (GLOBAL) with {} points (threshold {:.2}).",
                 total_points,
                 scale_factor * MINIMUM_GLOBAL_POINTS as f64
@@ -330,7 +330,7 @@ impl MotionDetection {
                 .map(|(_label, &area)| area)
                 .sum();
 
-            println!(
+            debug!(
                 "Elapsed Time for CCL: {}ms",
                 cluster_time.elapsed().unwrap().as_millis()
             );
@@ -338,7 +338,7 @@ impl MotionDetection {
                 >= scale_factor * (MINIMUM_TOTAL_CLUSTERED_POINTS as f64)
             {
                 self.motion = Some(BackgroundSubtractor::new(&processed));
-                eprintln!(
+                debug!(
                     "Motion detected (CCL) with {} clustered points (of {} total).",
                     total_clustered_points, total_points
                 );

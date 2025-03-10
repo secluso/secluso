@@ -24,7 +24,7 @@ use openmls::prelude::*;
 use privastead_client_server_lib::auth::{UserAuth, NUM_SECRET_BYTES, NUM_USERNAME_BYTES};
 use privastead_client_server_lib::ops::{
     DEREGISTER_CLIENT, DO_AUTH, GET_NONCE, KEEP_ALIVE, KEEP_ALIVE_NO, KEEP_ALIVE_YES, RECV_MSGS,
-    REGISTER_CLIENT, SEND_MSG, SEND_NOTIF, SEND_WELCOME, UPDATE_TOKEN,
+    REGISTER_CLIENT, SEND_MSG, SEND_NOTIF, UPDATE_TOKEN,
 };
 use serde::Serialize as SerdeSerialize;
 use std::io;
@@ -225,36 +225,6 @@ impl Backend {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 format!("update_token() returned error ({resp})"),
-            ));
-        }
-
-        Ok(())
-    }
-
-    /// Send a welcome message.
-    pub fn send_welcome(&mut self, welcome_msg: &MlsMessageOut) -> io::Result<()> {
-        let mut msg_vec = Vec::new();
-        welcome_msg.tls_serialize(&mut msg_vec).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("tls_serialize in send_welcome() failed ({e})"),
-            )
-        })?;
-        msg_vec.push(SEND_WELCOME);
-        write_varying_len(&mut self.stream, &msg_vec)?;
-
-        let resp_vec = read_varying_len(&mut self.stream)?;
-        let resp: u8 = bincode::deserialize(&resp_vec).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("deserialize in send_welcome() failed ({e})"),
-            )
-        })?;
-
-        if resp != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("send_welcome() returned error ({resp})"),
             ));
         }
 

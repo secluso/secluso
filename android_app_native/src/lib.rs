@@ -167,6 +167,9 @@ pub mod android {
         name: JString,
         ip: JString,
         secret: jbyteArray,
+        standalone: jboolean,
+        ssid: JString,
+        password: JString,
     ) -> jboolean {
         let mut clients = CLIENTS.lock().unwrap();
 
@@ -182,6 +185,15 @@ pub mod android {
             .expect("Couldn't covert to Rust String")
             .into();
         let secret_vec: Vec<u8> = env.convert_byte_array(secret).unwrap();
+        let standalone_camera: bool = standalone == JNI_TRUE;
+        let wifi_ssid: String = env
+            .get_string(ssid)
+            .expect("Couldn't covert to Rust String")
+            .into();
+        let wifi_password: String = env
+            .get_string(password)
+            .expect("Couldn't covert to Rust String")
+            .into();
 
         if (*clients).is_none() {
             my_log(Some(&logger), "Error: clients hashmap not initialized!");
@@ -190,7 +202,16 @@ pub mod android {
 
         let camera_clients = (*clients).as_mut().unwrap().entry(camera_name.clone()).or_insert(Mutex::new(None)).lock().unwrap();
 
-        let ret = add_camera(camera_clients, camera_name, camera_ip, secret_vec, Some(&logger));
+        let ret = add_camera(
+            camera_clients,
+            camera_name,
+            camera_ip,
+            secret_vec,
+            standalone_camera,
+            wifi_ssid,
+            wifi_password,
+            Some(&logger),
+        );
 
         return ret as jboolean;
     }

@@ -42,7 +42,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::ops::Add;
 use std::path::Path;
-use std::process::exit;
+use std::process::{exit, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::sleep;
@@ -164,48 +164,38 @@ fn generate_camera_secret<C: Camera>(camera: &C) -> Vec<u8> {
     secret
 }
 
-fn pair_with_app<C: Camera>(
-    camera: &C,
-    camera_motion_key_packages: KeyPackages,
-    camera_livestream_key_packages: KeyPackages,
-    camera_fcm_key_packages: KeyPackages,
-) -> (KeyPackages, KeyPackages, KeyPackages) {
-    // Ensure that two cameras don't attempt to pair at the same time (as this would introduce an error when opening two of the same port simultaneously)
-    let _lock = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+#[cfg(target_arch = "aarch64")]
+fn get_input_camera_secret() -> Vec<u8> {
+    let pathname = "./camera_secret";
+    let file = fs::File::open(pathname).expect("Could not open file");
+    let mut reader =
+        BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
+    let data = reader.fill_buf().unwrap();
 
-    let secret = generate_camera_secret(camera);
-    if secret.len() != pairing::NUM_SECRET_BYTES {
+    data.to_vec()
+}
+
+fn pair_with_app(
+    stream: &mut TcpStream,
+    camera_key_packages: KeyPackages,
+    input_camera_secret: Vec<u8>,
+) -> KeyPackages {
+    
+    if input_camera_secret.len() != pairing::NUM_SECRET_BYTES {
         panic!("Invalid number of bytes in secret!");
     }
 
-    println!("[{}] File camera_{}_secret_qrcode.png was just created. Use the QR code in the app to pair.", camera.get_name(), camera.get_name().replace(" ", "_").to_lowercase());
-
     let mut camera_secret = [0u8; pairing::NUM_SECRET_BYTES];
-    camera_secret.copy_from_slice(&secret[..]);
+    camera_secret.copy_from_slice(&input_camera_secret[..]);
 
-    let listener = TcpListener::bind("0.0.0.0:12348").unwrap();
-    let (mut stream, _) = listener.accept().unwrap();
+    let app_key_packages =
+        perform_pairing_handshake(stream, camera_key_packages, camera_secret);
 
-    let app_motion_key_packages =
-        perform_pairing_handshake(&mut stream, camera_motion_key_packages, camera_secret);
-    let app_livestream_key_packages =
-        perform_pairing_handshake(&mut stream, camera_livestream_key_packages, camera_secret);
-    let app_fcm_key_packages =
-        perform_pairing_handshake(&mut stream, camera_fcm_key_packages, camera_secret);
-
-    let _ = fs::remove_file(format!(
-        "camera_{}_secret_qrcode.png",
-        camera.get_name().replace(" ", "_").to_lowercase()
-    ));
-
-    (
-        app_motion_key_packages,
-        app_livestream_key_packages,
-        app_fcm_key_packages,
-    )
+    app_key_packages
 }
 
 fn create_group_and_invite<C: Camera>(
+    stream: &mut TcpStream,
     camera: &C,
     client: &mut User,
     group_name: String,
@@ -218,18 +208,70 @@ fn create_group_and_invite<C: Camera>(
     client.save_groups_state();
     debug!("Created group.");
 
-    client.invite(&app_contact, group_name).map_err(|e| {
+    let welcome_msg_vec = client.invite(&app_contact, group_name).map_err(|e| {
         error!("invite() returned error:");
         e
     })?;
     client.save_groups_state();
     debug!("App invited to the group.");
 
+    write_varying_len(stream, &welcome_msg_vec);
+
     fs::File::create(camera.get_state_dir() + "/first_time_done").expect("Could not create file");
 
     Ok(())
 }
 
+fn get_wifi_info_and_connect(stream: &mut TcpStream) {
+    let ssid_bytes = read_varying_len(stream);
+    let ssid = String::from_utf8(ssid_bytes).expect("Invalid UTF-8 for WiFi SSID");
+    //FIXME: password must be sent encrypted
+    let password_bytes = read_varying_len(stream);
+    let password = String::from_utf8(password_bytes).expect("Invalid UTF-8 for WiFi password");
+    println!("[1] ssid = {:?}, password = {:?}", ssid, password);
+
+    // Disable the Hotspot first
+    let _ = Command::new("sh")
+        .arg("-c")
+        .arg("nmcli connection down id Hotspot")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    // Wait a bit for Hotspot to get disabled
+    thread::sleep(Duration::from_secs(5));
+
+    // Connect to SSID
+    let _ = Command::new("sh")
+        .arg("-c")
+        .arg(format!("nmcli device wifi connect \"{}\" password \"{}\"", ssid.clone(), password))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    // Set up autoconnect to SSID on reboot
+    let _ = Command::new("sh")
+        .arg("-c")
+        .arg(format!("nmcli connection modify \"{}\" connection.autoconnect yes", ssid))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+}
+
+fn create_wifi_hotspot() {
+    let _ = Command::new("sh")
+        .arg("-c")
+        .arg("nmcli device wifi hotspot ssid Privastead password \"12345678\"")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+}
+
+#[allow(clippy::too_many_arguments)]
 fn create_camera_groups<C: Camera>(
     camera: &C,
     client_motion: &mut User,
@@ -238,28 +280,66 @@ fn create_camera_groups<C: Camera>(
     group_motion_name: String,
     group_livestream_name: String,
     group_fcm_name: String,
+    input_camera_secret: Option<Vec<u8>>,
+    connect_to_wifi: bool,
 ) -> io::Result<()> {
-    let (app_motion_key_packages, app_livestream_key_packages, app_fcm_key_packages) =
-        pair_with_app(
-            camera,
-            client_motion.key_packages(),
-            client_livestream.key_packages(),
-            client_fcm.key_packages(),
-        );
+    // Ensure that two cameras don't attempt to pair at the same time (as this would introduce an error when opening two of the same port simultaneously)
+    let _lock = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
 
+    let secret = if let Some(s) = input_camera_secret.clone() {
+        s
+    } else {
+        generate_camera_secret(camera)
+    };
+
+    if input_camera_secret.is_none() {
+        println!("[{}] File camera_{}_secret_qrcode.png was just created. Use the QR code in the app to pair.", camera.get_name(), camera.get_name().replace(" ", "_").to_lowercase());
+    } else {
+        println!("Use the camera QR code in the app to pair.");
+    }
+
+    // Wait for the app to connect.
+    let listener = TcpListener::bind("0.0.0.0:12348").unwrap();
+    let (mut stream, _) = listener.accept().unwrap();
+
+    let app_motion_key_packages =
+        pair_with_app(
+            &mut stream,
+            client_motion.key_packages(),
+            secret.clone(),
+        );
+    create_group_and_invite(&mut stream, camera, client_motion, group_motion_name, app_motion_key_packages)?;
+
+    let app_livestream_key_packages =
+        pair_with_app(
+            &mut stream,
+            client_livestream.key_packages(),
+            secret.clone(),
+        );    
     create_group_and_invite(
-        camera,
-        client_motion,
-        group_motion_name,
-        app_motion_key_packages,
-    )?;
-    create_group_and_invite(
+        &mut stream,
         camera,
         client_livestream,
         group_livestream_name,
         app_livestream_key_packages,
     )?;
-    create_group_and_invite(camera, client_fcm, group_fcm_name, app_fcm_key_packages)?;
+
+    let app_fcm_key_packages =
+        pair_with_app(
+            &mut stream,
+            client_fcm.key_packages(),
+            secret,
+        );
+    create_group_and_invite(&mut stream, camera, client_fcm, group_fcm_name, app_fcm_key_packages)?;
+
+    if input_camera_secret.is_none() {
+        let _ = fs::remove_file(format!("camera_{}_secret_qrcode.png", camera.get_name().replace(" ", "_").to_lowercase()));
+    }
+
+    // Send WiFi info to the app.
+    if connect_to_wifi {
+        get_wifi_info_and_connect(&mut stream);
+    }
 
     Ok(())
 }
@@ -547,6 +627,14 @@ fn main() -> io::Result<()> {
     let mut camera_list: Vec<RaspberryPiCamera> = Vec::new();
     #[cfg(target_arch = "aarch64")]
     let mut num_raspberry_pi = 0;
+    #[cfg(target_arch = "x86_64")]
+    let input_camera_secret: Option<Vec<u8>> = None;
+    #[cfg(target_arch = "aarch64")]
+    let mut input_camera_secret: Option<Vec<u8>> = None;
+    #[cfg(target_arch = "x86_64")]
+    let connect_to_wifi = false;
+    #[cfg(target_arch = "aarch64")]
+    let mut connect_to_wifi = false;
     if let Value::Sequence(cameras) = cameras_section {
         for camera in cameras {
             if let Value::Mapping(map) = camera {
@@ -651,6 +739,9 @@ fn main() -> io::Result<()> {
                             camera_motion_fps,
                         );
                         camera_list.push(camera);
+
+                        input_camera_secret = Some(get_input_camera_secret());
+                        connect_to_wifi = true;
                     }
                     #[cfg(not(target_arch = "aarch64"))]
                     {
@@ -675,39 +766,36 @@ fn main() -> io::Result<()> {
         let delivery_service_addr = delivery_service_addr.clone();
         let credentials = credentials.clone();
         let args = args.clone();
+        let input_camera_secret = input_camera_secret.clone();
         GLOBAL_THREAD_COUNT.fetch_add(1, Ordering::SeqCst);
         thread::spawn(move || {
             loop {
-                let motion_stream: Option<TcpStream> = try_connect(&camera, &delivery_service_addr);
-                let livestream_stream: Option<TcpStream> =
-                    try_connect(&camera, &delivery_service_addr);
-                let fcm_stream: Option<TcpStream> = try_connect(&camera, &delivery_service_addr);
+                if args.flag_reset {
+                    match reset(
+                        &camera,
+                        delivery_service_addr.clone(),
+                        credentials.clone(),
+                    ) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            panic!("reset() returned with: {e}");
+                        }
+                    };
 
-                if motion_stream.is_some() && livestream_stream.is_some() && fcm_stream.is_some() {
-                    if args.flag_reset {
-                        reset(
-                            &camera,
-                            motion_stream.unwrap(),
-                            livestream_stream.unwrap(),
-                            fcm_stream.unwrap(),
-                            credentials.clone(),
-                        );
-
-                        // Deduct one from our thread count for main thread to know when to exit (when all are finished)
-                        GLOBAL_THREAD_COUNT.fetch_sub(1, Ordering::SeqCst);
-                        return;
-                    } else {
-                        match core(
-                            &mut camera,
-                            motion_stream.unwrap(),
-                            livestream_stream.unwrap(),
-                            fcm_stream.unwrap(),
-                            credentials.clone(),
-                        ) {
-                            Ok(_) => {}
-                            Err(e) => {
-                                error!("core() returned with: {e}");
-                            }
+                    // Deduct one from our thread count for main thread to know when to exit (when all are finished)
+                    GLOBAL_THREAD_COUNT.fetch_sub(1, Ordering::SeqCst);
+                    return;
+                } else {
+                    match core(
+                        &mut camera,
+                        delivery_service_addr.clone(),
+                        credentials.clone(),
+                        input_camera_secret.clone(),
+                        connect_to_wifi,
+                    ) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("core() returned with: {e}");
                         }
                     }
                 }
@@ -727,15 +815,16 @@ fn main() -> io::Result<()> {
 }
 
 /// Helper function to try connecting to the TCP server.
-fn try_connect<C: Camera>(camera: &C, address: &str) -> Option<TcpStream> {
+fn try_connect<C: Camera>(camera: &C, address: &str) -> io::Result<TcpStream> {
     match TcpStream::connect(address) {
-        Ok(stream) => Some(stream),
-        Err(_) => {
+        Ok(stream) => Ok(stream),
+        Err(e) => {
+            println!("Error: failed to connect to the delivery service!");
             let state_dir = camera.get_state_dir();
             let state_dir_path = Path::new(&state_dir);
             let registration_done_path = state_dir_path.join("registration_done");
             let _ = fs::remove_file(registration_done_path);
-            None
+            Err(e)
         }
     }
 }
@@ -765,11 +854,9 @@ fn ask_user_password(prompt: String) -> io::Result<String> {
 
 fn reset<C: Camera>(
     camera: &C,
-    server_motion_stream: TcpStream,
-    server_livestream_stream: TcpStream,
-    server_fcm_stream: TcpStream,
+    delivery_service_addr: String,
     credentials: Vec<u8>,
-) {
+) -> io::Result<()> {
     // First, deregister from the server
     // FIXME: has some code copy/pasted from core()
     let state_dir = camera.get_state_dir();
@@ -781,7 +868,7 @@ fn reset<C: Camera>(
 
     if first_time {
         println!("There's no state to reset!");
-        return;
+        return Ok(());
     }
 
     let reregister = false;
@@ -806,6 +893,10 @@ fn reset<C: Camera>(
         "camera_fcm_name".to_string(),
         "group_fcm_name".to_string(),
     );
+
+    let server_motion_stream = try_connect(camera, &delivery_service_addr)?;
+    let server_livestream_stream = try_connect(camera, &delivery_service_addr)?;
+    let server_fcm_stream = try_connect(camera, &delivery_service_addr)?;
 
     match User::new(
         camera_motion_name,
@@ -885,19 +976,23 @@ fn reset<C: Camera>(
     let _ = fs::remove_dir_all(video_dir_path);
 
     println!("Reset finished.");
+    Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn core<C: Camera>(
     camera: &mut C,
-    server_motion_stream: TcpStream,
-    server_livestream_stream: TcpStream,
-    server_fcm_stream: TcpStream,
+    delivery_service_addr: String,
     credentials: Vec<u8>,
+    input_camera_secret: Option<Vec<u8>>,
+    connect_to_wifi: bool,
 ) -> io::Result<()> {
     let state_dir = camera.get_state_dir();
-    let first_time: bool = !Path::new(&(state_dir.clone() + "/first_time_done")).exists();
+    let mut first_time: bool = !Path::new(&(state_dir.clone() + "/first_time_done")).exists();
     let reregister: bool = !Path::new(&(state_dir.clone() + "/registration_done")).exists();
+
+    if first_time && connect_to_wifi {
+        create_wifi_hotspot();
+    }
 
     let (camera_motion_name, group_motion_name) = get_names(
         camera,
@@ -926,6 +1021,77 @@ fn core<C: Camera>(
     debug!("camera_fcm_name = {}", camera_fcm_name);
     debug!("group_fcm_name = {}", group_fcm_name);
 
+    let mut client_motion = User::new(
+        camera_motion_name.clone(),
+        None,
+        first_time,
+        reregister,
+        state_dir.clone(),
+        "motion".to_string(),
+        credentials.clone(),
+        true,
+    )
+        .map_err(|e| {
+            error!("User::new() returned error:");
+            e
+        })?;
+    debug!("Motion client created.");
+
+    let mut client_livestream = User::new(
+        camera_livestream_name.clone(),
+        None,
+        first_time,
+        reregister,
+        state_dir.clone(),
+        "livestream".to_string(),
+        credentials.clone(),
+        true,
+    )
+        .map_err(|e| {
+            error!("User::new() returned error:");
+            e
+        })?;
+    debug!("Livestream client created.");
+
+    let mut client_fcm = User::new(
+        camera_fcm_name.clone(),
+        None,
+        first_time,
+        reregister,
+        state_dir.clone(),
+        "fcm".to_string(),
+        credentials.clone(),
+        true,
+    )
+        .map_err(|e| {
+            error!("User::new() returned error:");
+            e
+        })?;
+    debug!("FCM client created.");
+
+    let camera_name = camera.get_name();
+    if first_time {
+        println!("[{}] Waiting to be paired with the mobile app.", camera_name);
+        create_camera_groups(
+            camera,
+            &mut client_motion,
+            &mut client_livestream,
+            &mut client_fcm,
+            group_motion_name.clone(),
+            group_livestream_name.clone(),
+            group_fcm_name.clone(),
+            input_camera_secret,
+            connect_to_wifi,
+        )?;
+        println!("[{}] Pairing successful.", camera_name);
+    }
+
+    // Now, we have access to Internet and we can connect to the delivery service
+    let server_motion_stream = try_connect(camera, &delivery_service_addr)?;
+    let server_livestream_stream = try_connect(camera, &delivery_service_addr)?;
+    let server_fcm_stream = try_connect(camera, &delivery_service_addr)?;
+    first_time = false;
+    
     let mut client_motion = User::new(
         camera_motion_name,
         Some(server_motion_stream),
@@ -975,24 +1141,6 @@ fn core<C: Camera>(
     debug!("FCM client created.");
 
     fs::File::create(state_dir.clone() + "/registration_done").expect("Could not create file");
-
-    let camera_name = camera.get_name();
-    if first_time {
-        println!(
-            "[{}] Waiting to be paired with the mobile app.",
-            camera_name
-        );
-        create_camera_groups(
-            camera,
-            &mut client_motion,
-            &mut client_livestream,
-            &mut client_fcm,
-            group_motion_name.clone(),
-            group_livestream_name.clone(),
-            group_fcm_name.clone(),
-        )?;
-        println!("[{}] Pairing successful.", camera_name);
-    }
 
     println!("[{}] Running...", camera_name);
 

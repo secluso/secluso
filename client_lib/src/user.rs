@@ -31,7 +31,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, collections::HashMap};
-use tls_codec::{Deserialize as TlsDeserialize, TlsVecU16};
+use tls_codec::{Serialize as TlsSerialize, Deserialize as TlsDeserialize, TlsVecU16};
 
 const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 
@@ -265,14 +265,7 @@ impl User {
     }
 
     /// Invite a contact to a group.
-    pub fn invite(&mut self, contact: &Contact, group_name: String) -> io::Result<()> {
-        if self.backend.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Backend not initialized.",
-            ));
-        }
-
+    pub fn invite(&mut self, contact: &Contact, group_name: String) -> io::Result<Vec<u8>> {
         let joiner_key_package = contact.key_packages[0].1.clone();
 
         // Build a proposal with this key package and do the MLS bits.
@@ -321,12 +314,19 @@ impl User {
             .expect("error merging pending commit");
 
         // Second, send Welcome to the joiner.
-        log::trace!("Sending welcome");
-        self.backend.as_mut().unwrap().send_welcome(&welcome)?;
+        //log::trace!("Sending welcome");
+        //self.backend.as_mut().unwrap().send_welcome(&welcome)?;
+        let mut welcome_msg_vec = Vec::new();
+        welcome.tls_serialize(&mut welcome_msg_vec).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("tls_serialize for welcome_msg failed ({e})"),
+            )
+        })?;
 
         group.only_contact = Some(contact.clone());
 
-        Ok(())
+        Ok(welcome_msg_vec)
     }
 
     /// Join a group with the provided welcome message.
@@ -402,6 +402,24 @@ impl User {
             Some(_old) => panic!("Error: duplicate group"),
             None => Ok(()),
         }
+    }
+
+    /// Process a welcome message
+    pub fn process_welcome(&mut self, expected_inviter: Contact, welcome_msg_vec: Vec<u8>) -> io::Result<()> {
+        let welcome_msg = match MlsMessageIn::tls_deserialize(&mut welcome_msg_vec.as_slice()) {
+            Ok(msg) => msg,
+            Err(e) => {return Err(io::Error::new(io::ErrorKind::Other, format!("{}", e)))},
+        };
+
+        match welcome_msg.extract() {
+            MlsMessageBodyIn::Welcome(welcome) => {
+                self.join_group(welcome, expected_inviter)
+                    .unwrap();
+            }
+            _ => panic!("Unsupported message type in process_welcome"),
+        }
+
+        Ok(())
     }
 
     /// Saves the groups and key store in persistent storage.
@@ -729,9 +747,7 @@ impl User {
         mut callback: F,
         fcm: bool,
         fcm_msgs: Option<Vec<MlsMessageIn>>,
-        process_welcome: bool,
-        expected_inviter: Option<Contact>,
-    ) -> io::Result<(u64, u64)>
+    ) -> io::Result<u64>
     where
         F: FnMut(Vec<u8>, String) -> io::Result<()>,
     {
@@ -819,16 +835,8 @@ impl User {
             ));
         }
 
-        if process_welcome && expected_inviter.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Error: Specify the expected inviter".to_string(),
-            ));
-        }
-
         // Go through the list of messages and process them.
         let mut msg_count: u64 = 0;
-        let mut welcome_count: u64 = 0;
         let mut msgs = if fcm {
             match fcm_msgs {
                 Some(m) => m,
@@ -846,17 +854,11 @@ impl User {
         for message in msgs.drain(..) {
             msg_count += 1;
             match message.extract() {
-                MlsMessageBodyIn::Welcome(welcome) => {
-                    if process_welcome {
-                        self.join_group(welcome, expected_inviter.clone().unwrap())
-                            .unwrap();
-                        welcome_count += 1;
-                    }
+                MlsMessageBodyIn::Welcome(_welcome) => {
+                    panic!("Received an unexpected welcome message!");
                 }
                 MlsMessageBodyIn::PrivateMessage(message) => {
-                    if !process_welcome {
-                        let _ = process_protocol_message(message.into());
-                    }
+                    let _ = process_protocol_message(message.into());
                 }
                 MlsMessageBodyIn::PublicMessage(_message) => {
                     panic!("Received an unexpected public message!");
@@ -867,7 +869,7 @@ impl User {
 
         log::trace!("done with messages ...");
 
-        Ok((msg_count, welcome_count))
+        Ok(msg_count)
     }
 
     /// Read all the messages in the server and process them using
@@ -876,25 +878,9 @@ impl User {
     where
         F: FnMut(Vec<u8>, String) -> io::Result<()>,
     {
-        let (msg_count, _welcome_count) = self.receive_core(callback, false, None, false, None)?;
+        let msg_count = self.receive_core(callback, false, None)?;
 
         Ok(msg_count)
-    }
-
-    /// Read all the messages in the server and process welcome messages (only).
-    /// Blocks until the welcome message is received.
-    pub fn receive_welcome(&mut self, expected_inviter: Contact) -> io::Result<()> {
-        let callback = |_msg_bytes: Vec<u8>, _contact_name: String| -> io::Result<()> { Ok(()) };
-
-        loop {
-            let (_msg_count, welcome_count) =
-                self.receive_core(callback, false, None, true, Some(expected_inviter.clone()))?;
-            if welcome_count > 0 {
-                break;
-            }
-        }
-
-        Ok(())
     }
 
     /// Process messages received through FCM using
@@ -905,8 +891,8 @@ impl User {
     {
         match TlsVecU16::<MlsMessageIn>::tls_deserialize(&mut fcm_payload.as_slice()) {
             Ok(r) => {
-                let (msg_count, _welcome_count) =
-                    self.receive_core(callback, true, Some(r.into()), false, None)?;
+                let msg_count =
+                    self.receive_core(callback, true, Some(r.into()))?;
                 Ok(msg_count)
             }
             Err(e) => {
