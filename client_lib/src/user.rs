@@ -313,9 +313,7 @@ impl User {
             .merge_pending_commit(&self.provider)
             .expect("error merging pending commit");
 
-        // Second, send Welcome to the joiner.
-        //log::trace!("Sending welcome");
-        //self.backend.as_mut().unwrap().send_welcome(&welcome)?;
+        // Second, generate and return the Welcome message (to be sent to the joiner).
         let mut welcome_msg_vec = Vec::new();
         welcome.tls_serialize(&mut welcome_msg_vec).map_err(|e| {
             io::Error::new(
@@ -698,6 +696,38 @@ impl User {
         Ok(msg)
     }
 
+    /// Generates and returns an encrypted message
+    pub fn generate_msg(&mut self, bytes: &[u8], group_name: String) -> io::Result<Vec<u8>> {
+        let groups = self.groups.borrow();
+        let group = match groups.get(group_name.as_bytes()) {
+            Some(g) => g,
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Unknown group".to_string(),
+                ))
+            }
+        };
+
+        let message_out = group
+            .mls_group
+            .borrow_mut()
+            .create_message(&self.provider, &self.identity.borrow().signer, bytes)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{e}")))?;
+
+        let msg = GroupMessage::new(message_out.into(), &self.recipients(group));
+        
+        let mut msg_vec = Vec::new();
+        msg.tls_serialize(&mut msg_vec).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("tls_serialize for msg failed ({e})"),
+            )
+        })?;
+
+        Ok(msg_vec)
+    }
+
     /// Returns true if receiver's heartbeat was received recently, false otherwise.
     /// FIXME/TODO: the heartbeat algorithm only works if there's one recipient.
     fn send_core(&mut self, bytes: &[u8], group_name: String, fcm: bool) -> io::Result<bool> {
@@ -745,8 +775,8 @@ impl User {
     fn receive_core<F>(
         &mut self,
         mut callback: F,
-        fcm: bool,
-        fcm_msgs: Option<Vec<MlsMessageIn>>,
+        non_ds: bool,
+        non_ds_msgs: Option<Vec<MlsMessageIn>>,
     ) -> io::Result<u64>
     where
         F: FnMut(Vec<u8>, String) -> io::Result<()>,
@@ -828,7 +858,7 @@ impl User {
             }
         };
 
-        if !fcm && self.backend.is_none() {
+        if !non_ds && self.backend.is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "Backend not initialized.",
@@ -837,13 +867,13 @@ impl User {
 
         // Go through the list of messages and process them.
         let mut msg_count: u64 = 0;
-        let mut msgs = if fcm {
-            match fcm_msgs {
+        let mut msgs = if non_ds {
+            match non_ds_msgs {
                 Some(m) => m,
                 None => {
                     return Err(io::Error::new(
                         io::ErrorKind::Other,
-                        "Error: fcm_msgs is None".to_string(),
+                        "Error: non_ds_msgs is None".to_string(),
                     ));
                 }
             }
@@ -883,13 +913,13 @@ impl User {
         Ok(msg_count)
     }
 
-    /// Process messages received through FCM using
+    /// Process a vector of messages received through channels other than the delivery service using
     /// the callback function.
-    pub fn receive_fcm<F>(&mut self, callback: F, fcm_payload: Vec<u8>) -> io::Result<u64>
+    pub fn receive_non_ds_vec<F>(&mut self, callback: F, vec_payload: Vec<u8>) -> io::Result<u64>
     where
         F: FnMut(Vec<u8>, String) -> io::Result<()>,
     {
-        match TlsVecU16::<MlsMessageIn>::tls_deserialize(&mut fcm_payload.as_slice()) {
+        match TlsVecU16::<MlsMessageIn>::tls_deserialize(&mut vec_payload.as_slice()) {
             Ok(r) => {
                 let msg_count =
                     self.receive_core(callback, true, Some(r.into()))?;
@@ -899,7 +929,29 @@ impl User {
                 // This happens if the server returns an error or if tls_deserialize fails.
                 Err(io::Error::new(
                     io::ErrorKind::Other,
-                    format!("Could not deserialize FCM msg ({e})"),
+                    format!("Could not deserialize non-ds vec msg ({e})"),
+                ))
+            }
+        }
+    }
+
+    /// Process a single message received through channels other than the delivery service using
+    /// the callback function.
+    pub fn receive_non_ds_single<F>(&mut self, callback: F, msg_payload: Vec<u8>) -> io::Result<u64>
+    where
+        F: FnMut(Vec<u8>, String) -> io::Result<()>,
+    {
+        match MlsMessageIn::tls_deserialize(&mut msg_payload.as_slice()) {
+            Ok(r) => {
+                let msg_count =
+                    self.receive_core(callback, true, Some(vec![r]))?;
+                Ok(msg_count)
+            }
+            Err(e) => {
+                // This happens if the server returns an error or if tls_deserialize fails.
+                Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Could not deserialize non-ds msg ({e})"),
                 ))
             }
         }

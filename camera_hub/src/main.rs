@@ -222,13 +222,28 @@ fn create_group_and_invite<C: Camera>(
     Ok(())
 }
 
-fn get_wifi_info_and_connect(stream: &mut TcpStream) {
-    let ssid_bytes = read_varying_len(stream);
+fn decrypt_msg(client: &mut User, msg: Vec<u8>) -> io::Result<Vec<u8>> {
+    let mut decrypted_msg: Vec<u8> = vec![];
+
+    // FIXME: check contact_name?
+    let callback = |msg_bytes: Vec<u8>, _contact_name: String| -> io::Result<()> {
+        decrypted_msg = msg_bytes;
+        Ok(())
+    };
+
+    client.receive_non_ds_single(callback, msg)?;
+    client.save_groups_state();
+
+    Ok(decrypted_msg)
+}
+
+fn get_wifi_info_and_connect(stream: &mut TcpStream, client: &mut User) -> io::Result<()> {
+    let ssid_msg = read_varying_len(stream);
+    let ssid_bytes = decrypt_msg(client, ssid_msg)?;
     let ssid = String::from_utf8(ssid_bytes).expect("Invalid UTF-8 for WiFi SSID");
-    //FIXME: password must be sent encrypted
-    let password_bytes = read_varying_len(stream);
+    let password_msg = read_varying_len(stream);
+    let password_bytes = decrypt_msg(client, password_msg)?;
     let password = String::from_utf8(password_bytes).expect("Invalid UTF-8 for WiFi password");
-    println!("[1] ssid = {:?}, password = {:?}", ssid, password);
 
     // Disable the Hotspot first
     let _ = Command::new("sh")
@@ -259,6 +274,8 @@ fn get_wifi_info_and_connect(stream: &mut TcpStream) {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
+
+    Ok(())
 }
 
 fn create_wifi_hotspot() {
@@ -277,9 +294,11 @@ fn create_camera_groups<C: Camera>(
     client_motion: &mut User,
     client_livestream: &mut User,
     client_fcm: &mut User,
+    client_config: &mut User,
     group_motion_name: String,
     group_livestream_name: String,
     group_fcm_name: String,
+    group_config_name: String,
     input_camera_secret: Option<Vec<u8>>,
     connect_to_wifi: bool,
 ) -> io::Result<()> {
@@ -328,9 +347,17 @@ fn create_camera_groups<C: Camera>(
         pair_with_app(
             &mut stream,
             client_fcm.key_packages(),
-            secret,
+            secret.clone(),
         );
     create_group_and_invite(&mut stream, camera, client_fcm, group_fcm_name, app_fcm_key_packages)?;
+
+    let app_config_key_packages =
+        pair_with_app(
+            &mut stream,
+            client_config.key_packages(),
+            secret,
+        );
+    create_group_and_invite(&mut stream, camera, client_config, group_config_name, app_config_key_packages)?;
 
     if input_camera_secret.is_none() {
         let _ = fs::remove_file(format!("camera_{}_secret_qrcode.png", camera.get_name().replace(" ", "_").to_lowercase()));
@@ -338,7 +365,7 @@ fn create_camera_groups<C: Camera>(
 
     // Send WiFi info to the app.
     if connect_to_wifi {
-        get_wifi_info_and_connect(&mut stream);
+        get_wifi_info_and_connect(&mut stream, client_config)?;
     }
 
     Ok(())
@@ -894,9 +921,17 @@ fn reset<C: Camera>(
         "group_fcm_name".to_string(),
     );
 
+    let (camera_config_name, _group_config_name) = get_names(
+        camera,
+        first_time,
+        "camera_config_name".to_string(),
+        "group_config_name".to_string(),
+    );
+
     let server_motion_stream = try_connect(camera, &delivery_service_addr)?;
     let server_livestream_stream = try_connect(camera, &delivery_service_addr)?;
     let server_fcm_stream = try_connect(camera, &delivery_service_addr)?;
+    let server_config_stream = try_connect(camera, &delivery_service_addr)?;
 
     match User::new(
         camera_motion_name,
@@ -949,9 +984,9 @@ fn reset<C: Camera>(
         Some(server_fcm_stream),
         first_time,
         reregister,
-        state_dir,
+        state_dir.clone(),
         "fcm".to_string(),
-        credentials,
+        credentials.clone(),
         false,
     ) {
         Ok(mut client) => match client.deregister() {
@@ -964,6 +999,29 @@ fn reset<C: Camera>(
         },
         Err(e) => {
             error!("Error: Creating client_fcm failed: {e}");
+        }
+    };
+
+    match User::new(
+        camera_config_name,
+        Some(server_config_stream),
+        first_time,
+        reregister,
+        state_dir,
+        "config".to_string(),
+        credentials,
+        false,
+    ) {
+        Ok(mut client) => match client.deregister() {
+            Ok(_) => {
+                info!("Config client deregistered successfully.")
+            }
+            Err(e) => {
+                error!("Error: Deregistering client_config failed: {e}");
+            }
+        },
+        Err(e) => {
+            error!("Error: Creating client_config failed: {e}");
         }
     };
 
@@ -1021,6 +1079,15 @@ fn core<C: Camera>(
     debug!("camera_fcm_name = {}", camera_fcm_name);
     debug!("group_fcm_name = {}", group_fcm_name);
 
+    let (camera_config_name, group_config_name) = get_names(
+        camera,
+        first_time,
+        "camera_config_name".to_string(),
+        "group_config_name".to_string(),
+    );
+    debug!("camera_config_name = {}", camera_config_name);
+    debug!("group_config_name = {}", group_config_name);
+
     let mut client_motion = User::new(
         camera_motion_name.clone(),
         None,
@@ -1069,6 +1136,22 @@ fn core<C: Camera>(
         })?;
     debug!("FCM client created.");
 
+    let mut client_config = User::new(
+        camera_config_name.clone(),
+        None,
+        first_time,
+        reregister,
+        state_dir.clone(),
+        "config".to_string(),
+        credentials.clone(),
+        true,
+    )
+        .map_err(|e| {
+            error!("User::new() returned error:");
+            e
+        })?;
+    debug!("Config client created.");
+
     let camera_name = camera.get_name();
     if first_time {
         println!("[{}] Waiting to be paired with the mobile app.", camera_name);
@@ -1077,9 +1160,11 @@ fn core<C: Camera>(
             &mut client_motion,
             &mut client_livestream,
             &mut client_fcm,
+            &mut client_config,
             group_motion_name.clone(),
             group_livestream_name.clone(),
             group_fcm_name.clone(),
+            group_config_name.clone(),
             input_camera_secret,
             connect_to_wifi,
         )?;
@@ -1090,6 +1175,7 @@ fn core<C: Camera>(
     let server_motion_stream = try_connect(camera, &delivery_service_addr)?;
     let server_livestream_stream = try_connect(camera, &delivery_service_addr)?;
     let server_fcm_stream = try_connect(camera, &delivery_service_addr)?;
+    let server_config_stream = try_connect(camera, &delivery_service_addr)?;
     first_time = false;
     
     let mut client_motion = User::new(
@@ -1131,7 +1217,7 @@ fn core<C: Camera>(
         reregister,
         state_dir.clone(),
         "fcm".to_string(),
-        credentials,
+        credentials.clone(),
         true,
     )
     .map_err(|e| {
@@ -1139,6 +1225,22 @@ fn core<C: Camera>(
         e
     })?;
     debug!("FCM client created.");
+
+    let mut _client_config = User::new(
+        camera_config_name,
+        Some(server_config_stream),
+        first_time,
+        reregister,
+        state_dir.clone(),
+        "config".to_string(),
+        credentials,
+        true,
+    )
+    .map_err(|e| {
+        error!("User::new() returned error:");
+        e
+    })?;
+    debug!("Config client created.");
 
     fs::File::create(state_dir.clone() + "/registration_done").expect("Could not create file");
 

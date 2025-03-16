@@ -58,6 +58,7 @@ pub struct Clients {
     client_motion: User,
     client_livestream: User,
     client_fcm: User,
+    client_config: User,
 }
 
 impl Clients {
@@ -68,6 +69,8 @@ impl Clients {
         server_livestream_stream: Option<TcpStream>,
         app_fcm_name: String,
         server_fcm_stream: Option<TcpStream>,
+        app_config_name: String,
+        server_config_stream: Option<TcpStream>,
         first_time: bool,
         file_dir: String,
         user_credentials: Vec<u8>,
@@ -110,7 +113,7 @@ impl Clients {
             reregister,
             file_dir.clone(),
             "fcm".to_string(),
-            user_credentials,
+            user_credentials.clone(),
             false,
         )?;
 
@@ -120,10 +123,24 @@ impl Clients {
         }
         client_fcm.save_groups_state();
 
+        let mut client_config = User::new(
+            app_config_name,
+            server_config_stream,
+            first_time,
+            reregister,
+            file_dir.clone(),
+            "config".to_string(),
+            user_credentials,
+            false,
+        )?;
+
+        client_config.save_groups_state();
+
         Ok(Self {
             client_motion,
             client_livestream,
             client_fcm,
+            client_config,
         })
     }
 }
@@ -224,45 +241,43 @@ fn perform_pairing_handshake(
 
 fn send_wifi_info(
     stream: &mut TcpStream,
+    client: &mut User,
+    group_name: String,
     wifi_ssid: String,
     wifi_password: String,
 ) -> io::Result<()> {
-    write_varying_len(stream, &wifi_ssid.into_bytes())?;
-    write_varying_len(stream, &wifi_password.into_bytes())?;
+    let wifi_ssid_msg = client.generate_msg(&wifi_ssid.into_bytes(), group_name.clone())?;
+    write_varying_len(stream, &wifi_ssid_msg)?;
+    let wifi_password_msg = client.generate_msg(&wifi_password.into_bytes(), group_name)?;
+    write_varying_len(stream, &wifi_password_msg)?;
+    client.save_groups_state();
 
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn pair_with_camera(
-    camera_ip: String,
+    stream: &mut TcpStream,
     app_motion_key_packages: KeyPackages,
     app_livestream_key_packages: KeyPackages,
     app_fcm_key_packages: KeyPackages,
+    app_config_key_packages: KeyPackages,
     secret: [u8; pairing::NUM_SECRET_BYTES],
-    standalone_camera: bool,
-    wifi_ssid: String,
-    wifi_password: String,
-) -> io::Result<(KeyPackages, Vec<u8>, KeyPackages, Vec<u8>, KeyPackages, Vec<u8>)> {
-    //FIXME: port number hardcoded.
-    let addr = SocketAddr::from_str(&(camera_ip + ":12348")).expect("Invalid IP address/port");
-    let mut stream = TcpStream::connect(&addr)?;
-    
+) -> io::Result<(KeyPackages, Vec<u8>, KeyPackages, Vec<u8>, KeyPackages, Vec<u8>, KeyPackages, Vec<u8>)> {
     let camera_motion_key_packages =
-        perform_pairing_handshake(&mut stream, app_motion_key_packages, secret)?;
-    let camera_motion_welcome_msg = read_varying_len(&mut stream)?;
+        perform_pairing_handshake(stream, app_motion_key_packages, secret)?;
+    let camera_motion_welcome_msg = read_varying_len(stream)?;
 
     let camera_livestream_key_packages =
-        perform_pairing_handshake(&mut stream, app_livestream_key_packages, secret)?;
-    let camera_livestream_welcome_msg = read_varying_len(&mut stream)?;
+        perform_pairing_handshake(stream, app_livestream_key_packages, secret)?;
+    let camera_livestream_welcome_msg = read_varying_len(stream)?;
 
     let camera_fcm_key_packages =
-        perform_pairing_handshake(&mut stream, app_fcm_key_packages, secret)?;
-    let camera_fcm_welcome_msg = read_varying_len(&mut stream)?;
+        perform_pairing_handshake(stream, app_fcm_key_packages, secret)?;
+    let camera_fcm_welcome_msg = read_varying_len(stream)?;
 
-    if standalone_camera {
-        send_wifi_info(&mut stream, wifi_ssid, wifi_password)?;
-    }
+    let camera_config_key_packages =
+        perform_pairing_handshake(stream, app_config_key_packages, secret)?;
+    let camera_config_welcome_msg = read_varying_len(stream)?;
 
     Ok((
         camera_motion_key_packages,
@@ -271,6 +286,8 @@ fn pair_with_camera(
         camera_livestream_welcome_msg,
         camera_fcm_key_packages,
         camera_fcm_welcome_msg,
+        camera_config_key_packages,
+        camera_config_welcome_msg,
     ))
 }
 
@@ -314,6 +331,7 @@ pub fn initialize(
     let mut motion_stream: Option<TcpStream> = None;
     let mut livestream_stream: Option<TcpStream> = None;
     let mut fcm_stream: Option<TcpStream> = None;
+    let mut config_stream: Option<TcpStream> = None;
 
     if need_network {
         match TcpStream::connect(delivery_service_addr.clone()) {
@@ -330,14 +348,21 @@ pub fn initialize(
             }
         }
 
-        match TcpStream::connect(delivery_service_addr) {
+        match TcpStream::connect(delivery_service_addr.clone()) {
             Ok(stream) => fcm_stream = Some(stream),
             Err(_) => {
                 let _ = fs::remove_file(file_dir.clone() + "/registration_done");
             }
         }
 
-        if motion_stream.is_none() || livestream_stream.is_none() || fcm_stream.is_none() {
+        match TcpStream::connect(delivery_service_addr) {
+            Ok(stream) => config_stream = Some(stream),
+            Err(_) => {
+                let _ = fs::remove_file(file_dir.clone() + "/registration_done");
+            }
+        }
+
+        if motion_stream.is_none() || livestream_stream.is_none() || fcm_stream.is_none() || config_stream.is_none() {
             my_log(
                 logger,
                 format!("Error: could not connect to the server!"),
@@ -353,6 +378,7 @@ pub fn initialize(
         "app_livestream_name".to_string(),
     );
     let app_fcm_name = get_app_name(first_time, file_dir.clone(), "app_fcm_name".to_string());
+    let app_config_name = get_app_name(first_time, file_dir.clone(), "app_config_name".to_string());
 
     *clients = Some(Box::new(
         match Clients::new(
@@ -362,6 +388,8 @@ pub fn initialize(
             livestream_stream,
             app_fcm_name,
             fcm_stream,
+            app_config_name,
+            config_stream,
             first_time,
             file_dir,
             user_credentials,
@@ -423,11 +451,22 @@ pub fn deregister(
         }
     }
 
+    match clients.as_mut().unwrap().client_config.deregister() {
+        Ok(_) => {}
+        Err(e) => {
+            my_log(
+                logger,
+                format!("Error: Deregistering client_config failed: {e}"),
+            );
+        }
+    }
+
     // FIXME: We currently support one camera only. Therefore, here, we delete all state files.
     let _ = fs::remove_file(file_dir.clone() + "/registration_done");
     let _ = fs::remove_file(file_dir.clone() + "/app_motion_name");
     let _ = fs::remove_file(file_dir.clone() + "/app_livestream_name");
     let _ = fs::remove_file(file_dir.clone() + "/app_fcm_name");
+    let _ = fs::remove_file(file_dir.clone() + "/app_config_name");
 
     *clients = None;
 }
@@ -478,13 +517,19 @@ pub fn add_camera(
         || clients
             .as_mut()
             .unwrap()
+            .client_livestream
+            .get_group_name(camera_name.clone())
+            .is_ok()
+        || clients
+            .as_mut()
+            .unwrap()
             .client_fcm
             .get_group_name(camera_name.clone())
             .is_ok()
         || clients
             .as_mut()
             .unwrap()
-            .client_livestream
+            .client_config
             .get_group_name(camera_name.clone())
             .is_ok()
     {
@@ -499,21 +544,31 @@ pub fn add_camera(
     let mut camera_secret = [0u8; pairing::NUM_SECRET_BYTES];
     camera_secret.copy_from_slice(&secret_vec[..]);
 
+    //FIXME: port number hardcoded.
+    let addr = SocketAddr::from_str(&(camera_ip + ":12348")).expect("Invalid IP address/port");
+    let mut stream = match TcpStream::connect(&addr)  {
+        Ok(s) => {s}
+        Err(e) => {
+            my_log(logger, format!("Error: {e}"));
+            return false;
+        }
+    };
+
     let (camera_motion_key_packages,
         camera_motion_welcome_msg,
         camera_livestream_key_packages,
         camera_livestream_welcome_msg,
         camera_fcm_key_packages,
-        camera_fcm_welcome_msg) =
+        camera_fcm_welcome_msg,
+        camera_config_key_packages,
+        camera_config_welcome_msg) =
         match pair_with_camera(
-            camera_ip,
+            &mut stream,
             clients.as_mut().unwrap().client_motion.key_packages(),
             clients.as_mut().unwrap().client_livestream.key_packages(),
             clients.as_mut().unwrap().client_fcm.key_packages(),
+            clients.as_mut().unwrap().client_config.key_packages(),
             camera_secret,
-            standalone_camera,
-            wifi_ssid,
-            wifi_password,
         ) {
             Ok(c) => c,
             Err(e) => {
@@ -573,6 +628,46 @@ pub fn add_camera(
         Err(e) => {
             my_log(logger, format!("Error: {e}"));
             return false;
+        }
+    }
+
+    let config_contact = clients
+        .as_mut()
+        .unwrap()
+        .client_config
+        .add_contact(camera_name.clone(), camera_config_key_packages).unwrap();
+
+    match process_welcome_message(
+        &mut clients.as_mut().unwrap().client_config,
+        config_contact,
+        camera_config_welcome_msg,
+    ) {
+        Ok(_) => {}
+        Err(e) => {
+            my_log(logger, format!("Error: {e}"));
+            return false;
+        }
+    }
+
+    if standalone_camera {
+        let group_name = clients
+            .as_mut()
+            .unwrap()
+            .client_config
+            .get_group_name(camera_name.to_string())
+            .unwrap();
+        match send_wifi_info(
+            &mut stream,
+            &mut clients.as_mut().unwrap().client_config,
+            group_name,
+            wifi_ssid,
+            wifi_password,
+        ) {
+            Ok(_) => {}
+            Err(e) => {
+                my_log(logger, format!("Error: {e}"));
+                return false;
+            }
         }
     }
 
@@ -804,7 +899,7 @@ pub fn decrypt(
         .as_mut()
         .unwrap()
         .client_fcm
-        .receive_fcm(callback, message)
+        .receive_non_ds_vec(callback, message)
     {
         Ok(mc) => mc,
         Err(e) => {
