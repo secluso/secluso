@@ -62,7 +62,7 @@ So far, the following cameras have been tested:
 
 ## Tested smartphones (OS version)
 
-* Google Pixel 8 Pro (Android 14)
+* Google Pixel 8 Pro (Android 15)
 * Google Pixel 7 (Android 14)
 * Moto G 5G (2024) (Android 14)
 
@@ -86,7 +86,7 @@ If you are interested in receiving email updates on progress on Privastead, sign
 
 ## Contributions
 
-We welcome contributions to the project. Before working on a contribution, please check with us via email: privastead@gmail.com
+We welcome contributions to the project. Before working on a contribution, please check with us via email: privastead@proton.me
 
 Contributions are made under Privastead's [license](LICENSE).
 
@@ -94,8 +94,9 @@ Contributions are made under Privastead's [license](LICENSE).
 ## Project members
 
 * Project Founder: Ardalan Amiri Sani (Ph.D., Computer Science professor at UC Irvine with expertise in computer security and privacy)
+* John Kaczman (Computer Science Student interested in security and ML/DL applications)
 
-Note: this is a side project of Ardalan Amiri Sani, who works on it in his spare time.
+Note: this is a side project of Ardalan Amiri Sani and John Kaczman, who work on it in their spare time.
 
 ## Disclaimers
 
