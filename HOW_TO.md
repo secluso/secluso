@@ -208,7 +208,7 @@ Motion FPS is the amount of times per second that we run our motion detection al
 ```
 mv /address/to/user_credentials /path-to-privastead/camera_hub
 cd /path-to-privastead/camera_hub
-cargo run --release --
+cargo run --release --features ip
 ```
 
 The Privastead hub will now run and ask you for the username and password for each IP camera if not provided originally in the configuration file. 

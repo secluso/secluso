@@ -7,6 +7,8 @@ authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
 [features]
 default = ["logging"]
 logging = ["log"]
+ip = ["dep:rpassword", "dep:reqwest", "dep:http-auth", "dep:linfa", "dep:linfa-clustering"]
+raspberry = ["dep:serde_json", "dep:fast_image_resize", "dep:imageproc", "dep:rayon"]
 
 [dependencies]
 docopt = "~1.1"
@@ -34,16 +36,17 @@ futures = "0.3.14"
 serde_yml = "0.0.12"
 ndarray = { version="0.15.6", features = ["rayon"]} # This has to be 0.15 to support linfa
 crossbeam-channel = "0.5.14"
+cfg-if = "1.0.0"
 
-[target.'cfg(target_arch = "x86_64")'.dependencies]
-rpassword = "5.0"
-reqwest = { version = "0.11", features = ["blocking", "json"] }
-http-auth = "0.1"
-linfa = "0.7.1"
-linfa-clustering = "0.7.1"
+# IP Specific Dependencies
+rpassword = {version = "5.0", optional = true }
+reqwest = { version = "0.11", features = ["blocking", "json"], optional = true }
+http-auth = { version = "0.1", optional = true }
+linfa = { version = "0.7.1", optional = true }
+linfa-clustering = { version = "0.7.1", optional = true }
 
-[target.'cfg(target_arch = "aarch64")'.dependencies]
-serde_json = "1.0"
-fast_image_resize = { version = "5.1.2", features = ["rayon"] }
-imageproc="0.25.0"
-rayon = "1.10.0"
+# Raspberry Specific Dependencies
+serde_json = { version = "1.0", optional = true }
+fast_image_resize = { version = "5.1.2", features = ["rayon"], optional = true }
+imageproc= { version = "0.25.0", optional = true }
+rayon = { version = "1.10.0", optional = true }

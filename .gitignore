@@ -8,6 +8,8 @@ target
 # Exclude all credential, video or state based data
 user_credentials
 user_credentials_qrcode.png
+camera_secret
+camera_secret_qrcode.png
 pending_videos
 state
 cameras.yaml

@@ -26,7 +26,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use crate::rpi_dual_stream::{RawFrame, SharedCameraStream};
+use crate::raspberry_pi::rpi_dual_stream::{RawFrame, SharedCameraStream};
 use image::GrayImage;
 use imageproc::region_labelling::Connectivity;
 use ndarray::{Array2, Zip};

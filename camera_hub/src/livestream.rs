@@ -101,7 +101,7 @@ pub fn is_there_livestream_start_request(client: &mut User) -> io::Result<bool> 
     Ok(livestream_start)
 }
 
-pub fn livestream<C: Camera>(client: &mut User, group_name: String, camera: &C) -> io::Result<()> {
+pub fn livestream(client: &mut User, group_name: String, camera: &dyn Camera) -> io::Result<()> {
     let new_update = client
         .perform_update(group_name.clone())
         .expect("Could not force an MLS update!");

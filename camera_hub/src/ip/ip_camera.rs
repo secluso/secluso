@@ -1,7 +1,7 @@
 //! Code to interface with IP cameras.
 //! Assumes the camera supports RTSP
 //!
-//! Copyright (C) 2024  Ardalan Amiri Sani
+//! Copyright (C) 2025  Ardalan Amiri Sani
 //!
 //! This program is free software: you can redistribute it and/or modify
 //! it under the terms of the GNU General Public License as published by
@@ -61,7 +61,7 @@ use std::convert::TryFrom;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use crate::ip_motion_detection::MotionDetection;
+use crate::ip::ip_motion_detection::MotionDetection;
 use std::collections::VecDeque;
 use std::process::exit;
 use std::sync::{
@@ -69,7 +69,6 @@ use std::sync::{
     Mutex,
 };
 use std::time::{Duration, SystemTime};
-
 pub struct IpCamera {
     name: String,
     state_dir: String,

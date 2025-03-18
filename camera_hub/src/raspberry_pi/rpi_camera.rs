@@ -36,8 +36,8 @@ use crate::{
     fmp4::Fmp4Writer,
     livestream::LivestreamWriter,
     mp4::Mp4Writer,
-    rpi_dual_stream::SharedCameraStream,
-    rpi_motion_detection::MotionDetection,
+    raspberry_pi::rpi_dual_stream::SharedCameraStream,
+    raspberry_pi::rpi_motion_detection::MotionDetection,
     traits::{Camera, CodecParameters},
     write_box,
 };
@@ -216,7 +216,7 @@ impl RaspberryPiCamera {
         }
     }
 
-    /// A modified H264 extraction frame method when I had issues working with the old ip_camera.rs one
+    /// A modified H264 extraction frame method when I had issues working with the old ip.rs one
     fn extract_h264_frame(buffer: &mut BytesMut) -> Option<VideoFrame> {
         let start_code = &[0x00, 0x00, 0x00, 0x01];
         let short_start_code = &[0x00, 0x00, 0x01];
