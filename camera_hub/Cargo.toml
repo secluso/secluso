@@ -8,7 +8,7 @@ authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
 default = ["logging"]
 logging = ["log"]
 ip = ["dep:rpassword", "dep:reqwest", "dep:http-auth", "dep:linfa", "dep:linfa-clustering"]
-raspberry = ["dep:serde_json", "dep:fast_image_resize", "dep:imageproc", "dep:rayon"]
+raspberry = ["dep:serde_json", "dep:fast_image_resize", "dep:imageproc", "dep:rayon", "dep:libblur"]
 
 [dependencies]
 docopt = "~1.1"
@@ -50,3 +50,4 @@ serde_json = { version = "1.0", optional = true }
 fast_image_resize = { version = "5.1.2", features = ["rayon"], optional = true }
 imageproc= { version = "0.25.0", optional = true }
 rayon = { version = "1.10.0", optional = true }
+libblur = { version = "0.17.0", optional = true }

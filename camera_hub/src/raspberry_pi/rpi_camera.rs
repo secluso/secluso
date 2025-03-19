@@ -15,7 +15,7 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Instant;
 use std::{
     collections::VecDeque,
@@ -84,6 +84,7 @@ pub struct RaspberryPiCamera {
     sps_frame: VideoFrame,
     pps_frame: VideoFrame,
     motion_detection: MotionDetection,
+    await_start: Arc<AtomicBool>,
 }
 
 impl RaspberryPiCamera {
@@ -92,9 +93,13 @@ impl RaspberryPiCamera {
         let frame_queue = Arc::new(Mutex::new(VecDeque::new()));
         println!("Initializing Raspberry Pi Camera...");
 
+        let await_start = Arc::new(AtomicBool::new(false));
+
         // Start the new shared stream.
-        let shared_stream =
-            Arc::new(SharedCameraStream::start().expect("Failed to start shared stream"));
+        let shared_stream = Arc::new(
+            SharedCameraStream::start(Arc::clone(&await_start))
+                .expect("Failed to start shared stream"),
+        );
 
         // Create a channel to receive SPS/PPS frames.
         let (ps_tx, ps_rx) = unbounded::<VideoFrame>();
@@ -110,7 +115,8 @@ impl RaspberryPiCamera {
 
             // Local sequence enforcer for input from the ring buffer
             let mut last_input_seq: u64 = 0;
-            while let Some(chunk) = shared_stream_clone.h264_buffer.acquire_frame() {
+            loop {
+                let chunk = shared_stream_clone.h264_buffer.acquire_frame();
                 // Enforce sequence ordering for the incoming chunk.
                 if chunk.seq != last_input_seq + 1 {
                     println!(
@@ -169,6 +175,7 @@ impl RaspberryPiCamera {
             sps_frame,
             pps_frame,
             motion_detection,
+            await_start,
         }
     }
 
@@ -442,6 +449,10 @@ impl Camera for RaspberryPiCamera {
 
     fn get_video_dir(&self) -> String {
         self.video_dir.clone()
+    }
+
+    fn send_start_signal(&self) {
+        self.await_start.store(true, Ordering::SeqCst);
     }
 }
 

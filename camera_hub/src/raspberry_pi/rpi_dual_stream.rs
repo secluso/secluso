@@ -17,8 +17,10 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::io::BufRead;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::sleep;
 use std::{
     io::{BufReader, Read, Write},
     process::{Command, Stdio},
@@ -43,8 +45,10 @@ static LAST_PROCESSED_H264_SEQ: AtomicU64 = AtomicU64::new(0);
 static RAW_FRAME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LAST_PROCESSED_RAW_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// A ring buffer for H.264 frames that uses a condition variable to block until a new frame is available.
 pub struct H264RingBuffer {
     inner: Mutex<VecDeque<H264Frame>>,
+    condvar: Condvar,
     capacity: usize,
 }
 
@@ -52,11 +56,13 @@ impl H264RingBuffer {
     pub fn new(capacity: usize) -> Self {
         Self {
             inner: Mutex::new(VecDeque::with_capacity(capacity)),
+            condvar: Condvar::new(),
             capacity,
         }
     }
 
     /// Push a new frame. If the buffer is full, drop the oldest frame.
+    /// Notifies waiting threads that new data is available.
     pub fn push(&self, frame: H264Frame) {
         let mut queue = self.inner.lock().unwrap();
         if queue.len() >= self.capacity {
@@ -69,37 +75,36 @@ impl H264RingBuffer {
             }
         }
         queue.push_back(frame);
+        self.condvar.notify_one();
     }
 
-    //TODO: Make this exit gracefully when force shutting down...
-    //TODO: If we decide to use multiple ffmpeg workers in the future, put a lock on this
-    pub fn acquire_frame(&self) -> Option<H264Frame> {
+    /// Block until an H264 frame is available. Drops outdated frames automatically.
+    pub fn acquire_frame(&self) -> H264Frame {
+        let mut queue = self.inner.lock().unwrap();
         loop {
-            let mut queue = self.inner.lock().unwrap();
             if let Some(frame) = queue.front() {
                 let last_proc = LAST_PROCESSED_H264_SEQ.load(Ordering::SeqCst);
                 if frame.seq > last_proc {
-                    // The earliest frame is newer than the last processed.
-                    let frame = queue.pop_front();
-                    if let Some(frame) = frame {
-                        LAST_PROCESSED_H264_SEQ.store(frame.seq, Ordering::SeqCst);
-                        return Some(frame);
-                    }
+                    let frame = queue.pop_front().unwrap();
+                    LAST_PROCESSED_H264_SEQ.store(frame.seq, Ordering::SeqCst);
+                    return frame;
                 } else {
-                    // This frame is outdated, so drop it.
+                    // This frame is outdated; drop it and continue.
                     queue.pop_front();
+                    continue;
                 }
             }
-            drop(queue);
-            std::thread::sleep(Duration::from_millis(10)); //TODO: We could replace busy waiting
+            // Wait for new data to be pushed.
+            queue = self.condvar.wait(queue).unwrap();
         }
     }
 }
 
-/// A simple generic ring buffer.
 /// TODO: Combine H264 and the generic ring buffer into each other
+/// A generic blocking ring buffer that uses a condition variable to wait for items.
 pub struct RingBuffer<T> {
     inner: Mutex<VecDeque<T>>,
+    condvar: Condvar,
     capacity: usize,
 }
 
@@ -107,36 +112,29 @@ impl<T> RingBuffer<T> {
     pub fn new(capacity: usize) -> Self {
         Self {
             inner: Mutex::new(VecDeque::with_capacity(capacity)),
+            condvar: Condvar::new(),
             capacity,
         }
     }
 
-    /// Push an item into the buffer.
-    /// If the buffer is full, drop the oldest element.
+    /// Push an item into the buffer. If the buffer is full, the oldest element is dropped.
+    /// Notifies one waiting thread that new data is available.
     pub fn push(&self, item: T) {
         let mut queue = self.inner.lock().unwrap();
         if queue.len() >= self.capacity {
-            if let Some(_old) = queue.pop_front() {
-                debug!("RingBuffer: Dropping an old item to make room.");
-            }
+            queue.pop_front();
         }
         queue.push_back(item);
+        self.condvar.notify_one();
     }
 
-    /// Pop the oldest item from the buffer.
-    pub fn pop(&self) -> Option<T> {
+    /// Block until an item is available and then return it.
+    pub fn pop(&self) -> T {
         let mut queue = self.inner.lock().unwrap();
-        queue.pop_front()
-    }
-
-    /// Block until an item is available and return it.
-    pub fn acquire(&self) -> T {
-        loop {
-            if let Some(item) = self.pop() {
-                return item;
-            }
-            thread::sleep(Duration::from_millis(10));
+        while queue.is_empty() {
+            queue = self.condvar.wait(queue).unwrap();
         }
+        queue.pop_front().expect("Item must be present")
     }
 }
 
@@ -162,7 +160,7 @@ pub struct SharedCameraStream {
 }
 
 impl SharedCameraStream {
-    pub fn start() -> Result<Self, Error> {
+    pub fn start(go_ahead: Arc<AtomicBool>) -> Result<Self, Error> {
         const RAW_BUFFER_CAPACITY: usize = 50;
         const FFMPEG_INPUT_CAPACITY: usize = 50;
         const H264_RING_CAPACITY: usize = 50;
@@ -212,6 +210,7 @@ impl SharedCameraStream {
         }
 
         // Create a combined buffer starting with the already-read probe data
+        let go_ahead_cloned = Arc::clone(&go_ahead);
         let mut combined_buffer = probe_buffer;
         // Spawn a thread that will continuously read full frames from libcamera-vid's stdout
         {
@@ -219,6 +218,37 @@ impl SharedCameraStream {
             let mut reader = reader;
             thread::spawn(move || {
                 loop {
+                    // Allow 10 frames to be read in (verify everything working) before stopping the processing and waiting for the go-ahead from primary thread.
+                    let mut erase_action = false;
+                    while RAW_FRAME_COUNTER.load(Ordering::SeqCst) > 10
+                        && !go_ahead_cloned.load(Ordering::SeqCst)
+                    {
+                        erase_action = true;
+                        debug!("Waiting for go ahead");
+                        sleep(Duration::from_secs(1));
+                    }
+
+                    // Perform some action after we're actually starting out.
+                    if erase_action {
+                        let buffered_data = reader.buffer();
+
+                        // Calculate how many complete frames are currently buffered.
+                        let complete_frame_count = buffered_data.len() / FRAME_SIZE_8BIT;
+
+                        // Determine the total number of bytes that form complete frames.
+                        let bytes_to_discard = complete_frame_count * FRAME_SIZE_8BIT;
+
+                        if bytes_to_discard > 0 {
+                            println!(
+                                "Performing startup erasure: erasing {} leftover bytes from reader corresponding to {} complete frames.",
+                                bytes_to_discard, complete_frame_count
+                            );
+
+                            // Consume exactly the bytes forming complete frames, leaving any partial frame in place.
+                            reader.consume(bytes_to_discard);
+                        }
+                    }
+
                     // Ensure we have a full frame.
                     while combined_buffer.len() < FRAME_SIZE_8BIT {
                         let mut chunk = vec![0u8; 8192];
@@ -239,15 +269,16 @@ impl SharedCameraStream {
                         seq: RAW_FRAME_COUNTER.fetch_add(1, Ordering::SeqCst),
                         timestamp: SystemTime::now(),
                     };
+
                     raw_buffer.push(raw_frame);
                 }
             });
         }
 
         // Spawn a ffmpeg process for H.264 conversion using the Raspberry Pi hardware GPU (for offloading CPU)
-        // This uses a 4 M/s bit rate, YUV420 pixel format from raw video
+        // This uses a 3 M/s bit rate, double bufsize, and YUV420 pixel format from raw video
         let ffmpeg_cmd = format!(
-            "ffmpeg -hide_banner -loglevel error -y -f rawvideo -pix_fmt yuv420p -s {}x{} -r {} -i pipe:0 -c:v h264_v4l2m2m -b:v 4M -pix_fmt yuv420p -f h264 pipe:1",
+            "ffmpeg -hide_banner -loglevel error -y -f rawvideo -pix_fmt yuv420p -s {}x{} -r {} -i pipe:0 -c:v h264_v4l2m2m -b:v 3M -bufsize 6M -pix_fmt yuv420p -f h264 pipe:1",
             WIDTH, HEIGHT, FRAMERATE
         );
 
@@ -275,17 +306,15 @@ impl SharedCameraStream {
                 loop {
                     // Enforce ordering for raw frames similar to our H264 ordering...
                     let raw_frame = loop {
-                        if let Some(frame) = raw_buffer.pop() {
-                            let last_proc = LAST_PROCESSED_RAW_SEQ.load(Ordering::SeqCst);
-                            if frame.seq > last_proc {
-                                LAST_PROCESSED_RAW_SEQ.store(frame.seq, Ordering::SeqCst);
-                                break frame;
-                            } else {
-                                // This frame is outdated; skip it.
-                                continue;
-                            }
+                        let frame = raw_buffer.pop();
+                        let last_proc = LAST_PROCESSED_RAW_SEQ.load(Ordering::SeqCst);
+                        if frame.seq > last_proc {
+                            LAST_PROCESSED_RAW_SEQ.store(frame.seq, Ordering::SeqCst);
+                            break frame;
+                        } else {
+                            // This frame is outdated; skip it.
+                            continue;
                         }
-                        thread::sleep(Duration::from_millis(10));
                     };
                     // Send the frame's data to the ffmpeg input buffer.
                     ffmpeg_input_buffer.push(raw_frame);
@@ -297,7 +326,7 @@ impl SharedCameraStream {
             thread::spawn(move || {
                 let mut last_written_seq = None;
                 loop {
-                    let raw_frame = ffmpeg_input_buffer.acquire();
+                    let raw_frame = ffmpeg_input_buffer.pop();
                     // Verify that the current frame's sequence is greater than the last.
                     if let Some(last_seq) = last_written_seq {
                         if raw_frame.seq <= last_seq {

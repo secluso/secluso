@@ -46,4 +46,5 @@ pub trait Camera {
     fn get_name(&self) -> String;
     fn get_state_dir(&self) -> String;
     fn get_video_dir(&self) -> String;
+    fn send_start_signal(&self);
 }

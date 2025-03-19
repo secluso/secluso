@@ -563,6 +563,10 @@ impl Camera for IpCamera {
     fn get_video_dir(&self) -> String {
         self.video_dir.clone()
     }
+
+    fn send_start_signal(&self) {
+        //TODO: We can make certain tasks like MJPEG streaming / motion detection after X amount of frames have been processed stop until full instantiation from main.rs like we do for the Raspberry Pi implementation
+    }
 }
 
 struct IpCameraVideoParameters {

@@ -1271,6 +1271,9 @@ fn core(
 
     println!("[{}] Running...", camera_name);
 
+    // Start motion detection afterwards. Try to limit CPU usage before 'Running'
+    camera.send_start_signal();
+
     let mut locked_motion_check_time: Option<SystemTime> = None;
     let mut locked_delivery_check_time: Option<SystemTime> = None;
     let video_dir = camera.get_video_dir();

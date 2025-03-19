@@ -19,6 +19,7 @@
 use fast_image_resize::images::Image;
 use fast_image_resize::{PixelType, ResizeAlg, ResizeOptions, Resizer};
 use ndarray::parallel::prelude::*;
+use std::num::NonZero;
 use std::{
     io,
     sync::{Arc, Mutex},
@@ -26,21 +27,35 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use crate::raspberry_pi;
 use crate::raspberry_pi::rpi_dual_stream::{RawFrame, SharedCameraStream};
-use image::GrayImage;
+use image::{GrayImage, ImageBuffer};
 use imageproc::region_labelling::Connectivity;
+use libblur::{
+    BlurImage, BlurImageMut, ConvolutionMode, EdgeMode, FastBlurChannels, ThreadingPolicy,
+};
 use ndarray::{Array2, Zip};
+use rayon::prelude::{ParallelSlice, ParallelSliceMut};
 
-const ALPHA: f32 = 0.05; // Background update rate
-const THRESHOLD: u8 = 70; // Motion detection threshold
+const ALPHA: f32 = 0.05; // Background update assuming updates every second. Adjusts based on motion FPS.
 
-const MINIMUM_TOTAL_CLUSTERED_POINTS: usize = 700; // The minimum sum of the points within all the clustered groups to be considered motion
-const MINIMUM_INDIVIDUAL_CLUSTER_POINTS: usize = 400; // The minimum amount of points for a cluster to be considered not noise
-const MINIMUM_GLOBAL_POINTS: usize = 2500; // The minimum amount of individual global points (could be noise) to be considered motion
+/// The three parameters below have been run through an optimization program on 5 hours worth of video to ensure accuracy. Changing them is not recommended.
+const THRESHOLD: u8 = 10; // Motion detection threshold [Optimized]
+
+const MINIMUM_TOTAL_CLUSTERED_POINTS: usize = 330; // The minimum sum of the points within all the clustered groups to be considered motion [Optimized]
+const MINIMUM_INDIVIDUAL_CLUSTER_POINTS: usize = 210; // The minimum amount of points for a cluster to be considered not noise [Optimized]
 
 // Frame dimensions (must match what is used in capture)
-const WIDTH: u32 = 1920; //TODO: for YUV420 to work properly with this code, this must be divisible by 64. Consider using padding for other resolution support in the future (if need be)
-const HEIGHT: u32 = 1080;
+const WIDTH: usize = 1920; //TODO: for YUV420 to work properly with this code, this must be divisible by 64. Consider using padding for other resolution support in the future (if need be)
+const HEIGHT: usize = 1080;
+
+/// MotionDetection reads raw YUV420 frames from the shared camera stream and checks for motion.
+pub struct MotionDetection {
+    latest_frame: Arc<Mutex<Option<RawFrame>>>,
+    motion: Option<BackgroundSubtractor>,
+    last_detection: Option<SystemTime>,
+    motion_fps: u64,
+}
 
 #[derive(Clone)]
 pub struct BackgroundSubtractor {
@@ -61,7 +76,7 @@ impl BackgroundSubtractor {
 
     /// Update background model and detect motion
     /// Updated from IP motion detection to be parallelized for faster run time and high efficiency
-    pub fn apply(&mut self, frame: &GrayImage) -> GrayImage {
+    pub fn apply(&mut self, frame: &GrayImage, adjusted_alpha: f32) -> GrayImage {
         let (width, height) = frame.dimensions();
 
         // Convert GrayImage pixels to f32 and form a ndarray.
@@ -82,7 +97,7 @@ impl BackgroundSubtractor {
         Zip::from(&mut self.background)
             .and(&frame_array)
             .par_for_each(|bg, &fa| {
-                *bg = fa * ALPHA + *bg * (1.0 - ALPHA);
+                *bg = fa * adjusted_alpha + *bg * (1.0 - adjusted_alpha);
             });
 
         // Create a binary mask in parallel.
@@ -96,12 +111,213 @@ impl BackgroundSubtractor {
     }
 }
 
-/// MotionDetection reads raw YUV420 frames from the shared camera stream and checks for motion.
-pub struct MotionDetection {
-    latest_frame: Arc<Mutex<Option<RawFrame>>>,
-    motion: Option<BackgroundSubtractor>,
-    last_detection: Option<SystemTime>,
-    motion_fps: u64,
+/** This method takes a YUV420 raw image and performs a parallel YUV420->RGB conversion,
+   then computes a custom grayscale variant based on the standard deviation of the red, green and blue channels for the image.
+   The standard grayscale formula is Gray = 0.299 * Red + 0.587 * Green + 0.114 * Blue.
+   This can lose a lot of detail in blue-dominated infrared images considering how blue is only weighted at 11.4% in the usual formula.
+   This aims to solve that issue through adaptive gray scaling, by calculating the optimal weights for each image
+   Downsides: Extra computational expense to calculate adaptive weights, versus using pre-defined.
+
+    Outside the YUV->RGB method being called (referenced from below), it runs at 15ms on average on a 1292x972 frame on a Raspberry Pi Zero 2W.
+**/
+fn adaptive_grayscale(raw_frame: &RawFrame, width: usize, height: usize) -> Option<GrayImage> {
+    let expected_size = width * height * 3 / 2; // For 8-bit yuv420p, frame size = width * height * 3/2 bytes.
+
+    let data = &raw_frame.data;
+    if data.len() < expected_size as usize {
+        return None;
+    }
+
+    // Split the raw data into Y, U, and V planes.
+    let y_plane = &data[..width * height]; // The Y plane of YUV420 is the first W*H pixels
+    let u_plane = &data[width * height..width * height + (width * height) / 4]; // The U plane is right after the Y plane, consisting of 1/4 W*H pixels.
+    let v_plane = &data[width * height + (width * height) / 4..]; // The V plane is right after the U plane, consisting of 1/4 W*H pixels.
+
+    // Perform a fast YUV -> RGB approximation
+    let rgb_pixels = yuv_to_rgb(y_plane, u_plane, v_plane, width as usize, height as usize);
+    let total_rgb_pixels = (width * height) as f32;
+
+    // Compute the channel (R,G,B) sums and squared sums in parallel.
+    let (sum_r, sum_g, sum_b, squared_sum_r, squared_sum_g, squared_sum_b) = rgb_pixels
+        .par_chunks_exact(3)
+        .map(|chunk| {
+            let r = chunk[0] as f32;
+            let g = chunk[1] as f32;
+            let b = chunk[2] as f32;
+            (r, g, b, r * r, g * g, b * b) // first 3 = sums, second 3 = sum of squares
+        })
+        .reduce(
+            || (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            |a, b| {
+                (
+                    a.0 + b.0,
+                    a.1 + b.1,
+                    a.2 + b.2,
+                    a.3 + b.3,
+                    a.4 + b.4,
+                    a.5 + b.5,
+                )
+            },
+        );
+
+    // Calculate means for R, G, B
+    let mean_r = sum_r / total_rgb_pixels;
+    let mean_g = sum_g / total_rgb_pixels;
+    let mean_b = sum_b / total_rgb_pixels;
+
+    // Calculate STD of R, G, B using squared sums and means.
+    let std_r = ((squared_sum_r / total_rgb_pixels) - (mean_r * mean_r)).sqrt();
+    let std_g = ((squared_sum_g / total_rgb_pixels) - (mean_g * mean_g)).sqrt();
+    let std_b = ((squared_sum_b / total_rgb_pixels) - (mean_b * mean_b)).sqrt();
+
+    // Compute adaptive weights (STD of individual / (R_std + G_std + B_std))
+    let total_std = std_r + std_g + std_b;
+    let (w_r, w_g, w_b) = if total_std == 0.0 {
+        (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
+    } else {
+        (std_r / total_std, std_g / total_std, std_b / total_std)
+    };
+
+    // Precompute lookup tables for each channel (seems to save roughly 20% of CPU runtime)
+    // Each table maps an 8-bit value to its weighted contribution.
+    let mut lut_r = [0u8; 256];
+    let mut lut_g = [0u8; 256];
+    let mut lut_b = [0u8; 256];
+    for i in 0..256 {
+        // Multiply the channel value by its weight -> round it -> then clamp it.
+        lut_r[i] = (w_r * i as f32).round().clamp(0.0, 255.0) as u8;
+        lut_g[i] = (w_g * i as f32).round().clamp(0.0, 255.0) as u8;
+        lut_b[i] = (w_b * i as f32).round().clamp(0.0, 255.0) as u8;
+    }
+
+    // Prepare the output grayscale buffer.
+    let mut gray_pixels = vec![0u8; (width * height) as usize];
+
+    // Compute the grayscale values in parallel.
+    // Use the lookup table from earlier to perform these actions to save some CPU time
+    gray_pixels
+        .par_chunks_mut(1024) // Process in chunks to reduce scheduling overhead.
+        .enumerate()
+        .for_each(|(chunk_index, gray_chunk)| {
+            let start = chunk_index * 1024;
+            for (i, pixel) in gray_chunk.iter_mut().enumerate() {
+                let idx = start + i;
+
+                // Compute the index into rgb_pixels
+                let base = idx * 3;
+                let r = rgb_pixels[base] as usize;
+                let g = rgb_pixels[base + 1] as usize;
+                let b = rgb_pixels[base + 2] as usize;
+
+                // Sum the weighted contributions from the lookup tables.
+                let gray = lut_r[r] as u16 + lut_g[g] as u16 + lut_b[b] as u16;
+                *pixel = gray.clamp(0, 255) as u8;
+            }
+        });
+
+    return GrayImage::from_raw(width as u32, height as u32, gray_pixels);
+}
+
+/**
+Tested with 1292x972 resized frames
+This method approximates of YUV -> RGB, average runtime: 17ms on Raspberry Pi Zero 2W
+Without approximation feature, runtime was 64ms for this method on average.
+**/
+fn yuv_to_rgb(
+    y_plane: &[u8],
+    u_plane: &[u8],
+    v_plane: &[u8],
+    width: usize,
+    height: usize,
+) -> Vec<u8> {
+    // Allocate output buffer for RGB pixels.
+    let mut rgb = vec![0u8; width * height * 3];
+
+    // Split output buffer into rows.
+    let mut rows: Vec<&mut [u8]> = rgb.chunks_mut(width * 3).collect();
+    let block_width = width / 2;
+
+    // Process rows in pairs in parallel.
+    rows.as_mut_slice()
+        .par_chunks_mut(2)
+        .enumerate()
+        .for_each(|(by, rows_pair)| {
+            if rows_pair.len() == 2 {
+                // Safely obtain mutable references to the two rows.
+                let (row0, row1) = {
+                    let (r0, r1) = rows_pair.split_at_mut(1);
+                    (&mut r0[0], &mut r1[0])
+                };
+
+                // Calculate starting indices in the Y plane for the two rows.
+                let y0_offset = by * 2 * width;
+                let y1_offset = (by * 2 + 1) * width;
+
+                // Process each 2x2 pixel block.
+                for bx in 0..block_width {
+                    let x0 = bx * 2;
+                    let x1 = x0 + 1;
+                    let uv_index = by * block_width + bx;
+
+                    // Convert U, V to signed values.
+                    let u = u_plane[uv_index] as i32 - 128;
+                    let v = v_plane[uv_index] as i32 - 128;
+
+                    // Use fixed-point arithmetic with scaling factor 256.
+                    // Use pre-computed approximation multipliers for CPU speedup
+                    //   1.402  -> 359   (1.402 * 256 ≈ 359)
+                    //   0.3441 -> 88    (0.3441 * 256 ≈ 88)
+                    //   0.7141 -> 183   (0.7141 * 256 ≈ 183)
+                    //   1.772  -> 453   (1.772 * 256 ≈ 453)
+
+                    let r_off = (359 * v) >> 8;
+                    let g_off = (88 * u + 183 * v) >> 8;
+                    let b_off = (453 * u) >> 8;
+
+                    // Proceed to process the four pixels in the 2x2 block
+                    // Row 0, pixel at x0.
+                    let y_val = y_plane[y0_offset + x0] as i32;
+                    let r = (y_val + r_off).clamp(0, 255) as u8;
+                    let g = (y_val - g_off).clamp(0, 255) as u8;
+                    let b = (y_val + b_off).clamp(0, 255) as u8;
+                    let out_offset = x0 * 3;
+                    row0[out_offset] = r;
+                    row0[out_offset + 1] = g;
+                    row0[out_offset + 2] = b;
+
+                    // Row 0, pixel at x1.
+                    let y_val = y_plane[y0_offset + x1] as i32;
+                    let r = (y_val + r_off).clamp(0, 255) as u8;
+                    let g = (y_val - g_off).clamp(0, 255) as u8;
+                    let b = (y_val + b_off).clamp(0, 255) as u8;
+                    let out_offset = x1 * 3;
+                    row0[out_offset] = r;
+                    row0[out_offset + 1] = g;
+                    row0[out_offset + 2] = b;
+
+                    // Row 1, pixel at x0.
+                    let y_val = y_plane[y1_offset + x0] as i32;
+                    let r = (y_val + r_off).clamp(0, 255) as u8;
+                    let g = (y_val - g_off).clamp(0, 255) as u8;
+                    let b = (y_val + b_off).clamp(0, 255) as u8;
+                    let out_offset = x0 * 3;
+                    row1[out_offset] = r;
+                    row1[out_offset + 1] = g;
+                    row1[out_offset + 2] = b;
+
+                    // Row 1, pixel at x1.
+                    let y_val = y_plane[y1_offset + x1] as i32;
+                    let r = (y_val + r_off).clamp(0, 255) as u8;
+                    let g = (y_val - g_off).clamp(0, 255) as u8;
+                    let b = (y_val + b_off).clamp(0, 255) as u8;
+                    let out_offset = x1 * 3;
+                    row1[out_offset] = r;
+                    row1[out_offset + 1] = g;
+                    row1[out_offset + 2] = b;
+                }
+            }
+        });
+    rgb
 }
 
 impl MotionDetection {
@@ -115,7 +331,7 @@ impl MotionDetection {
             println!("Starting raw motion detection background thread");
             loop {
                 // Acquire the next frame from the raw buffer.
-                let frame = raw_buffer.acquire();
+                let frame = raw_buffer.pop();
                 {
                     let mut lock = latest_frame_clone.lock().unwrap();
                     *lock = Some(frame);
@@ -129,18 +345,6 @@ impl MotionDetection {
             last_detection: None,
             motion_fps,
         })
-    }
-
-    /// Converts a raw YUV420 frame to a grayscale image by extracting the Y plane.
-    /// The Y plane is the first width * height bytes (in 8 bit)
-    fn raw_to_gray(raw: &RawFrame) -> Option<GrayImage> {
-        let expected_size = WIDTH as usize * HEIGHT as usize;
-        if raw.data.len() < expected_size {
-            return None;
-        }
-
-        let y_plane = raw.data[..expected_size].to_vec();
-        GrayImage::from_raw(WIDTH, HEIGHT, y_plane)
     }
 
     pub fn downscale_with_fast_image_resize(
@@ -197,22 +401,22 @@ impl MotionDetection {
         debug!("Processing raw frame for motion detection");
         self.last_detection = Some(latest_time);
 
-        // Convert the raw frame (YUV420) to grayscale.
-        let gray = SystemTime::now();
-        let grayscale = match Self::raw_to_gray(raw_frame) {
+        // Convert the raw frame (YUV420) to grayscale via YUV420 -> RGB -> adaptive grayscale thresholding
+        let grayscale_conversion_time = SystemTime::now();
+        let grayscale = match adaptive_grayscale(raw_frame, WIDTH, HEIGHT) {
             Some(img) => img,
             None => {
                 eprintln!("Failed to convert raw frame to grayscale");
                 return Ok(false);
             }
         };
+
         debug!(
             "Elapsed Time for grayscale: {}ms",
-            gray.elapsed().unwrap().as_millis()
+            grayscale_conversion_time.elapsed().unwrap().as_millis()
         );
 
         // Downscale to 640x480 from 1920x1080 to reduce load on background subtractor & clustering (by a magnitude of ~10x for ~2x the cost)
-        let resize = SystemTime::now();
         let (mut w, mut h) = grayscale.dimensions();
         let processed = if w > 640 && h > 480 {
             w = 640;
@@ -222,21 +426,51 @@ impl MotionDetection {
             grayscale.clone()
         };
 
-        debug!(
-            "Elapsed Time for resize: {}ms",
-            resize.elapsed().unwrap().as_millis()
+        let clahe_plus_blur = SystemTime::now();
+        // Perform CLAHE (Contrast-Limited Adaptive Histogram Equalization)
+        let clahe_processed_img =
+            raspberry_pi::clahe::default_clahe(processed, w as usize, h as usize);
+
+        let src = BlurImage::borrow(
+            &mut ImageBuffer::as_raw(&clahe_processed_img),
+            w,
+            h,
+            FastBlurChannels::Plane,
         );
+        let mut dst = BlurImageMut::alloc(w, h, FastBlurChannels::Plane);
+
+        // Perform Gaussian Blur operation
+        // Roughly ~6ms/image on Raspberry Pi Zero 2W
+        libblur::gaussian_blur(
+            &src,
+            &mut dst,
+            5,
+            0.0,
+            EdgeMode::Reflect101,
+            ThreadingPolicy::Fixed(NonZero::new(1).unwrap()),
+            ConvolutionMode::Exact,
+        )
+        .unwrap();
+
+        debug!(
+            "CLAHE plus blur runtime: {}ms",
+            clahe_plus_blur.elapsed().unwrap().as_millis()
+        );
+
+        // Ensure dst.data is properly converted to a Vec<u8> if needed
+        let buffer_data = dst.data.borrow().to_vec();
+        let blurred_image = GrayImage::from_raw(w, h, buffer_data).unwrap();
 
         // Initialize the background subtractor on the first frame.
         if self.motion.is_none() {
-            self.motion = Some(BackgroundSubtractor::new(&processed));
+            self.motion = Some(BackgroundSubtractor::new(&blurred_image));
             return Ok(false);
         }
 
         // Apply background subtraction.
         let bg_subtract = SystemTime::now();
         let mut bgs = self.motion.clone().unwrap();
-        let diff_result = bgs.apply(&processed);
+        let diff_result = bgs.apply(&blurred_image, ALPHA / self.motion_fps as f32);
         self.motion = Some(bgs);
 
         debug!(
@@ -245,47 +479,17 @@ impl MotionDetection {
         );
 
         // Parallelize the check global points
-        let start_check_all = SystemTime::now();
-        let w = processed.width() as usize;
-        let data_points: Vec<(f64, f64)> = diff_result
+        let total_points = diff_result
             .as_raw()
             .par_iter()
-            .enumerate()
-            .filter_map(|(i, &p)| {
-                if p == 255 {
-                    // Compute row and column from the index.
-                    let row = (i / w) as f64;
-                    let col = (i % w) as f64;
-                    Some((col, row))
-                } else {
-                    None
-                }
-            })
-            .collect();
+            .filter(|&&p| p == 255)
+            .count();
 
-        debug!(
-            "Elapsed Time for check global: {}ms",
-            start_check_all.elapsed().unwrap().as_millis()
-        );
-
-        let total_points = data_points.len();
+        let w = blurred_image.width();
         let scale_factor: f64 = (w as f64 * h as f64) / (640.0 * 480.0);
-
-        // We don't need to perform any clustering at all  if we have a massive amount of differing points (as noise isn't possible in this quantity)
-        if (total_points as f64) >= scale_factor * (MINIMUM_GLOBAL_POINTS as f64) {
-            self.motion = Some(BackgroundSubtractor::new(&processed));
-            debug!(
-                "Motion detected (GLOBAL) with {} points (threshold {:.2}).",
-                total_points,
-                scale_factor * MINIMUM_GLOBAL_POINTS as f64
-            );
-            return Ok(true);
-        }
 
         // Otherwise, run simple clustering algorithm to find concentrated changes
         // While this is about 15x faster than the DBSCAN clustering algorithm used in the other class, it's both less accurate and still presents extra compute time.
-        // Roughly ~453ms/run on average on a Raspberry Pi Zero 2W
-        // Potential to try multi-threading in the future (consider doing own implementation)
         if (total_points as f64) >= scale_factor * (MINIMUM_TOTAL_CLUSTERED_POINTS as f64) {
             let cluster_time = SystemTime::now();
 
@@ -337,7 +541,7 @@ impl MotionDetection {
             if (total_clustered_points as f64)
                 >= scale_factor * (MINIMUM_TOTAL_CLUSTERED_POINTS as f64)
             {
-                self.motion = Some(BackgroundSubtractor::new(&processed));
+                self.motion = Some(BackgroundSubtractor::new(&blurred_image));
                 debug!(
                     "Motion detected (CCL) with {} clustered points (of {} total).",
                     total_clustered_points, total_points
