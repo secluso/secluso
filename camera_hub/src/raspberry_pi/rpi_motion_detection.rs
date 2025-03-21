@@ -23,12 +23,11 @@ use std::num::NonZero;
 use std::{
     io,
     sync::{Arc, Mutex},
-    thread,
     time::{Duration, SystemTime},
 };
 
 use crate::raspberry_pi;
-use crate::raspberry_pi::rpi_dual_stream::{RawFrame, SharedCameraStream};
+use crate::raspberry_pi::rpi_dual_stream::RawFrame;
 use image::{GrayImage, ImageBuffer};
 use imageproc::region_labelling::Connectivity;
 use libblur::{
@@ -45,12 +44,10 @@ const THRESHOLD: u8 = 10; // Motion detection threshold [Optimized]
 const MINIMUM_TOTAL_CLUSTERED_POINTS: usize = 330; // The minimum sum of the points within all the clustered groups to be considered motion [Optimized]
 const MINIMUM_INDIVIDUAL_CLUSTER_POINTS: usize = 210; // The minimum amount of points for a cluster to be considered not noise [Optimized]
 
-// Frame dimensions (must match what is used in capture)
-const WIDTH: usize = 1920; //TODO: for YUV420 to work properly with this code, this must be divisible by 64. Consider using padding for other resolution support in the future (if need be)
-const HEIGHT: usize = 1080;
-
 /// MotionDetection reads raw YUV420 frames from the shared camera stream and checks for motion.
 pub struct MotionDetection {
+    total_width: usize,
+    total_height: usize,
     latest_frame: Arc<Mutex<Option<RawFrame>>>,
     motion: Option<BackgroundSubtractor>,
     last_detection: Option<SystemTime>,
@@ -112,13 +109,13 @@ impl BackgroundSubtractor {
 }
 
 /** This method takes a YUV420 raw image and performs a parallel YUV420->RGB conversion,
-   then computes a custom grayscale variant based on the standard deviation of the red, green and blue channels for the image.
-   The standard grayscale formula is Gray = 0.299 * Red + 0.587 * Green + 0.114 * Blue.
-   This can lose a lot of detail in blue-dominated infrared images considering how blue is only weighted at 11.4% in the usual formula.
-   This aims to solve that issue through adaptive gray scaling, by calculating the optimal weights for each image
-   Downsides: Extra computational expense to calculate adaptive weights, versus using pre-defined.
+ then computes a custom grayscale variant based on the standard deviation of the red, green and blue channels for the image.
+ The standard grayscale formula is Gray = 0.299 * Red + 0.587 * Green + 0.114 * Blue.
+ This can lose a lot of detail in blue-dominated infrared images considering how blue is only weighted at 11.4% in the usual formula.
+ This aims to solve that issue through adaptive gray scaling, by calculating the optimal weights for each image
+ Downsides: Extra computational expense to calculate adaptive weights, versus using pre-defined.
 
-    Outside the YUV->RGB method being called (referenced from below), it runs at 15ms on average on a 1292x972 frame on a Raspberry Pi Zero 2W.
+  Outside the YUV->RGB method being called (referenced from below), it runs at 15ms on average on a 1292x972 frame on a Raspberry Pi Zero 2W.
 **/
 fn adaptive_grayscale(raw_frame: &RawFrame, width: usize, height: usize) -> Option<GrayImage> {
     let expected_size = width * height * 3 / 2; // For 8-bit yuv420p, frame size = width * height * 3/2 bytes.
@@ -222,7 +219,7 @@ fn adaptive_grayscale(raw_frame: &RawFrame, width: usize, height: usize) -> Opti
 Tested with 1292x972 resized frames
 This method approximates of YUV -> RGB, average runtime: 17ms on Raspberry Pi Zero 2W
 Without approximation feature, runtime was 64ms for this method on average.
-**/
+ **/
 fn yuv_to_rgb(
     y_plane: &[u8],
     u_plane: &[u8],
@@ -321,26 +318,16 @@ fn yuv_to_rgb(
 }
 
 impl MotionDetection {
-    pub fn new(motion_fps: u64, shared_stream: Arc<SharedCameraStream>) -> io::Result<Self> {
-        let latest_frame = Arc::new(Mutex::new(None));
-        let latest_frame_clone = Arc::clone(&latest_frame);
-
-        let raw_buffer = Arc::clone(&shared_stream.raw_buffer);
-
-        thread::spawn(move || {
-            println!("Starting raw motion detection background thread");
-            loop {
-                // Acquire the next frame from the raw buffer.
-                let frame = raw_buffer.pop();
-                {
-                    let mut lock = latest_frame_clone.lock().unwrap();
-                    *lock = Some(frame);
-                }
-            }
-        });
-
+    pub fn new(
+        latest_frame: Arc<Mutex<Option<RawFrame>>>,
+        total_width: usize,
+        total_height: usize,
+        motion_fps: u64,
+    ) -> io::Result<Self> {
         Ok(MotionDetection {
             latest_frame,
+            total_width,
+            total_height,
             motion: None,
             last_detection: None,
             motion_fps,
@@ -379,15 +366,16 @@ impl MotionDetection {
 
     pub fn handle_motion_event(&mut self) -> io::Result<bool> {
         debug!("Called handle_motion_event");
-        let binding = self.latest_frame.lock().unwrap();
-        let raw_frame = match binding.as_ref() {
-            Some(frame) => frame,
-            None => {
-                debug!("No frame received yet!");
-                return Ok(false);
+        let raw_frame = {
+            let binding = self.latest_frame.lock().unwrap();
+            match binding.as_ref() {
+                Some(frame) => frame.clone(),
+                None => {
+                    debug!("No frame received yet!");
+                    return Ok(false);
+                }
             }
         };
-
         // Compare latest frame against last timestamp to see if enough time has elapsed (considering motion_fps)
         let latest_time = raw_frame.timestamp;
         if let Some(last) = self.last_detection {
@@ -403,7 +391,7 @@ impl MotionDetection {
 
         // Convert the raw frame (YUV420) to grayscale via YUV420 -> RGB -> adaptive grayscale thresholding
         let grayscale_conversion_time = SystemTime::now();
-        let grayscale = match adaptive_grayscale(raw_frame, WIDTH, HEIGHT) {
+        let grayscale = match adaptive_grayscale(&raw_frame, self.total_width, self.total_height) {
             Some(img) => img,
             None => {
                 eprintln!("Failed to convert raw frame to grayscale");

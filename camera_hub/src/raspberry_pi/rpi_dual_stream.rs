@@ -1,5 +1,5 @@
-//! Code to implement dual streaming (such that, we stream the raw frames and concurrently convert them to H.264)
-//! Assumes the cameras supports YUV420 codec and has ffmpeg and libcamera installed.
+//! Code to implement dual streaming (such that, we stream the raw frames and H.264 frames concurrently from rpicam-vid)
+//! Assumes the cameras has the rpicam-apps fork built and installed.
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani
 //!
@@ -17,10 +17,10 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::collections::VecDeque;
-use std::io::BufRead;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::os::unix::net::UnixStream;
+use std::sync::{Arc, Mutex};
 use std::thread::sleep;
+use std::time::Instant;
 use std::{
     io::{BufReader, Read, Write},
     process::{Command, Stdio},
@@ -28,399 +28,265 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use anyhow::{anyhow, Error};
+use crate::raspberry_pi::rpi_camera::{VideoFrame, VideoFrameKind};
+use anyhow::anyhow;
 use bytes::BytesMut;
+use crossbeam_channel::Sender;
 
-pub const WIDTH: u32 = 1920; //TODO: for YUV420 to work properly with this code, this must be divisible by 64. Consider using padding for other resolution support in the future (if need be)
-
-pub const HEIGHT: u32 = 1080;
-pub const FRAMERATE: u32 = 30;
-
-/// For 8-bit yuv420p, frame size = width * height * 3/2 bytes.
-pub const FRAME_SIZE_8BIT: usize = (WIDTH as usize * HEIGHT as usize * 3) / 2;
-
-static H264_FRAME_COUNTER: AtomicU64 = AtomicU64::new(0);
-static LAST_PROCESSED_H264_SEQ: AtomicU64 = AtomicU64::new(0);
-
-static RAW_FRAME_COUNTER: AtomicU64 = AtomicU64::new(0);
-static LAST_PROCESSED_RAW_SEQ: AtomicU64 = AtomicU64::new(0);
-
-/// A ring buffer for H.264 frames that uses a condition variable to block until a new frame is available.
-pub struct H264RingBuffer {
-    inner: Mutex<VecDeque<H264Frame>>,
-    condvar: Condvar,
-    capacity: usize,
-}
-
-impl H264RingBuffer {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            inner: Mutex::new(VecDeque::with_capacity(capacity)),
-            condvar: Condvar::new(),
-            capacity,
-        }
-    }
-
-    /// Push a new frame. If the buffer is full, drop the oldest frame.
-    /// Notifies waiting threads that new data is available.
-    pub fn push(&self, frame: H264Frame) {
-        let mut queue = self.inner.lock().unwrap();
-        if queue.len() >= self.capacity {
-            if let Some(old) = queue.pop_front() {
-                debug!(
-                    "H264RingBuffer: Dropping oldest frame with seq {} to make room for new frame seq {}.",
-                    old.seq,
-                    frame.seq
-                );
-            }
-        }
-        queue.push_back(frame);
-        self.condvar.notify_one();
-    }
-
-    /// Block until an H264 frame is available. Drops outdated frames automatically.
-    pub fn acquire_frame(&self) -> H264Frame {
-        let mut queue = self.inner.lock().unwrap();
-        loop {
-            if let Some(frame) = queue.front() {
-                let last_proc = LAST_PROCESSED_H264_SEQ.load(Ordering::SeqCst);
-                if frame.seq > last_proc {
-                    let frame = queue.pop_front().unwrap();
-                    LAST_PROCESSED_H264_SEQ.store(frame.seq, Ordering::SeqCst);
-                    return frame;
-                } else {
-                    // This frame is outdated; drop it and continue.
-                    queue.pop_front();
-                    continue;
-                }
-            }
-            // Wait for new data to be pushed.
-            queue = self.condvar.wait(queue).unwrap();
-        }
-    }
-}
-
-/// TODO: Combine H264 and the generic ring buffer into each other
-/// A generic blocking ring buffer that uses a condition variable to wait for items.
-pub struct RingBuffer<T> {
-    inner: Mutex<VecDeque<T>>,
-    condvar: Condvar,
-    capacity: usize,
-}
-
-impl<T> RingBuffer<T> {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            inner: Mutex::new(VecDeque::with_capacity(capacity)),
-            condvar: Condvar::new(),
-            capacity,
-        }
-    }
-
-    /// Push an item into the buffer. If the buffer is full, the oldest element is dropped.
-    /// Notifies one waiting thread that new data is available.
-    pub fn push(&self, item: T) {
-        let mut queue = self.inner.lock().unwrap();
-        if queue.len() >= self.capacity {
-            queue.pop_front();
-        }
-        queue.push_back(item);
-        self.condvar.notify_one();
-    }
-
-    /// Block until an item is available and then return it.
-    pub fn pop(&self) -> T {
-        let mut queue = self.inner.lock().unwrap();
-        while queue.is_empty() {
-            queue = self.condvar.wait(queue).unwrap();
-        }
-        queue.pop_front().expect("Item must be present")
-    }
-}
-
-/// Represents a single raw YUV420 frame captured from libcamera.
+/// Represents a single raw YUV420 frame captured from rpicam.
 #[derive(Clone)]
 pub struct RawFrame {
     pub data: Vec<u8>,
-    pub seq: u64,
     pub timestamp: SystemTime,
 }
 
-/// Represents a complete H.264 output from ffmpeg
-#[derive(Clone)]
-pub struct H264Frame {
-    pub data: Vec<u8>,
-    pub seq: u64,
-}
+/// Provides two channels: one for raw YUV420 frames from rpicam‑vid (for motion detection), one for H.264 frames converted by rpicam-vid.
+pub fn start(
+    width: usize,
+    height: usize,
+    total_frame_rate: usize,
+    motion_latest_frame: Arc<Mutex<Option<RawFrame>>>,
+    frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>,
+    ps_tx: Sender<VideoFrame>,
+    motion_fps: u8,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // For 8-bit yuv420p, frame size = width * height * 3/2 bytes.
+    let frame_size: usize = (width * height * 3) / 2;
 
-/// Provides two channels: one for raw YUV420 frames from libcamera‑vid, one for H.264 frames converted by FFmpeg.
-pub struct SharedCameraStream {
-    pub raw_buffer: Arc<RingBuffer<RawFrame>>,
-    pub h264_buffer: Arc<H264RingBuffer>,
-}
+    // Spawn rpicam‑vid with output directed to stdout (to get rid of TCP dependency for reduced complexity)
+    let rpicam_cmd = format!(
+        "rpicam-vid -t 0 -n --width {} --height {} --framerate {} --codec h264 -o -",
+        width, height, total_frame_rate
+    );
+    let mut rpicam_child = Command::new("sh")
+        .arg("-c")
+        .arg(rpicam_cmd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let rpicam_stdout = rpicam_child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("Failed to capture stdout from rpicam-vid"))?;
 
-impl SharedCameraStream {
-    pub fn start(go_ahead: Arc<AtomicBool>) -> Result<Self, Error> {
-        const RAW_BUFFER_CAPACITY: usize = 50;
-        const FFMPEG_INPUT_CAPACITY: usize = 50;
-        const H264_RING_CAPACITY: usize = 50;
-
-        // Create ring buffers for raw frames and for ffmpeg input.
-        let raw_buffer = Arc::new(RingBuffer::<RawFrame>::new(RAW_BUFFER_CAPACITY));
-        let ffmpeg_input_buffer = Arc::new(RingBuffer::<RawFrame>::new(FFMPEG_INPUT_CAPACITY));
-
-        // Create the ring buffer for H264 frames.
-        let h264_buffer = Arc::new(H264RingBuffer::new(H264_RING_CAPACITY));
-
-        // Spawn libcamera‑vid with output directed to stdout (to get rid of TCP dependency for reduced complexity)
-        let libcamera_cmd = format!(
-            "libcamera-vid -t 0 -n --width {} --height {} --framerate {} --codec yuv420 -o -",
-            WIDTH, HEIGHT, FRAMERATE
-        );
-        let mut libcamera_child = Command::new("sh")
-            .arg("-c")
-            .arg(libcamera_cmd)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
-        let stdout = libcamera_child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow!("Failed to capture stdout from libcamera-vid"))?;
-        let mut reader = BufReader::new(stdout);
-
-        // We have separation of the initial frame and the ending frames in case we need to move to a different implementation at some point
-
-        let mut probe_buffer = Vec::new();
-        let start_probe = SystemTime::now();
-        while probe_buffer.len() < FRAME_SIZE_8BIT {
-            let mut chunk = vec![0u8; 8192];
-            match reader.read(&mut chunk) {
-                Ok(n) => {
-                    probe_buffer.extend_from_slice(&chunk[..n]);
-                }
-                Err(e) => {
-                    eprintln!("Error during probing: {:?}", e);
-                    break;
-                }
-            }
-            if start_probe.elapsed().unwrap() > Duration::from_millis(500) {
-                break;
-            }
-        }
-
-        // Create a combined buffer starting with the already-read probe data
-        let go_ahead_cloned = Arc::clone(&go_ahead);
-        let mut combined_buffer = probe_buffer;
-        // Spawn a thread that will continuously read full frames from libcamera-vid's stdout
-        {
-            let raw_buffer = Arc::clone(&raw_buffer);
-            let mut reader = reader;
-            thread::spawn(move || {
-                loop {
-                    // Allow 10 frames to be read in (verify everything working) before stopping the processing and waiting for the go-ahead from primary thread.
-                    let mut erase_action = false;
-                    while RAW_FRAME_COUNTER.load(Ordering::SeqCst) > 10
-                        && !go_ahead_cloned.load(Ordering::SeqCst)
-                    {
-                        erase_action = true;
-                        debug!("Waiting for go ahead");
-                        sleep(Duration::from_secs(1));
-                    }
-
-                    // Perform some action after we're actually starting out.
-                    if erase_action {
-                        let buffered_data = reader.buffer();
-
-                        // Calculate how many complete frames are currently buffered.
-                        let complete_frame_count = buffered_data.len() / FRAME_SIZE_8BIT;
-
-                        // Determine the total number of bytes that form complete frames.
-                        let bytes_to_discard = complete_frame_count * FRAME_SIZE_8BIT;
-
-                        if bytes_to_discard > 0 {
-                            println!(
-                                "Performing startup erasure: erasing {} leftover bytes from reader corresponding to {} complete frames.",
-                                bytes_to_discard, complete_frame_count
-                            );
-
-                            // Consume exactly the bytes forming complete frames, leaving any partial frame in place.
-                            reader.consume(bytes_to_discard);
-                        }
-                    }
-
-                    // Ensure we have a full frame.
-                    while combined_buffer.len() < FRAME_SIZE_8BIT {
-                        let mut chunk = vec![0u8; 8192];
-                        match reader.read(&mut chunk) {
-                            Ok(n) => combined_buffer.extend_from_slice(&chunk[..n]),
-                            Err(e) => {
-                                eprintln!("Error reading additional data: {:?}", e);
-                                return;
-                            }
-                        }
-                    }
-                    // Extract one full frame.
-                    let frame_data = combined_buffer
-                        .drain(..FRAME_SIZE_8BIT)
-                        .collect::<Vec<u8>>();
-                    let raw_frame = RawFrame {
-                        data: frame_data,
-                        seq: RAW_FRAME_COUNTER.fetch_add(1, Ordering::SeqCst),
-                        timestamp: SystemTime::now(),
-                    };
-
-                    raw_buffer.push(raw_frame);
-                }
-            });
-        }
-
-        // Spawn a ffmpeg process for H.264 conversion using the Raspberry Pi hardware GPU (for offloading CPU)
-        // This uses a 3 M/s bit rate, double bufsize, and YUV420 pixel format from raw video
-        let ffmpeg_cmd = format!(
-            "ffmpeg -hide_banner -loglevel error -y -f rawvideo -pix_fmt yuv420p -s {}x{} -r {} -i pipe:0 -c:v h264_v4l2m2m -b:v 3M -bufsize 6M -pix_fmt yuv420p -f h264 pipe:1",
-            WIDTH, HEIGHT, FRAMERATE
-        );
-
-        let mut ffmpeg_child = Command::new("sh")
-            .arg("-c")
-            .arg(ffmpeg_cmd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .map_err(|e| anyhow!("Failed to spawn ffmpeg: {:?}", e))?;
-        let mut ffmpeg_stdin = ffmpeg_child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow!("Failed to open ffmpeg stdin"))?;
-        let ffmpeg_stdout = ffmpeg_child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow!("Failed to open ffmpeg stdout"))?;
-
-        // Spawn a thread to feed ffmpeg_input_buffer from raw_buffer.
-        {
-            let raw_buffer = Arc::clone(&raw_buffer);
-            let ffmpeg_input_buffer = Arc::clone(&ffmpeg_input_buffer);
-            thread::spawn(move || {
-                loop {
-                    // Enforce ordering for raw frames similar to our H264 ordering...
-                    let raw_frame = loop {
-                        let frame = raw_buffer.pop();
-                        let last_proc = LAST_PROCESSED_RAW_SEQ.load(Ordering::SeqCst);
-                        if frame.seq > last_proc {
-                            LAST_PROCESSED_RAW_SEQ.store(frame.seq, Ordering::SeqCst);
-                            break frame;
-                        } else {
-                            // This frame is outdated; skip it.
-                            continue;
-                        }
-                    };
-                    // Send the frame's data to the ffmpeg input buffer.
-                    ffmpeg_input_buffer.push(raw_frame);
-                }
-            });
-        }
-        {
-            let ffmpeg_input_buffer = Arc::clone(&ffmpeg_input_buffer);
-            thread::spawn(move || {
-                let mut last_written_seq = None;
-                loop {
-                    let raw_frame = ffmpeg_input_buffer.pop();
-                    // Verify that the current frame's sequence is greater than the last.
-                    if let Some(last_seq) = last_written_seq {
-                        if raw_frame.seq <= last_seq {
-                            debug!(
-                        "Out-of-order raw frame detected: expected a frame with seq greater than {} but got {}.",
-                        last_seq,
-                        raw_frame.seq
-                    );
-                            // Optionally, skip this frame or handle the error.
-                            continue;
-                        }
-                    }
-                    if let Err(e) = ffmpeg_stdin.write_all(&raw_frame.data) {
-                        eprintln!("Error writing to ffmpeg stdin: {:?}", e);
+    // Spawn a thread to read rpicam's stdout and extract H.264 frames.
+    {
+        thread::spawn(move || {
+            let mut reader = BufReader::new(rpicam_stdout);
+            let mut buffer = BytesMut::with_capacity(1024 * 1024);
+            let mut sps_sent = false;
+            let mut pps_sent = false;
+            loop {
+                let mut temp_buf = [0u8; 8192];
+                match reader.read(&mut temp_buf) {
+                    Ok(0) => {
+                        eprintln!("rpicam stdout closed.");
                         break;
                     }
-                    last_written_seq = Some(raw_frame.seq);
-                }
-            });
-        }
+                    Ok(n) => {
+                        buffer.extend_from_slice(&temp_buf[..n]);
+                        match extract_h264_frame(&mut buffer) {
+                            Ok(h264_frame2) => {
+                                if let Some(mut frame) = h264_frame2 {
+                                    // Update the frame timestamp on extraction.
+                                    frame.timestamp = Instant::now();
 
-        // Spawn a thread to read ffmpeg's stdout and extract H.264 frames.
-        {
-            let h264_buffer_clone = Arc::clone(&h264_buffer);
-            thread::spawn(move || {
-                let mut reader = BufReader::new(ffmpeg_stdout);
-                let mut buffer = BytesMut::with_capacity(1024 * 1024);
-                loop {
-                    let mut temp_buf = [0u8; 8192];
-                    match reader.read(&mut temp_buf) {
-                        Ok(0) => {
-                            eprintln!("ffmpeg stdout closed.");
-                            break;
-                        }
-                        Ok(n) => {
-                            buffer.extend_from_slice(&temp_buf[..n]);
-                            while let Some(nal_unit) = Self::extract_h264_frame(&mut buffer) {
-                                let h264_frame = H264Frame {
-                                    data: nal_unit,
-                                    seq: H264_FRAME_COUNTER.fetch_add(1, Ordering::SeqCst),
-                                };
+                                    debug!(
+                                        "Extracted frame kind: {:?}, size: {} bytes",
+                                        frame.kind,
+                                        frame.data.len()
+                                    );
 
-                                h264_buffer_clone.push(h264_frame);
+                                    if !sps_sent && frame.kind == VideoFrameKind::Sps {
+                                        let _ = ps_tx.send(frame.clone());
+                                        sps_sent = true;
+                                    }
+                                    if !pps_sent && frame.kind == VideoFrameKind::Pps {
+                                        let _ = ps_tx.send(frame.clone());
+                                        pps_sent = true;
+                                    }
+
+                                    add_frame_and_drop_old(Arc::clone(&frame_queue), frame);
+                                }
+                            }
+                            Err(e) => {
+                                println!("Got error {:?}", e);
                             }
                         }
-                        Err(e) => {
-                            eprintln!("Error reading ffmpeg stdout: {:?}", e);
-                            break;
-                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error reading rpicam stdout: {:?}", e);
+                        break;
                     }
                 }
-            });
+            }
+        });
+    }
+
+    // Spawn a thread that will continuously read full frames from a UNIX domain socket in the modified rpicam-vid
+    {
+        thread::spawn(move || {
+            let stream_attempt: Option<UnixStream> = connect_to_socket();
+            if stream_attempt.is_none() {
+                panic!("Was unable to connect to the rpicam-vid socket. Are you using the built rpicam-apps privastead fork?");
+            }
+
+            let mut stream = stream_attempt.unwrap(); // Unwrap will work since we checked is_none()
+
+            // Write the motion_fps we want the output to synchronize to for maximum efficiency.
+            if let Err(e) = stream.write(&[motion_fps]) {
+                panic!("Failed to write Motion FPS to rpicam-vid: {:?}", e);
+            }
+
+            // Continuously read in frames from the secondary stream
+            loop {
+                let mut buffer = vec![0u8; frame_size];
+
+                match stream.read_exact(&mut buffer) {
+                    Ok(_) => {
+                        let raw_frame = RawFrame {
+                            data: buffer,
+                            timestamp: SystemTime::now(),
+                        };
+
+                        {
+                            let mut lock = motion_latest_frame.lock().unwrap();
+                            *lock = Some(raw_frame);
+                        }
+                    }
+                    Err(e) => {
+                        panic!(
+                            "Error reading from UNIX domain socket from secondary stream: {:?}",
+                            e
+                        );
+                    }
+                }
+            }
+        });
+
+        return Ok(());
+    }
+}
+
+/// Connect to the secondary lib camera stream (UNIX domain socket)
+/// https://man7.org/linux/man-pages/man7/unix.7.html
+fn connect_to_socket() -> Option<UnixStream> {
+    for _ in 0..30 {
+        if let Ok(stream) = UnixStream::connect("/tmp/rpi_raw_frame_socket") {
+            return Some(stream); // Return immediately on success
         }
-
-        Ok(SharedCameraStream {
-            raw_buffer,
-            h264_buffer,
-        })
+        sleep(Duration::from_secs(1)); // Wait before retrying
     }
 
-    /// Extract a complete H.264 NAL unit from the buffer.
-    fn extract_h264_frame(buffer: &mut BytesMut) -> Option<Vec<u8>> {
-        let start_code = [0x00, 0x00, 0x00, 0x01];
-        let alt_start_code = [0x00, 0x00, 0x01];
+    None // If all attempts fail, we return None.
+}
 
-        let start = if let Some(pos) = buffer.windows(4).position(|w| w == start_code) {
-            pos
-        } else if let Some(pos) = buffer.windows(3).position(|w| w == alt_start_code) {
-            pos
-        } else {
-            return None;
-        };
+fn add_frame_and_drop_old(frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>, frame: VideoFrame) {
+    let time_window = Duration::new(5, 0);
+    let mut queue = frame_queue.lock().unwrap();
+    queue.push_back(frame.clone());
 
-        let start_code_len = if buffer[start..].starts_with(&start_code) {
-            4
+    // Remove frames older than the time window.
+    while let Some(front) = queue.front() {
+        if Instant::now().duration_since(front.timestamp) > time_window {
+            queue.pop_front();
         } else {
-            3
-        };
-        let next_search = start + start_code_len;
-        let next = if let Some(pos) = buffer[next_search..]
-            .windows(4)
-            .position(|w| w == start_code)
-        {
-            next_search + pos
-        } else if let Some(pos) = buffer[next_search..]
-            .windows(3)
-            .position(|w| w == alt_start_code)
-        {
-            next_search + pos
-        } else {
-            return None;
-        };
-
-        let nal_unit = buffer.split_to(next);
-        Some(nal_unit.to_vec())
+            break;
+        }
     }
+}
+
+/// A modified H264 extraction frame method when I had issues working with the old ip.rs one
+fn extract_h264_frame(buffer: &mut BytesMut) -> anyhow::Result<Option<VideoFrame>> {
+    const MAX_NAL_UNIT_SIZE: usize = 2 * 1024 * 1024; // 2 MB maximum
+
+    // Instead of discarding data, require the buffer to begin with a valid start code.
+    if !buffer.starts_with(&[0, 0, 0, 1]) && !buffer.starts_with(&[0, 0, 1]) {
+        println!(
+            "Buffer not aligned (head: {:02x?}), waiting for more data.",
+            &buffer[..std::cmp::min(buffer.len(), 16)]
+        );
+        return Ok(None);
+    }
+
+    // Determine the start code length.
+    let start_code_len = if buffer.starts_with(&[0, 0, 0, 1]) {
+        4
+    } else {
+        3
+    };
+
+    // Ensure we have at least one byte after the start code (for the NAL header).
+    if buffer.len() < start_code_len + 1 {
+        return Ok(None);
+    }
+
+    // Look for the next start code in the remaining data.
+    let search_start = start_code_len;
+    let next_start_opt = if let Some(pos) = buffer[search_start..]
+        .windows(4)
+        .position(|w| w == [0, 0, 0, 1])
+    {
+        Some(search_start + pos)
+    } else if let Some(pos) = buffer[search_start..]
+        .windows(3)
+        .position(|w| w == [0, 0, 1])
+    {
+        Some(search_start + pos)
+    } else {
+        // No subsequent start code found; wait for more data.
+        return Ok(None);
+    };
+
+    // The bytes from the beginning up to the next start code form one NAL unit.
+    let nal_end = next_start_opt.unwrap();
+    let nal_unit = buffer.split_to(nal_end);
+
+    // --- Integrity Checks ---
+    if nal_unit.len() < start_code_len + 1 {
+        return Err(anyhow::anyhow!(
+            "Extracted NAL unit is too short: {} bytes",
+            nal_unit.len()
+        ));
+    }
+    if nal_unit.len() > MAX_NAL_UNIT_SIZE {
+        return Err(anyhow::anyhow!(
+            "Extracted NAL unit exceeds maximum allowed size: {} bytes",
+            nal_unit.len()
+        ));
+    }
+
+    let expected_start_code: &[u8] = if start_code_len == 4 {
+        &[0, 0, 0, 1]
+    } else {
+        &[0, 0, 1]
+    };
+
+    if !nal_unit.starts_with(expected_start_code) {
+        // Instead of discarding, we now report an error.
+        return Err(anyhow::anyhow!(
+            "NAL unit does not start with a valid start code: {:02x?}",
+            &nal_unit[..std::cmp::min(nal_unit.len(), 16)]
+        ));
+    }
+
+    // Extract the NAL header (first byte after the start code) and determine the NAL type.
+    let nal_header = nal_unit[start_code_len];
+    let nal_type = nal_header & 0x1F;
+    if nal_type > 31 {
+        return Err(anyhow::anyhow!("Invalid NAL type: {}", nal_type));
+    }
+    if nal_unit.len() <= start_code_len + 1 {
+        return Err(anyhow::anyhow!("NAL unit payload is empty"));
+    }
+
+    let kind = match nal_type {
+        7 => VideoFrameKind::Sps,
+        8 => VideoFrameKind::Pps,
+        5 => VideoFrameKind::IFrame,
+        1 => VideoFrameKind::RFrame,
+        _ => VideoFrameKind::RFrame, // Extend as needed.
+    };
+
+    Ok(Some(VideoFrame::new(nal_unit.to_vec(), kind)))
 }

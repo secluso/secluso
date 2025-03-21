@@ -15,7 +15,6 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Instant;
 use std::{
     collections::VecDeque,
@@ -30,20 +29,24 @@ use bytes::{BufMut, BytesMut};
 use crossbeam_channel::unbounded;
 use tokio::runtime::Runtime;
 
+use crate::raspberry_pi::rpi_dual_stream;
 use crate::traits::Mp4;
 use crate::{
     delivery_monitor::VideoInfo,
     fmp4::Fmp4Writer,
     livestream::LivestreamWriter,
     mp4::Mp4Writer,
-    raspberry_pi::rpi_dual_stream::SharedCameraStream,
     raspberry_pi::rpi_motion_detection::MotionDetection,
     traits::{Camera, CodecParameters},
     write_box,
 };
 
-//These are for our local SPS/PPS channel
+// Frame dimensions
+const WIDTH: usize = 1920; //TODO: for YUV420 to work properly with this code, this must be divisible by 64. Consider using padding for other resolution support in the future (if need be)
+const HEIGHT: usize = 1080;
+const TOTAL_FRAME_RATE: usize = 30;
 
+//These are for our local SPS/PPS channel
 #[derive(PartialEq, Debug, Clone)]
 pub enum VideoFrameKind {
     RFrame,
@@ -52,30 +55,24 @@ pub enum VideoFrameKind {
     Pps,
 }
 
-static FRAME_COUNTER: AtomicI64 = AtomicI64::new(0);
-static LAST_PROCESSED_SEQ: AtomicI64 = AtomicI64::new(-1); // We use -1 to allow the first frame to expect 0 as the next.
-
 #[derive(Debug, Clone)]
 pub struct VideoFrame {
     pub data: Vec<u8>,
     pub kind: VideoFrameKind,
     pub timestamp: Instant,
-    pub seq: i64, // Unique sequence number
 }
 
 impl VideoFrame {
     pub fn new(data: Vec<u8>, kind: VideoFrameKind) -> Self {
-        let seq = FRAME_COUNTER.fetch_add(1, Ordering::SeqCst);
         Self {
             data,
             kind,
             timestamp: Instant::now(),
-            seq,
         }
     }
 }
 
-/// RaspberryPiCamera uses the shared stream for both motion detection (via raw frames) and recording/livestreaming (via H.264).
+/// RaspberryPiCamera uses the shared stream for both motion detection (via raw YUV420 frames) and recording/livestreaming (via H.264).
 pub struct RaspberryPiCamera {
     name: String,
     state_dir: String,
@@ -84,74 +81,43 @@ pub struct RaspberryPiCamera {
     sps_frame: VideoFrame,
     pps_frame: VideoFrame,
     motion_detection: MotionDetection,
-    await_start: Arc<AtomicBool>,
 }
 
 impl RaspberryPiCamera {
     pub fn new(name: String, state_dir: String, video_dir: String, motion_fps: u64) -> Self {
-        // Frame queue holds recently processed H.264 frames.
-        let frame_queue = Arc::new(Mutex::new(VecDeque::new()));
         println!("Initializing Raspberry Pi Camera...");
-
-        let await_start = Arc::new(AtomicBool::new(false));
-
-        // Start the new shared stream.
-        let shared_stream = Arc::new(
-            SharedCameraStream::start(Arc::clone(&await_start))
-                .expect("Failed to start shared stream"),
-        );
 
         // Create a channel to receive SPS/PPS frames.
         let (ps_tx, ps_rx) = unbounded::<VideoFrame>();
 
-        let frame_queue_clone = Arc::clone(&frame_queue);
-        let shared_stream_clone = Arc::clone(&shared_stream);
+        // Frame queue holds recently processed H.264 frames.
+        let frame_queue = Arc::new(Mutex::new(VecDeque::new()));
 
-        // Spawn a thread to process H.264 data from the shared stream and capture the SPS/PPS frames.
-        thread::spawn(move || {
-            let mut buffer = BytesMut::with_capacity(1024 * 1024);
-            let mut sps_sent = false;
-            let mut pps_sent = false;
+        // Store the latest raw frame for motion detection.
+        let latest_frame = Arc::new(Mutex::new(None));
 
-            // Local sequence enforcer for input from the ring buffer
-            let mut last_input_seq: u64 = 0;
-            loop {
-                let chunk = shared_stream_clone.h264_buffer.acquire_frame();
-                // Enforce sequence ordering for the incoming chunk.
-                if chunk.seq != last_input_seq + 1 {
-                    println!(
-                        "Input sequence gap: expected {} but got {}. Frame seq {} may be out-of-order.",
-                        last_input_seq + 1,
-                        chunk.seq,
-                        chunk.seq
-                    );
-                }
-                last_input_seq = chunk.seq;
-
-                buffer.extend_from_slice(&chunk.data);
-                while let Some(mut frame) = Self::extract_h264_frame(&mut buffer) {
-                    // Update the frame timestamp on extraction.
-                    frame.timestamp = Instant::now();
-
-                    if !sps_sent && frame.kind == VideoFrameKind::Sps {
-                        let _ = ps_tx.send(frame.clone());
-                        sps_sent = true;
-                    }
-                    if !pps_sent && frame.kind == VideoFrameKind::Pps {
-                        let _ = ps_tx.send(frame.clone());
-                        pps_sent = true;
-                    }
-                    Self::add_frame_and_drop_old(Arc::clone(&frame_queue_clone), frame);
-                }
-            }
-        });
+        // Start the new shared stream.
+        rpi_dual_stream::start(
+            WIDTH,
+            HEIGHT,
+            TOTAL_FRAME_RATE,
+            Arc::clone(&latest_frame),
+            Arc::clone(&frame_queue),
+            ps_tx,
+            motion_fps as u8,
+        )
+        .expect("Failed to start shared stream");
 
         // Wait for the SPS and PPS frames before continuing.
-        // TODO: Handle an error at some point. There's no timeout, so this will hang forever if there's a failure in libcamera-vid
         let mut sps_frame_opt = None;
         let mut pps_frame_opt = None;
         while sps_frame_opt.is_none() || pps_frame_opt.is_none() {
-            let frame = ps_rx.recv().expect("Failed to receive frame");
+            let frame_attempt = ps_rx.recv_timeout(Duration::from_secs(30));
+            if let Err(_) = frame_attempt {
+                panic!("Failed to receive PPS/SPS frame from rpicam-vid in 30 seconds.");
+            }
+
+            let frame = frame_attempt.unwrap();
             match frame.kind {
                 VideoFrameKind::Sps => sps_frame_opt = Some(frame),
                 VideoFrameKind::Pps => pps_frame_opt = Some(frame),
@@ -162,7 +128,7 @@ impl RaspberryPiCamera {
         let pps_frame = pps_frame_opt.expect("PPS frame missing");
 
         // Start motion detection using raw frames from the shared stream.
-        let motion_detection = MotionDetection::new(motion_fps, shared_stream.clone())
+        let motion_detection = MotionDetection::new(latest_frame, WIDTH, HEIGHT, motion_fps)
             .expect("Failed to start motion detection");
 
         println!("RaspberryPiCamera initialized.");
@@ -175,108 +141,69 @@ impl RaspberryPiCamera {
             sps_frame,
             pps_frame,
             motion_detection,
-            await_start,
         }
     }
 
-    const MAX_FRAME_QUEUE_CAPACITY: usize = 50;
+    // The modified copy function now takes an optional raw_writer.
+    // For every frame sent to the MP4 writer, we also write the raw frame data.
+    async fn copy<'a, M: Mp4>(
+        mp4: &'a mut M,
+        duration: Option<u64>,
+        frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>,
+    ) -> Result<(), Error> {
+        let recording_window = duration.map(|secs| Duration::new(secs, 0));
+        let recording_start_time = Instant::now();
+        let mut first_frame_found = false;
+        let mut frame_count: u64 = 0;
+        let time_per_frame: u64 = 1_000_000 / TOTAL_FRAME_RATE as u64;
 
-    fn add_frame_and_drop_old(frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>, frame: VideoFrame) {
-        let time_window = Duration::new(5, 0);
-        let mut queue = frame_queue.lock().unwrap();
+        loop {
+            let mut queue = frame_queue.lock().unwrap();
+            let frame = match queue.pop_front() {
+                Some(f) => f,
+                None => {
+                    drop(queue);
+                    thread::sleep(Duration::from_secs(1));
+                    continue;
+                }
+            };
 
-        // Enforce sequence ordering
-        let last_processed = LAST_PROCESSED_SEQ.load(Ordering::SeqCst);
-        if frame.seq != last_processed + 1 {
-            debug!(
-                "Output sequence gap: expected {} but got {}. Dropping frame if duplicate or out-of-order.",
-                last_processed + 1,
-                frame.seq
-            );
-        }
-        if frame.seq <= last_processed {
-            debug!(
-                "Global check: Frame seq {} is not greater than last processed seq {}. Dropping frame.",
-                frame.seq,
-                last_processed
-            );
-            return;
-        }
+            // On I-frame, mark the beginning of a fragment.
+            if frame.kind == VideoFrameKind::IFrame {
+                first_frame_found = true;
+                if let Err(_e) = mp4.finish_fragment().await {
+                    // End of livestream.
+                    break;
+                }
+            }
 
-        queue.push_back(frame.clone());
+            if first_frame_found {
+                // Compute the timestamp based on the frame count and fixed frame rate.
+                let frame_timestamp_micros = frame_count * time_per_frame;
+                // Convert Annex B NAL unit to AVCC format.
+                let avcc_data = Self::convert_annexb_to_avcc(&frame.data);
+                mp4.video(
+                    &avcc_data,
+                    frame_timestamp_micros / 10, // Adjust conversion as needed.
+                    frame.kind == VideoFrameKind::IFrame,
+                )
+                .await
+                .with_context(|| "Error processing video frame")?;
+                frame_count += 1;
+            }
+            drop(queue);
 
-        // Update the global last processed sequence counter.
-        LAST_PROCESSED_SEQ.store(frame.seq, Ordering::SeqCst);
-
-        // Enforce a fixed capacity (via ring buffer)
-        while queue.len() > Self::MAX_FRAME_QUEUE_CAPACITY {
-            queue.pop_front();
-        }
-
-        // Also remove frames older than the time window.
-        while let Some(front) = queue.front() {
-            if Instant::now().duration_since(front.timestamp) > time_window {
-                queue.pop_front();
-            } else {
-                break;
+            if let Some(window) = recording_window {
+                if Instant::now().duration_since(recording_start_time) > window {
+                    info!("Stopping the recording.");
+                    break;
+                }
             }
         }
+        Ok(())
     }
 
-    /// A modified H264 extraction frame method when I had issues working with the old ip.rs one
-    fn extract_h264_frame(buffer: &mut BytesMut) -> Option<VideoFrame> {
-        let start_code = &[0x00, 0x00, 0x00, 0x01];
-        let short_start_code = &[0x00, 0x00, 0x01];
-
-        // Find the first start code
-        let start = buffer
-            .windows(4)
-            .position(|w| w == start_code)
-            .or_else(|| buffer.windows(3).position(|w| w == short_start_code))?;
-
-        let start_code_len = if buffer[start..].starts_with(start_code) {
-            4
-        } else {
-            3
-        };
-        let next_search_start = start + start_code_len;
-        let end = buffer[next_search_start..]
-            .windows(4)
-            .position(|w| w == start_code)
-            .or_else(|| {
-                buffer[next_search_start..]
-                    .windows(3)
-                    .position(|w| w == short_start_code)
-            })
-            .map(|pos| next_search_start + pos)
-            .unwrap_or(buffer.len());
-
-        // Extract the NAL unit by skipping the start code.
-        let nal_unit = buffer.split_to(end).split_off(start + start_code_len);
-        if nal_unit.is_empty() {
-            return None;
-        }
-
-        let nal_unit_type = nal_unit[0] & 0x1F;
-        let mut prefixed = Vec::new();
-        Self::append_length_prefixed_nal(&mut prefixed, &nal_unit);
-
-        match nal_unit_type {
-            7 => Some(VideoFrame::new(prefixed, VideoFrameKind::Sps)),
-            8 => Some(VideoFrame::new(prefixed, VideoFrameKind::Pps)),
-            5 => Some(VideoFrame::new(prefixed, VideoFrameKind::IFrame)),
-            1 => Some(VideoFrame::new(prefixed, VideoFrameKind::RFrame)),
-            _ => None,
-        }
-    }
-
-    fn append_length_prefixed_nal(output: &mut Vec<u8>, nal: &[u8]) {
-        let nal_length = nal.len() as u32;
-        output.extend_from_slice(&nal_length.to_be_bytes()); // 4-byte big-endian length prefix
-        output.extend_from_slice(nal); // Append the NAL unit itself
-    }
-
-    /// Writes the `.mp4`, including trying to finish or clean up the file.
+    /// Writes a motion detection .mp4
     async fn write_mp4(
         filename: String,
         duration: u64,
@@ -284,25 +211,35 @@ impl RaspberryPiCamera {
         sps_frame: VideoFrame,
         pps_frame: VideoFrame,
     ) -> Result<(), Error> {
+        // Create the primary MP4 file.
         let file = tokio::fs::File::create(&filename).await?;
+        let sps_start_len = if sps_frame.data.starts_with(&[0, 0, 0, 1]) {
+            4
+        } else {
+            3
+        };
+        let pps_start_len = if pps_frame.data.starts_with(&[0, 0, 0, 1]) {
+            4
+        } else {
+            3
+        };
+
+        let sps_bytes = sps_frame.data[sps_start_len..].to_vec();
+        let pps_bytes = pps_frame.data[pps_start_len..].to_vec();
+
         let mut mp4 = Mp4Writer::new(
             RpiCameraVideoParameters::new(
-                sps_frame.data[4..].to_vec(),
-                pps_frame.data[4..].to_vec(),
+                // For MP4, remove the start code (assumes a 4-byte start code).
+                sps_bytes, pps_bytes,
             ),
             RpiCameraAudioParameters::default(),
             file,
         )
         .await?;
+
+        // Process the rest of the frames, writing both to the MP4 writer and to the raw file.
         Self::copy(&mut mp4, Some(duration), frame_queue).await?;
         mp4.finish().await?;
-
-        // FIXME: do we need to wait for teardown here?
-        // Session has now been dropped, on success or failure. A TEARDOWN should
-        // be pending if necessary. session_group.await_teardown() will wait for it.
-        //if let Err(e) = session_group.await_teardown().await {
-        //    log::error!("TEARDOWN failed: {}", e);
-        //}
 
         Ok(())
     }
@@ -330,66 +267,23 @@ impl RaspberryPiCamera {
         Ok(())
     }
 
-    async fn copy<'a, M: Mp4>(
-        mp4: &'a mut M,
-        duration: Option<u64>,
-        frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>,
-    ) -> Result<(), Error> {
-        let recording_window = match duration {
-            Some(secs) => Some(Duration::new(secs, 0)),
-            None => None,
+    // Required for MP4 muxing. Frames from rpicam-vid are in AnnexB, and we need Avcc for our muxer. FFmpeg did not have this output.
+    fn convert_annexb_to_avcc(nal: &[u8]) -> Vec<u8> {
+        // Determine the start code length.
+        let start_code_len = if nal.starts_with(&[0, 0, 0, 1]) {
+            4
+        } else if nal.starts_with(&[0, 0, 1]) {
+            3
+        } else {
+            0
         };
-        let recording_start_time = Instant::now();
-        let mut first_frame_found = false;
+        let nal_payload = &nal[start_code_len..];
+        let nal_len = nal_payload.len() as u32;
 
-        loop {
-            let mut queue = frame_queue.lock().unwrap();
-            let frame = match queue.pop_front() {
-                Some(f) => f,
-                None => {
-                    drop(queue);
-                    thread::sleep(Duration::from_secs(1));
-                    continue;
-                }
-            };
-
-            if frame.kind == VideoFrameKind::IFrame {
-                first_frame_found = true;
-                if let Err(_e) = mp4.finish_fragment().await {
-                    // This will be executed when livestream ends.
-                    // This is a no op for recording an .mp4 file
-                    // log::error!(".mp4 finish failed: {}", e);
-                    break;
-                }
-            }
-
-            if first_frame_found {
-                //FIXME: we already determined whether the frame was an i-frame or not. Keep that in a vec to avoid recomputing?
-                let frame_timestamp: u64 = frame
-                    .timestamp
-                    .duration_since(recording_start_time)
-                    .as_micros()
-                    .try_into()
-                    .unwrap();
-                mp4.video(
-                    &frame.data,
-                    frame_timestamp / 10,
-                    frame.kind == VideoFrameKind::IFrame,
-                )
-                .await
-                .with_context(|| format!("Error processing video frame"))?;
-            }
-            drop(queue);
-
-            if let Some(window) = recording_window {
-                if frame.timestamp.duration_since(recording_start_time) > window {
-                    log::info!("Stopping the recording.");
-                    break;
-                }
-            }
-        }
-
-        Ok(())
+        // Create a new vector with the 4-byte big-endian length prefix.
+        let mut avcc = nal_len.to_be_bytes().to_vec();
+        avcc.extend_from_slice(nal_payload);
+        avcc
     }
 }
 
@@ -403,7 +297,7 @@ impl Camera for RaspberryPiCamera {
 
         let future = Self::write_mp4(
             self.video_dir.clone() + "/" + &info.filename,
-            20,
+            20, // We'll use 5 seconds before, 15 seconds after.
             Arc::clone(&self.frame_queue),
             self.sps_frame.clone(),
             self.pps_frame.clone(),
@@ -449,10 +343,6 @@ impl Camera for RaspberryPiCamera {
 
     fn get_video_dir(&self) -> String {
         self.video_dir.clone()
-    }
-
-    fn send_start_signal(&self) {
-        self.await_start.store(true, Ordering::SeqCst);
     }
 }
 
