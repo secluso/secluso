@@ -51,7 +51,11 @@ pub fn start(
     motion_fps: u8,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // For 8-bit yuv420p, frame size = width * height * 3/2 bytes.
-    let frame_size: usize = (width * height * 3) / 2;
+    // However, we need to take into account how the width is padded to 64-bytes.
+    // This is for a row-aligned format from V4L2 for DMA transfer alignment.
+    let yuv_width = (width + 63) / 64 * 64;
+    let yuv_height = height;
+    let yuv_frame_size = yuv_width * yuv_height * 3 / 2;
 
     // Spawn rpicam‑vid with output directed to stdout (to get rid of TCP dependency for reduced complexity)
     let rpicam_cmd = format!(
@@ -140,7 +144,7 @@ pub fn start(
 
             // Continuously read in frames from the secondary stream
             loop {
-                let mut buffer = vec![0u8; frame_size];
+                let mut buffer = vec![0u8; yuv_frame_size];
 
                 match stream.read_exact(&mut buffer) {
                     Ok(_) => {

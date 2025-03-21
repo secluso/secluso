@@ -42,8 +42,8 @@ use crate::{
 };
 
 // Frame dimensions
-const WIDTH: usize = 1920; //TODO: for YUV420 to work properly with this code, this must be divisible by 64. Consider using padding for other resolution support in the future (if need be)
-const HEIGHT: usize = 1080;
+const WIDTH: usize = 1296;
+const HEIGHT: usize = 972;
 const TOTAL_FRAME_RATE: usize = 30;
 
 //These are for our local SPS/PPS channel
@@ -297,7 +297,7 @@ impl Camera for RaspberryPiCamera {
 
         let future = Self::write_mp4(
             self.video_dir.clone() + "/" + &info.filename,
-            20, // We'll use 5 seconds before, 15 seconds after.
+            15, // We'll use 5 seconds before, 15 seconds after.
             Arc::clone(&self.frame_queue),
             self.sps_frame.clone(),
             self.pps_frame.clone(),
@@ -366,11 +366,11 @@ impl CodecParameters for RpiCameraVideoParameters {
             buf.put_u32(0); // reserved
             buf.put_u64(0); // reserved
             buf.put_u32(0); // reserved
-                            //FIXME: hardcoded
-            buf.put_u16(1920); // width
-            buf.put_u16(1080); // height
-            buf.put_u32(0x0048); // horizontal resolution
-            buf.put_u32(0x0048); // vertical resolution
+            buf.put_u16(WIDTH as u16); // width
+            buf.put_u16(HEIGHT as u16); // height
+            let dpi = 72 << 16;
+            buf.put_u32(dpi); // horizontal_resolution
+            buf.put_u32(dpi); // vertical_resolution
             buf.put_u32(0); // reserved
             buf.put_u16(1); // frame count
             for _ in 0..32 {
@@ -406,9 +406,8 @@ impl CodecParameters for RpiCameraVideoParameters {
     }
 
     fn get_dimensions(&self) -> (u32, u32) {
-        //FIXME: hardcoded
-        let width = (1920u32) << 16;
-        let height = (1080u32) << 16;
+        let width = (WIDTH as u32) << 16;
+        let height = (HEIGHT as u32) << 16;
 
         (width, height)
     }

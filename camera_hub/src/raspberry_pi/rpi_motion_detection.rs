@@ -117,22 +117,37 @@ impl BackgroundSubtractor {
 
   Outside the YUV->RGB method being called (referenced from below), it runs at 15ms on average on a 1292x972 frame on a Raspberry Pi Zero 2W.
 **/
-fn adaptive_grayscale(raw_frame: &RawFrame, width: usize, height: usize) -> Option<GrayImage> {
-    let expected_size = width * height * 3 / 2; // For 8-bit yuv420p, frame size = width * height * 3/2 bytes.
+fn adaptive_grayscale(
+    raw_frame: &RawFrame,
+    rgb_width: usize,
+    rgb_height: usize,
+) -> Option<GrayImage> {
+    // For 8-bit yuv420p, frame size = width * height * 3/2 bytes.
+    // However, we need to take into account how the width is padded to 64-bytes.
+    // This is for a row-aligned format from V4L2 for DMA transfer alignment.
+    let yuv_width = (rgb_width + 63) / 64 * 64;
+    let yuv_height = rgb_height;
+    let yuv_size = yuv_width * yuv_height * 3 / 2;
 
     let data = &raw_frame.data;
-    if data.len() < expected_size as usize {
-        return None;
+    if data.len() != yuv_size {
+        panic!(
+            "Raw data did not match expected YUV size for the camera resolution ({} versus {}).",
+            data.len(),
+            yuv_size
+        );
     }
 
     // Split the raw data into Y, U, and V planes.
-    let y_plane = &data[..width * height]; // The Y plane of YUV420 is the first W*H pixels
-    let u_plane = &data[width * height..width * height + (width * height) / 4]; // The U plane is right after the Y plane, consisting of 1/4 W*H pixels.
-    let v_plane = &data[width * height + (width * height) / 4..]; // The V plane is right after the U plane, consisting of 1/4 W*H pixels.
+    let y_plane = &data[..yuv_width * yuv_height]; // The Y plane of YUV420 is the first W*H pixels
+    let u_plane =
+        &data[yuv_width * yuv_height..yuv_width * yuv_height + (yuv_width * yuv_height) / 4]; // The U plane is right after the Y plane, consisting of 1/4 W*H pixels.
+    let v_plane = &data[yuv_width * yuv_height + (yuv_width * yuv_height) / 4..]; // The V plane is right after the U plane, consisting of 1/4 W*H pixels.
 
     // Perform a fast YUV -> RGB approximation
-    let rgb_pixels = yuv_to_rgb(y_plane, u_plane, v_plane, width as usize, height as usize);
-    let total_rgb_pixels = (width * height) as f32;
+    // Passing the RGB width and height here is intentional. We don't want the extra YUV padding bytes to mess with our image.
+    let rgb_pixels = yuv_to_rgb(y_plane, u_plane, v_plane, rgb_width, rgb_height);
+    let total_rgb_pixels = (rgb_width * rgb_height) as f32;
 
     // Compute the channel (R,G,B) sums and squared sums in parallel.
     let (sum_r, sum_g, sum_b, squared_sum_r, squared_sum_g, squared_sum_b) = rgb_pixels
@@ -188,7 +203,7 @@ fn adaptive_grayscale(raw_frame: &RawFrame, width: usize, height: usize) -> Opti
     }
 
     // Prepare the output grayscale buffer.
-    let mut gray_pixels = vec![0u8; (width * height) as usize];
+    let mut gray_pixels = vec![0u8; rgb_width * rgb_height];
 
     // Compute the grayscale values in parallel.
     // Use the lookup table from earlier to perform these actions to save some CPU time
@@ -212,7 +227,7 @@ fn adaptive_grayscale(raw_frame: &RawFrame, width: usize, height: usize) -> Opti
             }
         });
 
-    return GrayImage::from_raw(width as u32, height as u32, gray_pixels);
+    return GrayImage::from_raw(rgb_width as u32, rgb_height as u32, gray_pixels);
 }
 
 /**
@@ -414,8 +429,8 @@ impl MotionDetection {
             grayscale.clone()
         };
 
-        let clahe_plus_blur = SystemTime::now();
         // Perform CLAHE (Contrast-Limited Adaptive Histogram Equalization)
+        let clahe_plus_blur = SystemTime::now();
         let clahe_processed_img =
             raspberry_pi::clahe::default_clahe(processed, w as usize, h as usize);
 
