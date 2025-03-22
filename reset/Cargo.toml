@@ -1,0 +1,8 @@
+[package]
+name = "privastead-reset"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
+
+[dependencies]
+rppal = "0.22.1"
