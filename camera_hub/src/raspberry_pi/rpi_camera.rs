@@ -29,6 +29,7 @@ use bytes::{BufMut, BytesMut};
 use crossbeam_channel::unbounded;
 use tokio::runtime::Runtime;
 
+use crate::raspberry_pi::motion::detector::MotionDetection;
 use crate::raspberry_pi::rpi_dual_stream;
 use crate::traits::Mp4;
 use crate::{
@@ -36,7 +37,6 @@ use crate::{
     fmp4::Fmp4Writer,
     livestream::LivestreamWriter,
     mp4::Mp4Writer,
-    raspberry_pi::rpi_motion_detection::MotionDetection,
     traits::{Camera, CodecParameters},
     write_box,
 };
@@ -288,7 +288,7 @@ impl RaspberryPiCamera {
 }
 
 impl Camera for RaspberryPiCamera {
-    fn is_there_motion(&mut self) -> io::Result<bool> {
+    fn is_there_motion(&mut self) -> Result<bool, Error> {
         self.motion_detection.handle_motion_event()
     }
 

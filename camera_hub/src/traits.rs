@@ -40,7 +40,7 @@ pub trait Mp4 {
 }
 
 pub trait Camera {
-    fn is_there_motion(&mut self) -> io::Result<bool>;
+    fn is_there_motion(&mut self) -> Result<bool, Error>;
     fn record_motion_video(&self, info: &VideoInfo) -> io::Result<()>;
     fn launch_livestream(&self, livestream_writer: LivestreamWriter) -> io::Result<()>;
     fn get_name(&self) -> String;

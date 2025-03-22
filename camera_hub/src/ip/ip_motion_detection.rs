@@ -290,7 +290,7 @@ impl MotionDetection {
         Ok(Some(line_str))
     }
 
-    pub fn handle_motion_event(&mut self) -> io::Result<bool> {
+    pub fn handle_motion_event(&mut self) -> anyhow::Result<bool> {
         let binding = self.latest_frame.lock().unwrap();
         if let Some(latest_frame) = binding.as_ref() {
             let latest_video_time = latest_frame.timestamp;
