@@ -1,6 +1,6 @@
-//! Privastead user authentication: user client side code.
+//! Privastead user authentication
 //!
-//! Copyright (C) 2024  Ardalan Amiri Sani
+//! Copyright (C) 2025  Ardalan Amiri Sani
 //!
 //! This program is free software: you can redistribute it and/or modify
 //! it under the terms of the GNU General Public License as published by
@@ -15,182 +15,51 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use hmac::{Hmac, Mac};
-use openmls_rust_crypto::OpenMlsRustCrypto;
-use openmls_traits::random::OpenMlsRand;
-use openmls_traits::OpenMlsProvider;
-use serde::{Deserialize, Serialize};
-use sha3::Sha3_512;
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::io;
-use std::rc::Rc;
+use rand::{thread_rng, Rng};
+use rand::distributions::Uniform;
 
-// Key size for HMAC-Sha3-512
-// Same key size used here: https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.hmacsha3_512.-ctor?view=net-9.0
-pub const NUM_SECRET_BYTES: usize = 72;
-type HmacType = Hmac<Sha3_512>;
+pub const NUM_USERNAME_CHARS: usize = 14;
+pub const NUM_PASSWORD_CHARS: usize = 14;
 
-// Nonce size
-pub const NUM_NONCE_BYTES: usize = 64;
-
-// Username size
-pub const NUM_USERNAME_BYTES: usize = 64;
-
-#[derive(Serialize, Deserialize)]
-struct UserMsgContent {
-    username: Vec<u8>,
-    nonce: Vec<u8>,
-}
-
-//FIXME: get_hmac and verify_hmac almost identical to ones in pairing.rs
-
-// See https://docs.rs/hmac/0.12.1/hmac/index.html for how to use hmac crate.
-fn get_hmac(secret: &[u8; NUM_SECRET_BYTES], msg: &[u8]) -> Vec<u8> {
-    let mut mac = HmacType::new_from_slice(secret).unwrap();
-    mac.update(msg);
-
-    // `result` has type `CtOutput` which is a thin wrapper around array of
-    // bytes for providing constant time equality check
-    let result = mac.finalize();
-    // To get underlying array use `into_bytes`, but be careful, since
-    // incorrect use of the code value may permit timing attacks which defeats
-    // the security provided by the `CtOutput`
-    let code_bytes = result.into_bytes();
-
-    //FIXME: safe to use to_vec() here?
-    code_bytes[..].to_vec()
-}
-
-fn verify_hmac(secret: &[u8; NUM_SECRET_BYTES], msg: &[u8], code_bytes: &[u8]) -> io::Result<()> {
-    let mut mac = HmacType::new_from_slice(secret)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{e}")))?;
-    mac.update(msg);
-
-    // `verify_slice` will return `Ok(())` if code is correct, `Err(MacError)` otherwise
-    mac.verify_slice(code_bytes)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{e}")))?;
-
-    Ok(())
-}
-
-#[derive(Serialize, Deserialize)]
-struct UserMsg {
-    content_vec: Vec<u8>,
-    tag: Vec<u8>,
-}
-
-pub struct UserAuth {
-    username: [u8; NUM_USERNAME_BYTES],
-    secret: [u8; NUM_SECRET_BYTES],
-}
-
-impl UserAuth {
-    pub fn new(username: [u8; NUM_USERNAME_BYTES], secret: [u8; NUM_SECRET_BYTES]) -> Self {
-        Self { username, secret }
+pub fn parse_user_credentials(credentials: Vec<u8>) -> io::Result<(String, String)> {
+    let username_password = String::from_utf8(credentials)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    if username_password.len() != NUM_USERNAME_CHARS + NUM_PASSWORD_CHARS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Invalid credentials"),
+        ));
     }
 
-    pub fn generate_msg_to_server(&self, nonce: Vec<u8>) -> Vec<u8> {
-        assert!(nonce.len() == NUM_NONCE_BYTES);
-
-        let msg_content = UserMsgContent {
-            username: self.username.to_vec(),
-            nonce,
-        };
-        let msg_content_vec = bincode::serialize(&msg_content).unwrap();
-
-        let tag = get_hmac(&self.secret, &msg_content_vec);
-
-        let msg = UserMsg {
-            content_vec: msg_content_vec,
-            tag,
-        };
-
-        bincode::serialize(&msg).unwrap()
-    }
+    Ok((
+        username_password[0..NUM_USERNAME_CHARS].to_string(),
+        username_password[NUM_USERNAME_CHARS..].to_string(),
+    ))
 }
 
-pub struct ServerAuth {
-    users: Rc<RefCell<HashMap<[u8; NUM_USERNAME_BYTES], [u8; NUM_SECRET_BYTES]>>>,
-    nonce: [u8; NUM_NONCE_BYTES],
+fn generate_random(num_chars: usize) -> String {
+    let charset: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
+                           abcdefghijklmnopqrstuvwxyz\
+                           0123456789\
+                           !@#$%^&*()-_=+[]{}|;:,.<>?/";
+    
+    let mut rng = thread_rng();
+    (0..num_chars)
+        .map(|_| {
+            let idx = rng.sample(Uniform::new(0, charset.len()));
+            charset[idx] as char
+        })
+        .collect()
 }
 
-impl ServerAuth {
-    pub fn new(
-        users: Rc<RefCell<HashMap<[u8; NUM_USERNAME_BYTES], [u8; NUM_SECRET_BYTES]>>>,
-    ) -> Self {
-        let crypto = OpenMlsRustCrypto::default();
-        let nonce = crypto
-            .crypto()
-            .random_vec(NUM_NONCE_BYTES)
-            .unwrap()
-            .try_into()
-            .unwrap();
+pub fn create_user_credentials() -> Vec<u8> {
+    let username = generate_random(NUM_USERNAME_CHARS);
+    let password = generate_random(NUM_PASSWORD_CHARS);
 
-        Self { users, nonce }
-    }
+    let credentials_string = format!("{}{}", username, password);
+    let credentials = credentials_string.into_bytes();
 
-    pub fn generate_msg_to_user(&self) -> Vec<u8> {
-        self.nonce.to_vec()
-    }
-
-    pub fn authenticate_user_msg(
-        &self,
-        user_msg_vec: Vec<u8>,
-    ) -> io::Result<[u8; NUM_USERNAME_BYTES]> {
-        let user_msg: UserMsg = bincode::deserialize(&user_msg_vec).unwrap();
-
-        let user_msg_content: UserMsgContent = bincode::deserialize(&user_msg.content_vec).unwrap();
-        // Check username length
-        if user_msg_content.username.len() != NUM_USERNAME_BYTES {
-            log::debug!("Invalid username length!");
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "Invalid username length!",
-            ));
-        }
-
-        // Look up username
-        let username: [u8; NUM_USERNAME_BYTES] = user_msg_content.username.try_into().unwrap();
-        let users = self.users.borrow_mut();
-        let secret = users.get(&username);
-        if secret.is_none() {
-            log::debug!("Invalid username!");
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "Invalid username!",
-            ));
-        }
-
-        // Check the msg tag
-        let verify_result = verify_hmac(secret.unwrap(), &user_msg.content_vec, &user_msg.tag);
-        if verify_result.is_err() {
-            log::debug!("Invalid tag!");
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "Invalid tag!",
-            ));
-        }
-
-        // Check nonce length
-        if user_msg_content.nonce.len() != NUM_NONCE_BYTES {
-            log::debug!("Invalid nonce length!");
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "Invalid nonce length!",
-            ));
-        }
-
-        // Check nonce
-        if user_msg_content.nonce != self.nonce.to_vec() {
-            log::debug!("Invalid nonce!");
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "Invalid nonce!",
-            ));
-        }
-
-        // Successfully authenticated
-        Ok(username)
-    }
+    credentials
 }
+    

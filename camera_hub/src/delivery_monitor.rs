@@ -1,7 +1,7 @@
 //! Camera hub delivery monitor
 //! Sends notifications and resends videos until it receives ack(s).
 //!
-//! Copyright (C) 2024  Ardalan Amiri Sani
+//! Copyright (C) 2025  Ardalan Amiri Sani
 //!
 //! This program is free software: you can redistribute it and/or modify
 //! it under the terms of the GNU General Public License as published by
@@ -21,24 +21,24 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct VideoInfo {
     pub timestamp: u64,
     pub filename: String,
-    last_send_timestamp: Option<u64>,
-    last_notify_timestamp: Option<u64>,
+    pub epoch: u64,
 }
 
 impl VideoInfo {
     pub fn new() -> Self {
         let now = DeliveryMonitor::now();
+
         Self {
             timestamp: now,
             filename: Self::get_filename_from_timestamp(now),
-            last_send_timestamp: None,
-            last_notify_timestamp: None,
+            epoch: 0,
         }
     }
 
@@ -50,14 +50,12 @@ impl VideoInfo {
 #[derive(Serialize, Deserialize)]
 pub struct DeliveryMonitor {
     watch_list: HashMap<u64, VideoInfo>, //<video timestamp, video info>
-    last_ack_timestamp: Option<u64>,
     video_dir: String,
     state_dir: String,
-    renotify_threshold: u64,
 }
 
 impl DeliveryMonitor {
-    pub fn from_file_or_new(video_dir: String, state_dir: String, renotify_threshold: u64) -> Self {
+    pub fn from_file_or_new(video_dir: String, state_dir: String) -> Self {
         let d_files = User::get_state_files_sorted(&state_dir, "delivery_monitor_").unwrap();
         for f in &d_files {
             let pathname = state_dir.clone() + "/" + f;
@@ -73,10 +71,8 @@ impl DeliveryMonitor {
 
         Self {
             watch_list: HashMap::new(),
-            last_ack_timestamp: None,
             video_dir,
             state_dir,
-            renotify_threshold,
         }
     }
 
@@ -101,76 +97,44 @@ impl DeliveryMonitor {
         }
     }
 
-    pub fn send_event(&mut self, mut video_info: VideoInfo) {
-        info!("send_event: {}", video_info.timestamp);
-        let now = Self::now();
-        // Sending a video also sends a notification.
-        video_info.last_send_timestamp = Some(now);
-        video_info.last_notify_timestamp = Some(now);
-
-        // First send: add to watch list.
-        // Resend: update the watch list.
+    pub fn enqueue_video(&mut self, video_info: VideoInfo) {
+        info!("enqueue_event: {}", video_info.timestamp);
         let _ = self.watch_list.insert(video_info.timestamp, video_info);
 
         self.save_state();
     }
 
-    pub fn ack_event(&mut self, video_timestamp: u64, video_ack: bool) {
-        info!("ack_event: {}, {}", video_timestamp, video_ack);
-        self.last_ack_timestamp = Some(Self::now());
+    pub fn dequeue_video(&mut self, video_info: &VideoInfo) {
+        info!("dequeue_event: {}", video_info.timestamp);
 
-        if video_ack {
-            let _ = self.watch_list.remove(&video_timestamp);
-            let _ = fs::remove_file(
-                self.video_dir.clone()
-                    + "/"
-                    + &VideoInfo::get_filename_from_timestamp(video_timestamp),
-            );
-        }
+        let _ = self.watch_list.remove(&video_info.timestamp);
+        let _ = fs::remove_file(self.get_video_file_path(video_info));
+        let _ = fs::remove_file(self.get_enc_video_file_path(video_info));
 
         self.save_state();
     }
 
-    pub fn notify_event(&mut self, mut video_info: VideoInfo) {
-        info!("notify_event: {}", video_info.timestamp);
-        let now = Self::now();
-        video_info.last_notify_timestamp = Some(now);
+    pub fn videos_to_send(&self) -> Vec<VideoInfo> {
+        let mut send_list: Vec<VideoInfo> = Vec::new();
 
-        match self.watch_list.get(&video_info.timestamp) {
-            Some(_) => {}
-            None => {
-                // Should not happen!
-                log::debug!("notify_event for video not in the watch list!");
-                let _ = self.watch_list.insert(video_info.timestamp, video_info);
-            }
-        }
-
-        self.save_state();
-    }
-
-    pub fn videos_to_resend_renotify(&self) -> (Vec<VideoInfo>, Vec<VideoInfo>) {
-        let mut resend_list: Vec<VideoInfo> = Vec::new();
-        let mut renotify_list: Vec<VideoInfo> = Vec::new();
-        let now = Self::now();
         for info in self.watch_list.values() {
-            if self.last_ack_timestamp.is_some()
-                && info.last_send_timestamp.is_some()
-                && info.last_send_timestamp.unwrap() < self.last_ack_timestamp.unwrap()
-            {
-                resend_list.push(info.clone());
-                info!("adding to resend list: {}", info.timestamp);
-            } else if info.last_notify_timestamp.is_some()
-                && now - info.last_notify_timestamp.unwrap() > self.renotify_threshold
-            {
-                renotify_list.push(info.clone());
-                info!("adding to renotify list: {}", info.timestamp);
-            }
+            send_list.push(info.clone());
         }
 
-        resend_list.sort_by_key(|key| key.timestamp);
-        renotify_list.sort_by_key(|key| key.timestamp);
+        send_list.sort_by_key(|key| key.timestamp);
 
-        (resend_list, renotify_list)
+        send_list
+    }
+
+    pub fn get_video_file_path(&self, info: &VideoInfo) -> PathBuf {
+        let video_dir_path = Path::new(&self.video_dir);
+        video_dir_path.join(&info.filename)
+    }
+
+    pub fn get_enc_video_file_path(&self, info: &VideoInfo) -> PathBuf {
+        let video_dir_path = Path::new(&self.video_dir);
+        let enc_filename = format!("{}", info.epoch);
+        video_dir_path.join(&enc_filename)
     }
 
     fn now() -> u64 {
@@ -186,45 +150,4 @@ impl DeliveryMonitor {
             .expect("Could not convert time")
             .as_nanos()
     }
-}
-
-#[test]
-fn resend_once() {
-    use std::{thread, time::Duration};
-
-    let mut dm = DeliveryMonitor::new("test_dir".to_string(), 1);
-    let info = VideoInfo::new();
-    let timestamp = info.timestamp;
-
-    dm.send_event(info.clone());
-    thread::sleep(Duration::from_secs(2));
-
-    let (resend_list, renotify_list) = dm.videos_to_resend_renotify();
-    assert!(!renotify_list.is_empty());
-    assert!(resend_list.is_empty());
-
-    dm.notify_event(info.clone());
-    let (resend_list, renotify_list) = dm.videos_to_resend_renotify();
-    assert!(!renotify_list.is_empty());
-    assert!(resend_list.is_empty());
-
-    dm.ack_event(timestamp, false);
-    let (resend_list, renotify_list) = dm.videos_to_resend_renotify();
-    assert!(renotify_list.is_empty());
-    assert!(!resend_list.is_empty());
-
-    dm.send_event(info.clone());
-    let (resend_list, renotify_list) = dm.videos_to_resend_renotify();
-    assert!(renotify_list.is_empty());
-    assert!(resend_list.is_empty());
-
-    thread::sleep(Duration::from_secs(2));
-    let (resend_list, renotify_list) = dm.videos_to_resend_renotify();
-    assert!(!renotify_list.is_empty());
-    assert!(resend_list.is_empty());
-
-    dm.ack_event(timestamp, true);
-    let (resend_list, renotify_list) = dm.videos_to_resend_renotify();
-    assert!(renotify_list.is_empty());
-    assert!(resend_list.is_empty());
 }

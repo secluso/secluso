@@ -1,6 +1,6 @@
 //! Camera hub livestream
 //!
-//! Copyright (C) 2024  Ardalan Amiri Sani
+//! Copyright (C) 2025  Ardalan Amiri Sani
 //!
 //! This program is free software: you can redistribute it and/or modify
 //! it under the terms of the GNU General Public License as published by
@@ -16,6 +16,7 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::Camera;
+use privastead_client_lib::http_client::HttpClient;
 use privastead_client_lib::user::User;
 use std::io;
 use std::pin::Pin;
@@ -81,67 +82,38 @@ impl AsyncWrite for LivestreamWriter {
     }
 }
 
-pub fn is_there_livestream_start_request(client: &mut User) -> io::Result<bool> {
-    let mut livestream_start = false;
-
-    //FIXME: use the contact_name in order to stream only to that app.
-    let callback = |msg_bytes: Vec<u8>, _contact_name: String| -> io::Result<()> {
-        // Ignore other messages. Should we?
-        if msg_bytes.len() == 1 && msg_bytes[0] == 13 {
-            livestream_start = true;
-            info!("livestream start request received");
-        }
-
-        Ok(())
-    };
-
-    client.receive(callback)?;
+pub fn livestream(
+    client: &mut User,
+    group_name: String,
+    camera: &dyn Camera,
+    http_client: &HttpClient,
+) -> io::Result<()> {
+    // Update MLS epoch
+    let (commit_msg, _epoch) = client.update(group_name.clone())?;
     client.save_groups_state();
-
-    Ok(livestream_start)
-}
-
-pub fn livestream(client: &mut User, group_name: String, camera: &dyn Camera) -> io::Result<()> {
-    let new_update = client
-        .perform_update(group_name.clone())
-        .expect("Could not force an MLS update!");
-    // We must save state between the calls to perform_update() and send_update().
-    // This is to make sure we don't end up sending an update to the app, which
-    // we have not successfully committed/saved on our end.
-    client.save_groups_state();
-    client
-        .send_update(group_name.clone())
-        .expect("Could not send the pending update!");
-    if !new_update {
-        // We don't want the attacker to force us to do more than one livestream session without an update.
-        info!("Sent pending update. Will not livestream until update is acked (indirectly).");
-        return Ok(());
-    }
+    //FIXME: fatal crash point here. We have committed the update, but we will never send it.
+    http_client.livestream_upload(&group_name, commit_msg, 0)?;
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let livestream_writer = LivestreamWriter::new(tx);
     camera.launch_livestream(livestream_writer).unwrap();
 
-    // The first read blocks for the stream to be ready.
-    // We want to start the heartbeat tracker after that.
-    let mut first_send = true;
+    let mut chunk_number: u64 = 1;
 
     loop {
         let data = rx.recv().unwrap();
+        let enc_data = client.encrypt(&data, group_name.clone())?;
 
-        let heartbeat = client.send(&data, group_name.clone()).map_err(|e| {
-            error!("send() returned error:");
-            client.save_groups_state();
-            e
-        })?;
+        let num_pending_files =
+            http_client.livestream_upload(&group_name, enc_data, chunk_number)?;
+        chunk_number += 1;
 
-        if !heartbeat && !first_send {
+        if num_pending_files > 5 {
             info!("Ending livestream.");
             break;
         }
-
-        first_send = false;
     }
+
     client.save_groups_state();
 
     Ok(())

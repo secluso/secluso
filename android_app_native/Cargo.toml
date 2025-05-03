@@ -11,8 +11,16 @@ bincode = "1.2.1"
 rand="0.8"
 lazy_static = "1.4"
 
+[features]
+default = []
+for-example = ["privastead-client-lib/http_client"]
+
 [lib]
-crate-type = ["dylib"]
+crate-type = ["dylib", "rlib"]
 
 [target.'cfg(target_os="android")'.dependencies]
 jni = { version = "0.20", default-features = false }
+
+[[example]]
+name = "app"
+path = "examples/app.rs"

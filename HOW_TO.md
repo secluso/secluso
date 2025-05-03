@@ -80,7 +80,7 @@ To run the server, you need to execute this command:
 
 ```
 cd /path-to-privastead/server/
-cargo run --release -- -p 12346
+cargo run --release
 ```
 
 However, the server program might crash.
@@ -97,7 +97,7 @@ Description=privastead_server
 [Service]
 User=your-username
 WorkingDirectory=/absolute-path-to-privastead-source/server/
-ExecStart=/absolute-path-to-cargo-executable/cargo run --release -- -p 12346
+ExecStart=/absolute-path-to-cargo-executable/cargo run --release
 Restart=always
 RestartSec=1
 

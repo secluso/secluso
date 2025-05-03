@@ -1,6 +1,6 @@
 //! Privastead config tool.
 //!
-//! Copyright (C) 2024  Ardalan Amiri Sani
+//! Copyright (C) 2025  Ardalan Amiri Sani
 //!
 //! This program is free software: you can redistribute it and/or modify
 //! it under the terms of the GNU General Public License as published by
@@ -27,14 +27,13 @@ use qrcode::QrCode;
 use std::fs;
 use std::io;
 use std::io::Write;
+use privastead_client_server_lib::auth::create_user_credentials;
 
 // FIXME: these constants should match the ones in rest of the code.
 // Consolidate the constants in one place.
 
 // Key size for HMAC-Sha3-512
 pub const NUM_SECRET_BYTES: usize = 72;
-
-pub const NUM_USERNAME_BYTES: usize = 64;
 
 const USAGE: &str = "
 Helps configure the Privastead server, camera, and app.
@@ -81,11 +80,7 @@ fn main() -> io::Result<()> {
 }
 
 fn generate_user_credentials(dir: String) {
-    let crypto = OpenMlsRustCrypto::default();
-    let credentials = crypto
-        .crypto()
-        .random_vec(NUM_USERNAME_BYTES + NUM_SECRET_BYTES)
-        .unwrap();
+    let credentials = create_user_credentials();
 
     // Save in a file to be given to the server (delivery service) and to the camera
     let mut file =

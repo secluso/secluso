@@ -1,6 +1,6 @@
 //! Privastead FCM.
 //!
-//! Copyright (C) 2024  Ardalan Amiri Sani
+//! Copyright (C) 2025  Ardalan Amiri Sani
 //!
 //! This program is free software: you can redistribute it and/or modify
 //! it under the terms of the GNU General Public License as published by
@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::error::Error;
 use std::fs;
+use std::io;
 
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
@@ -115,11 +116,14 @@ pub fn send_notification(device_token: String, msg: Vec<u8>) -> Result<(), Box<d
         .send()?;
 
     // Check the response status
-    if response.status().is_success() {
-        log::debug!("Notification sent successfully!");
-    } else {
-        log::debug!("Failed to send notification. Status: {}", response.status());
-        log::debug!("Response: {:?}", response.text()?);
+    if !response.status().is_success() {
+        return Err(Box::new(io::Error::new(
+            io::ErrorKind::Other,
+            format!(
+                "Error: Failed to send notification. ({:?}).",
+                response.text()
+            ),
+        )));
     }
 
     Ok(())

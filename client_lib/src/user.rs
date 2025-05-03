@@ -18,20 +18,17 @@
 //! Based on the OpenMLS client (openmls/cli).
 //! MIT License.
 
-use super::backend::Backend;
 use super::identity::Identity;
 use super::openmls_rust_persistent_crypto::OpenMlsRustPersistentCrypto;
-use super::pcs::PcsInitiator;
 use ds_lib::GroupMessage;
 use openmls::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{cell::RefCell, collections::HashMap};
-use tls_codec::{Serialize as TlsSerialize, Deserialize as TlsDeserialize, TlsVecU16};
+use tls_codec::{Serialize as TlsSerialize, Deserialize as TlsDeserialize};
 
 const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 
@@ -55,7 +52,6 @@ impl Contact {
 pub struct Group {
     group_name: String,
     mls_group: RefCell<MlsGroup>,
-    pcs_initiator: Option<RefCell<PcsInitiator>>,
     // The "only" contact that is also in this group.
     only_contact: Option<Contact>,
 }
@@ -64,7 +60,6 @@ pub struct User {
     pub(crate) username: String,
     pub(crate) groups: RefCell<HashMap<Vec<u8>, Group>>,
     pub(crate) identity: RefCell<Identity>,
-    backend: Option<Backend>,
     provider: OpenMlsRustPersistentCrypto,
     file_dir: String,
     tag: String,
@@ -77,13 +72,9 @@ impl User {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         username: String,
-        server_stream: Option<TcpStream>,
         first_time: bool,
-        reregister: bool,
         file_dir: String,
         tag: String,
-        user_credentials: Vec<u8>,
-        keep_alive: bool,
     ) -> io::Result<Self> {
         let mut crypto = OpenMlsRustPersistentCrypto::default();
         let groups = if first_time {
@@ -113,12 +104,7 @@ impl User {
             }
         }
 
-        let backend = match server_stream {
-            Some(stream) => Some(Backend::new(stream)),
-            None => None
-        };
-
-        let mut out = Self {
+        let out = Self {
             username: username.clone(),
             groups,
             identity: RefCell::new(Identity::new(
@@ -129,40 +115,15 @@ impl User {
                 file_dir.clone(),
                 tag.clone(),
             )),
-            backend,
             provider: crypto,
             file_dir,
             tag,
         };
 
-        if out.backend.is_some() {
-            // Authenticate with the server first for a new connection.
-            out.backend.as_mut().unwrap().auth_server(user_credentials)?;
-
-            // Inform the server whether this connection should be kept alive if idle
-            out.backend.as_mut().unwrap().keep_alive(keep_alive)?;
-
-            if reregister {
-                let key_packages = out.key_packages();
-                out.backend.as_mut().unwrap().register_client(key_packages)?;
-            }
-        }
-
         Ok(out)
     }
 
     pub fn deregister(&mut self) -> io::Result<()> {
-        if self.backend.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Backend not initialized.",
-            ));
-        }
-
-        self.backend
-            .as_mut()
-            .unwrap()
-            .deregister_client(self.identity.borrow().identity())?;
         self.identity
             .borrow()
             .delete_signature_key(self.file_dir.clone(), self.tag.clone());
@@ -201,21 +162,6 @@ impl User {
         Vec::from_iter(kpgs)
     }
 
-    /// Update FCM token in the server.
-    pub fn update_token(&mut self, token: String) -> io::Result<()> {
-        if self.backend.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Backend not initialized.",
-            ));
-        }
-
-        self.backend
-            .as_mut()
-            .unwrap()
-            .update_token(self.identity.borrow().identity(), token)
-    }
-
     /// Get a list of clients in the group to send messages to.
     /// This is currently very simple: return the only_contact
     fn recipients(&self, group: &Group) -> Vec<Vec<u8>> {
@@ -250,7 +196,6 @@ impl User {
         let group = Group {
             group_name: name.clone(),
             mls_group: RefCell::new(mls_group),
-            pcs_initiator: Some(RefCell::new(PcsInitiator::new())),
             only_contact: None,
         };
 
@@ -390,7 +335,6 @@ impl User {
         let group = Group {
             group_name: group_name.clone(),
             mls_group: RefCell::new(mls_group),
-            pcs_initiator: None,
             only_contact: Some(expected_inviter),
         };
 
@@ -587,86 +531,20 @@ impl User {
         ))
     }
 
-    /// Perform an MLS update
-    /// Returns true if new update is performed
-    /// Returns false if there is a pending update
-    pub fn perform_update(&mut self, group_name: String) -> io::Result<bool> {
-        let groups = self.groups.borrow();
-        let group = match groups.get(group_name.as_bytes()) {
-            Some(g) => g,
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Unknown group".to_string(),
-                ))
-            }
-        };
-
-        if group.pcs_initiator.is_some() {
-            let mut pcs_initiator = group.pcs_initiator.as_ref().unwrap().borrow_mut();
-            if pcs_initiator.has_pending_update() {
-                Ok(false)
-            } else {
-                let msg = self.update_commit(group)?;
-                pcs_initiator.updated(&msg);
-                Ok(true)
-            }
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Only the PCS initiator can force an update.",
-            ))
-        }
-    }
-
-    /// Send pending update
-    pub fn send_update(&mut self, group_name: String) -> io::Result<()> {
-        if self.backend.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Backend not initialized.",
-            ));
-        }
-
-        let groups = self.groups.borrow();
-        let group = match groups.get(group_name.as_bytes()) {
-            Some(g) => g,
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Unknown group".to_string(),
-                ))
-            }
-        };
-
-        if group.pcs_initiator.is_some() {
-            let mut pcs_initiator = group.pcs_initiator.as_ref().unwrap().borrow_mut();
-            if pcs_initiator.has_pending_update() {
-                let msg = pcs_initiator.get_pending_update_msg();
-                if msg.is_ok() {
-                    // Send the MlsMessages to the group.
-                    self.backend.as_mut().unwrap().send_msg(&msg.unwrap(), false)?;
-                    Ok(())
-                } else {
-                    panic!("Has pending update but returns error for msg!");
-                }
-            } else {
-                Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "No pending update to send.",
-                ))
-            }
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Only the PCS initiator can send an update.",
-            ))
-        }
-    }
-
     /// Generate a commit to update self leaf node in the ratchet tree, merge the commit, and return the message
     /// to be sent to other group members.
-    fn update_commit(&self, group: &Group) -> io::Result<GroupMessage> {
+    pub fn update(&self, group_name: String) -> io::Result<(Vec<u8>, u64)> {
+        let groups = self.groups.borrow();
+        let group = match groups.get(group_name.as_bytes()) {
+            Some(g) => g,
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Unknown group".to_string(),
+                ))
+            }
+        };
+
         // FIXME: _welcome should be none, group_info should be some.
         // See openmls/src/group/mls_group/updates.rs.
         let (out_message, _welcome, _group_info) = group
@@ -693,11 +571,25 @@ impl User {
             .merge_pending_commit(&self.provider)
             .expect("error merging pending commit");
 
-        Ok(msg)
+        let mut msg_vec = Vec::new();
+        msg.tls_serialize(&mut msg_vec).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("tls_serialize for msg failed ({e})"),
+            )
+        })?;
+
+        let epoch = group
+            .mls_group
+            .borrow()
+            .epoch()
+            .as_u64();
+
+        Ok((msg_vec, epoch))
     }
 
-    /// Generates and returns an encrypted message
-    pub fn generate_msg(&mut self, bytes: &[u8], group_name: String) -> io::Result<Vec<u8>> {
+    /// Encrypts a message and returns the ciphertext
+    pub fn encrypt(&mut self, bytes: &[u8], group_name: String) -> io::Result<Vec<u8>> {
         let groups = self.groups.borrow();
         let group = match groups.get(group_name.as_bytes()) {
             Some(g) => g,
@@ -728,231 +620,136 @@ impl User {
         Ok(msg_vec)
     }
 
-    /// Returns true if receiver's heartbeat was received recently, false otherwise.
-    /// FIXME/TODO: the heartbeat algorithm only works if there's one recipient.
-    fn send_core(&mut self, bytes: &[u8], group_name: String, fcm: bool) -> io::Result<bool> {
-        if self.backend.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Backend not initialized.",
-            ));
-        }
+    fn process_protocol_message(
+        &mut self,
+        message: ProtocolMessage,
+        app_msg: bool,
+    ) -> io::Result<Vec<u8>> {
+        let mut groups = self.groups.borrow_mut();
 
-        let groups = self.groups.borrow();
-        let group = match groups.get(group_name.as_bytes()) {
+        let group = match groups.get_mut(message.group_id().as_slice()) {
             Some(g) => g,
             None => {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
-                    "Unknown group".to_string(),
-                ))
-            }
-        };
-
-        let message_out = group
-            .mls_group
-            .borrow_mut()
-            .create_message(&self.provider, &self.identity.borrow().signer, bytes)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{e}")))?;
-
-        let msg = GroupMessage::new(message_out.into(), &self.recipients(group));
-        log::debug!(" >>> send: {:?}", msg);
-        self.backend.as_mut().unwrap().send_msg(&msg, fcm)
-    }
-
-    /// Send an array of bytes to the group.
-    pub fn send(&mut self, bytes: &[u8], group_name: String) -> io::Result<bool> {
-        self.send_core(bytes, group_name, false)
-    }
-
-    /// Send an array of bytes to the group through FCM.
-    pub fn send_fcm(&mut self, bytes: &[u8], group_name: String) -> io::Result<bool> {
-        self.send_core(bytes, group_name, true)
-    }
-
-    /// process_welcome: if true, this will only process welcome messages from the expected_inviter.
-    /// if false, it will not process welcome messages at all.
-    fn receive_core<F>(
-        &mut self,
-        mut callback: F,
-        non_ds: bool,
-        non_ds_msgs: Option<Vec<MlsMessageIn>>,
-    ) -> io::Result<u64>
-    where
-        F: FnMut(Vec<u8>, String) -> io::Result<()>,
-    {
-        let mut process_protocol_message = |message: ProtocolMessage| {
-            let mut groups = self.groups.borrow_mut();
-
-            let group = match groups.get_mut(message.group_id().as_slice()) {
-                Some(g) => g,
-                None => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!(
-                            "Error getting group {:?} for a message. Dropping message.",
-                            message.group_id()
-                        ),
-                    ));
-                }
-            };
-            let mut mls_group = group.mls_group.borrow_mut();
-
-            // This works since none of the other members of the group, other than the camera,
-            // will be in our contact list (hence "only_matching_contact").
-            let only_contact = group.only_contact.as_ref().unwrap();
-
-            let processed_message = match mls_group.process_message(&self.provider, message) {
-                Ok(msg) => msg,
-                Err(e) => {
-                    log::debug!("process_message returned: {e}");
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!(
-                            "Error processing unverified message: {:?} -  Dropping message.",
-                            e
-                        ),
-                    ));
-                }
-            };
-
-            // Accepts messages from the only_contact in the group.
-            // Note: in a ProcessedMessage, the credential of the message sender is already inspected.
-            // See: openmls/src/framing/validation.rs
-            let sender = processed_message.credential().clone();
-            if sender != only_contact.get_credential() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Error: received a message from an unknown party".to_string(),
+                    format!(
+                        "Error getting group {:?} for a message. Dropping message.",
+                        message.group_id()
+                    ),
                 ));
             }
+        };
+        let mut mls_group = group.mls_group.borrow_mut();
 
-            match processed_message.into_content() {
-                ProcessedMessageContent::ApplicationMessage(application_message) => {
-                    if group.pcs_initiator.is_some() {
-                        group
-                            .pcs_initiator
-                            .as_ref()
-                            .unwrap()
-                            .borrow_mut()
-                            .message_received();
-                    }
+        // This works since none of the other members of the group, other than the camera,
+        // will be in our contact list (hence "only_matching_contact").
+        let only_contact = group.only_contact.as_ref().unwrap();
 
-                    let application_message = application_message.into_bytes();
-
-                    callback(application_message, only_contact.username.clone())?;
-                    Ok(true)
-                }
-                ProcessedMessageContent::ProposalMessage(_proposal_ptr) => {
-                    panic!("Unexpected proposal message!");
-                }
-                ProcessedMessageContent::ExternalJoinProposalMessage(_external_proposal_ptr) => {
-                    panic!("Unexpected external join proposal message!");
-                }
-                ProcessedMessageContent::StagedCommitMessage(commit_ptr) => {
-                    mls_group
-                        .merge_staged_commit(&self.provider, *commit_ptr)
-                        .expect("error merging staged commit");
-                    Ok(false)
-                }
+        let processed_message = match mls_group.process_message(&self.provider, message) {
+            Ok(msg) => msg,
+            Err(e) => {
+                log::debug!("process_message returned: {e}");
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!(
+                        "Error processing unverified message: {:?} -  Dropping message.",
+                        e
+                    ),
+                ));
             }
         };
 
-        if !non_ds && self.backend.is_none() {
+        // Accepts messages from the only_contact in the group.
+        // Note: in a ProcessedMessage, the credential of the message sender is already inspected.
+        // See: openmls/src/framing/validation.rs
+        let sender = processed_message.credential().clone();
+        if sender != only_contact.get_credential() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
-                "Backend not initialized.",
+                "Error: received a message from an unknown party".to_string(),
             ));
         }
 
-        // Go through the list of messages and process them.
-        let mut msg_count: u64 = 0;
-        let mut msgs = if non_ds {
-            match non_ds_msgs {
-                Some(m) => m,
-                None => {
+        match processed_message.into_content() {
+            ProcessedMessageContent::ApplicationMessage(application_message) => {
+                if !app_msg {
                     return Err(io::Error::new(
                         io::ErrorKind::Other,
-                        "Error: non_ds_msgs is None".to_string(),
+                        "Error: expected a commit message, but received an application message",
                     ));
                 }
+                let application_message = application_message.into_bytes();
+
+                return Ok(application_message);
             }
-        } else {
-            self.backend.as_mut().unwrap().recv_msgs(self.identity.borrow().identity())?
+            ProcessedMessageContent::ProposalMessage(_proposal_ptr) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Error: Unexpected proposal message!".to_string(),
+                ));
+            }
+            ProcessedMessageContent::ExternalJoinProposalMessage(_external_proposal_ptr) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Error: Unexpected external join proposal message!".to_string(),
+                ));
+            }
+            ProcessedMessageContent::StagedCommitMessage(commit_ptr) => {
+                if app_msg {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        "Error: expected an application message, but received a commit message",
+                    ));
+                }
+                mls_group
+                    .merge_staged_commit(&self.provider, *commit_ptr)
+                    .expect("error merging staged commit");
+                return Ok(vec![]);
+            }
+        }
+    }
+
+    /// Decrypts an encrypted message and returns the plaintext message
+    /// The caller should specify whether this is supposed to be an
+    /// application message (app_msg = true) or a commit message (app_msg = false).
+    /// This function will return an error if the message type is different from
+    /// what was provided as input.
+    pub fn decrypt(
+        &mut self,
+        msg: Vec<u8>,
+        app_msg: bool,
+    ) -> io::Result<Vec<u8>> {
+        let mls_msg = match MlsMessageIn::tls_deserialize(&mut msg.as_slice()) {
+            Ok(m) => m,
+            Err(e) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Could not deserialize msg ({e})"),
+                ));
+            },
         };
 
-        for message in msgs.drain(..) {
-            msg_count += 1;
-            match message.extract() {
-                MlsMessageBodyIn::Welcome(_welcome) => {
-                    panic!("Received an unexpected welcome message!");
-                }
-                MlsMessageBodyIn::PrivateMessage(message) => {
-                    let _ = process_protocol_message(message.into());
-                }
-                MlsMessageBodyIn::PublicMessage(_message) => {
-                    panic!("Received an unexpected public message!");
-                }
-                _ => panic!("Unsupported message type"),
-            }
-        }
-
-        log::trace!("done with messages ...");
-
-        Ok(msg_count)
-    }
-
-    /// Read all the messages in the server and process them using
-    /// the callback function.
-    pub fn receive<F>(&mut self, callback: F) -> io::Result<u64>
-    where
-        F: FnMut(Vec<u8>, String) -> io::Result<()>,
-    {
-        let msg_count = self.receive_core(callback, false, None)?;
-
-        Ok(msg_count)
-    }
-
-    /// Process a vector of messages received through channels other than the delivery service using
-    /// the callback function.
-    pub fn receive_non_ds_vec<F>(&mut self, callback: F, vec_payload: Vec<u8>) -> io::Result<u64>
-    where
-        F: FnMut(Vec<u8>, String) -> io::Result<()>,
-    {
-        match TlsVecU16::<MlsMessageIn>::tls_deserialize(&mut vec_payload.as_slice()) {
-            Ok(r) => {
-                let msg_count =
-                    self.receive_core(callback, true, Some(r.into()))?;
-                Ok(msg_count)
-            }
-            Err(e) => {
-                // This happens if the server returns an error or if tls_deserialize fails.
-                Err(io::Error::new(
+        match mls_msg.extract() {
+            MlsMessageBodyIn::Welcome(_welcome) => {
+                return Err(io::Error::new(
                     io::ErrorKind::Other,
-                    format!("Could not deserialize non-ds vec msg ({e})"),
-                ))
+                    "Error: Unexpected welcome message!".to_string(),
+                ));
             }
-        }
-    }
-
-    /// Process a single message received through channels other than the delivery service using
-    /// the callback function.
-    pub fn receive_non_ds_single<F>(&mut self, callback: F, msg_payload: Vec<u8>) -> io::Result<u64>
-    where
-        F: FnMut(Vec<u8>, String) -> io::Result<()>,
-    {
-        match MlsMessageIn::tls_deserialize(&mut msg_payload.as_slice()) {
-            Ok(r) => {
-                let msg_count =
-                    self.receive_core(callback, true, Some(vec![r]))?;
-                Ok(msg_count)
+            MlsMessageBodyIn::PrivateMessage(message) => {
+                return self.process_protocol_message(message.into(), app_msg);
             }
-            Err(e) => {
-                // This happens if the server returns an error or if tls_deserialize fails.
-                Err(io::Error::new(
+            MlsMessageBodyIn::PublicMessage(_message) => {
+                return Err(io::Error::new(
                     io::ErrorKind::Other,
-                    format!("Could not deserialize non-ds msg ({e})"),
-                ))
+                    "Error: Unexpected public message!".to_string(),
+                ));
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Error: Unsupported message type!".to_string(),
+                ));
             }
         }
     }

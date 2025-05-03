@@ -1,6 +1,6 @@
 //! Privastead camera hub.
 //!
-//! Copyright (C) 2024  Ardalan Amiri Sani
+//! Copyright (C) 2025  Ardalan Amiri Sani
 //!
 //! This program is free software: you can redistribute it and/or modify
 //! it under the terms of the GNU General Public License as published by
@@ -27,9 +27,11 @@ use image::Luma;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::random::OpenMlsRand;
 use openmls_traits::OpenMlsProvider;
+use privastead_client_lib::http_client::HttpClient;
 use privastead_client_lib::pairing;
 use privastead_client_lib::user::{KeyPackages, User};
-use privastead_client_lib::video_net_info::{VideoAckInfo, VideoNetInfo};
+use privastead_client_lib::video_net_info::VideoNetInfo;
+use privastead_client_server_lib::auth::parse_user_credentials;
 use qrcode::QrCode;
 use rand::Rng;
 use serde_yml::Value;
@@ -73,7 +75,7 @@ use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
 
 mod livestream;
 
-use crate::livestream::{is_there_livestream_start_request, livestream};
+use crate::livestream::livestream;
 
 mod fmp4;
 mod mp4;
@@ -95,21 +97,6 @@ static GLOBAL_THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 // Used to ensure there can't be attempted concurrent pairing
 static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-/*
-// Represents the data for each camera
-#[derive(Debug, Clone)]
-pub struct Camera {
-    name: String,
-    ip: String,
-    rtsp_port: u16,
-    username: String,
-    password: String,
-    state_dir: String,
-    video_dir: String,
-    motion_fps: u64,
-}
-*/
 
 fn write_varying_len(stream: &mut TcpStream, msg: &[u8]) {
     // FIXME: is u64 necessary?
@@ -166,7 +153,6 @@ fn generate_camera_secret(camera: &dyn Camera) -> Vec<u8> {
     secret
 }
 
-#[cfg(feature = "raspberry")]
 fn get_input_camera_secret() -> Vec<u8> {
     let pathname = "./camera_secret";
     let file = File::open(pathname).expect(
@@ -198,7 +184,6 @@ fn pair_with_app(
 
 fn create_group_and_invite(
     stream: &mut TcpStream,
-    camera: &dyn Camera,
     client: &mut User,
     group_name: String,
     app_key_packages: KeyPackages,
@@ -219,21 +204,11 @@ fn create_group_and_invite(
 
     write_varying_len(stream, &welcome_msg_vec);
 
-    File::create(camera.get_state_dir() + "/first_time_done").expect("Could not create file");
-
     Ok(())
 }
 
 fn decrypt_msg(client: &mut User, msg: Vec<u8>) -> io::Result<Vec<u8>> {
-    let mut decrypted_msg: Vec<u8> = vec![];
-
-    // FIXME: check contact_name?
-    let callback = |msg_bytes: Vec<u8>, _contact_name: String| -> io::Result<()> {
-        decrypted_msg = msg_bytes;
-        Ok(())
-    };
-
-    client.receive_non_ds_single(callback, msg)?;
+    let decrypted_msg = client.decrypt(msg, true)?;
     client.save_groups_state();
 
     Ok(decrypted_msg)
@@ -334,7 +309,6 @@ fn create_camera_groups(
         pair_with_app(&mut stream, client_motion.key_packages(), secret.clone());
     create_group_and_invite(
         &mut stream,
-        camera,
         client_motion,
         group_motion_name,
         app_motion_key_packages,
@@ -348,7 +322,6 @@ fn create_camera_groups(
 
     create_group_and_invite(
         &mut stream,
-        camera,
         client_livestream,
         group_livestream_name,
         app_livestream_key_packages,
@@ -358,7 +331,6 @@ fn create_camera_groups(
         pair_with_app(&mut stream, client_fcm.key_packages(), secret.clone());
     create_group_and_invite(
         &mut stream,
-        camera,
         client_fcm,
         group_fcm_name,
         app_fcm_key_packages,
@@ -367,7 +339,6 @@ fn create_camera_groups(
     let app_config_key_packages = pair_with_app(&mut stream, client_config.key_packages(), secret);
     create_group_and_invite(
         &mut stream,
-        camera,
         client_config,
         group_config_name,
         app_config_key_packages,
@@ -379,6 +350,9 @@ fn create_camera_groups(
             camera.get_name().replace(" ", "_").to_lowercase()
         ));
     }
+
+    // FIXME: a fatal crash point here. The app thinks that pairing is finalized, but
+    // not the camera.
 
     // Send WiFi info to the app.
     if connect_to_wifi {
@@ -441,67 +415,77 @@ fn get_names(
     (camera_name, group_name)
 }
 
-fn get_user_credentials() -> Vec<u8> {
-    let pathname = "./user_credentials";
-    let file = File::open(pathname).expect(
-        "Could not open file \"user_credentials\". You can generate this with the config_tool",
-    );
-    let mut reader =
-        BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
-    let data = reader.fill_buf().unwrap();
-
-    data.to_vec()
+fn append_to_file(mut file: &File, msg: Vec<u8>) {
+    let msg_len: u32 = msg.len().try_into().unwrap();
+    let msg_len_data = msg_len.to_be_bytes();
+    let _ = file.write_all(&msg_len_data);
+    let _ = file.write_all(&msg);
 }
 
-fn send_motion_triggered_video(
-    camera: &dyn Camera,
+fn upload_pending_enc_videos(
+    group_name: &str,
+    delivery_monitor: &mut DeliveryMonitor,
+    http_client: &HttpClient,
+) {
+    // Send pending videos
+    let send_list = delivery_monitor.videos_to_send();
+    // The send list is sorted. We must send the videos in order.
+    for video_info in &send_list {
+        let enc_video_file_path = delivery_monitor.get_enc_video_file_path(video_info);
+        match http_client.upload_enc_video(group_name, &enc_video_file_path) {
+            Ok(_) => {
+                info!(
+                    "Video {} successfully uploaded to the server.",
+                    video_info.timestamp
+                );
+                delivery_monitor.dequeue_video(video_info);
+            }
+            Err(e) => {
+                info!(
+                    "Could not upload video {} ({}). Will try again later.",
+                    video_info.timestamp, e
+                );
+                break;
+            }
+        }
+    }
+}
+
+fn prepare_motion_video(
     client: &mut User,
     group_name: String,
-    video_info: VideoInfo,
+    mut video_info: VideoInfo,
     delivery_monitor: &mut DeliveryMonitor,
 ) -> io::Result<()> {
-    debug!("Forcing an MLS update.");
-    let new_update = client
-        .perform_update(group_name.clone())
-        .expect("Could not force an MLS update!");
-    // We must save state between the calls to perform_update() and send_update().
-    // This is to make sure we don't end up sending an update to the app, which
-    // we have not successfully committed/saved on our end.
-    client.save_groups_state();
-    client
-        .send_update(group_name.clone())
-        .expect("Could not send the pending update!");
-    if !new_update {
-        // We don't want the attacker to force us to send more than one video without an update.
-        // We add the video to the delivery monitor, hoping that it will be sent in the future
-        // after the app acks the update.
-        info!("Sent pending update. Will not send video until update is acked (indirectly).");
-        delivery_monitor.send_event(video_info);
-        return Ok(());
-    }
-
-    let video_dir = camera.get_video_dir();
-    let video_dir_path = Path::new(&video_dir);
-    let video_file = video_dir_path.join(&video_info.filename);
+    let video_file_path = delivery_monitor.get_video_file_path(&video_info);
 
     debug!("Starting to send video.");
-    let file = File::open(video_file).expect("Cannot open file to send");
+
+    // Update MLS epoch
+    let (commit_msg, epoch) = client.update(group_name.clone())?;
+
+    video_info.epoch = epoch;
+    let enc_video_file_path = delivery_monitor.get_enc_video_file_path(&video_info);
+    let mut enc_file =
+        File::create(&enc_video_file_path).expect("Could not create encrypted video file");
+
+    append_to_file(&enc_file, commit_msg);
+
+    let file = File::open(video_file_path).expect("Could not open video file to send");
     let file_len = file.metadata().unwrap().len();
 
-    // We want each encrypted message to fit within one TCP packet (max size: 64 kB or 65535 B).
-    // With these numbers, some experiments show that the encrypted message will have the max
-    // size of 64687 B.
     const READ_SIZE: usize = 63 * 1024;
     let mut reader = BufReader::with_capacity(READ_SIZE, file);
 
     let net_info = VideoNetInfo::new(video_info.timestamp, file_len, READ_SIZE as u64);
 
-    client
-        .send(&bincode::serialize(&net_info).unwrap(), group_name.clone())
+    let msg = client
+        .encrypt(&bincode::serialize(&net_info).unwrap(), group_name.clone())
         .map_err(|e| {
-            error!("send() returned error:");
+            error!("encrypt() returned error:");
             e
         })?;
+    append_to_file(&enc_file, msg);
 
     for i in 0..net_info.num_msg {
         let buffer = reader.fill_buf().unwrap();
@@ -516,93 +500,40 @@ fn send_motion_triggered_video(
             );
         }
 
-        client.send(buffer, group_name.clone()).map_err(|e| {
+        let msg = client.encrypt(buffer, group_name.clone()).map_err(|e| {
             error!("send_video() returned error:");
             client.save_groups_state();
             e
         })?;
+        append_to_file(&enc_file, msg);
         reader.consume(length);
     }
+
+    // Here, we first make sure the enc_file is flushed.
+    // Then, we save groups state, which persists the update.
+    // Then, we enqueue to be uploaded to the server.
+    enc_file.flush().unwrap();
+    enc_file.sync_all().unwrap();
     client.save_groups_state();
 
-    info!("Sending the video ({}).", video_info.timestamp);
-    delivery_monitor.send_event(video_info);
-    info!("Sent the video.");
+    //FIXME: fatal crash point here. We have committed the update, but we will never send it.
+
+    info!(
+        "Video {} is enqueued for sending to server.",
+        video_info.timestamp
+    );
+    delivery_monitor.enqueue_video(video_info);
 
     Ok(())
 }
 
-fn process_motion_acks(
-    client: &mut User,
-    delivery_monitor: &mut DeliveryMonitor,
-) -> io::Result<bool> {
-    let mut any_ack = false;
-    //FIXME: check the contact_name.
-    let callback = |msg_bytes: Vec<u8>, _contact_name: String| -> io::Result<()> {
-        let acked_videos: Vec<VideoAckInfo> = match bincode::deserialize(&msg_bytes) {
-            Ok(acked) => acked,
-            Err(e) => {
-                error!(
-                    "Error: could not convert msg_bytes to vec<u64> for acked videos: {}",
-                    e
-                );
-                return Ok(());
-            }
-        };
+fn read_user_credentials(pathname: &str) -> Vec<u8> {
+    let file = fs::File::open(pathname).expect("Could not open user_credentials file");
+    let mut reader =
+        BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
+    let data = reader.fill_buf().unwrap();
 
-        for video_ack_info in acked_videos {
-            info!("Acked: {}", video_ack_info.timestamp);
-            delivery_monitor.ack_event(video_ack_info.timestamp, video_ack_info.video_ack);
-            any_ack = true;
-        }
-
-        Ok(())
-    };
-
-    client.receive(callback)?;
-    client.save_groups_state();
-
-    Ok(any_ack)
-}
-
-fn send_video_notification(
-    client: &mut User,
-    group_name: String,
-    video_info: VideoInfo,
-    delivery_monitor: &mut DeliveryMonitor,
-) -> io::Result<()> {
-    // FIXME: We might send a whole bunch of notifications without forcing
-    // an update. If the update is not acked, then we should start sending
-    // dummy notifications.
-    debug!("An MLS update reminder.");
-    client
-        .perform_update(group_name.clone())
-        .expect("Could not force an MLS update!");
-    // We must save state between the calls to perform_update() and send_update().
-    // This is to make sure we don't end up sending an update to the app, which
-    // we have not successfully committed/saved on our end.
-    client.save_groups_state();
-    client
-        .send_update(group_name.clone())
-        .expect("Could not send the pending update!");
-
-    let info_notify = VideoNetInfo::new_notification(video_info.timestamp);
-
-    client
-        .send(
-            &bincode::serialize(&info_notify).unwrap(),
-            group_name.clone(),
-        )
-        .map_err(|e| {
-            error!("send() returned error:");
-            e
-        })?;
-    client.save_groups_state();
-
-    info!("Sending notification for video ({}).", video_info.timestamp);
-    delivery_monitor.notify_event(video_info);
-
-    Ok(())
+    data.to_vec()
 }
 
 const USAGE: &str = "
@@ -611,18 +542,25 @@ Privastead camera hub: connects to an IP camera and send videos to the privastea
 Usage:
   privastead-camera-hub
   privastead-camera-hub --reset
+  privastead-camera-hub --test-motion
+  privastead-camera-hub --test-livestream
   privastead-camera-hub (--version | -v)
   privastead-camera-hub (--help | -h)
 
 Options:
-    --reset                                     Wipe all the state
-    --version, -v                               Show version
-    --help, -h                                  Show help
+    --reset             Wipe all the state
+    --test-motion       Used for testing motion videos
+    --test-livestream   Used for testing video livestreaming
+    --version, -v       Show version
+    --help, -h          Show help
 ";
 
 #[derive(Debug, Clone, Deserialize)]
 struct Args {
     flag_reset: bool,
+    flag_test_motion: bool,
+    #[cfg(feature = "ip")]
+    flag_test_livestream: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -635,7 +573,8 @@ fn main() -> io::Result<()> {
         .and_then(|d| d.deserialize())
         .unwrap_or_else(|e| e.exit());
 
-    let credentials = get_user_credentials();
+    let credentials = read_user_credentials("user_credentials");
+    let (server_username, server_password) = parse_user_credentials(credentials).unwrap();
 
     // Retrieve the cameras.yaml file. If it doesn't exist, print an error message for the user.
     let cameras_file = match File::open("cameras.yaml") {
@@ -669,14 +608,16 @@ fn main() -> io::Result<()> {
     fs::create_dir_all(VIDEO_DIR_GENERAL).unwrap();
 
     let mut camera_list: Vec<Box<dyn Camera + Send>> = Vec::new();
-    let delivery_service_addr: String = server_ip.to_owned() + ":12346";
+    let server_addr: String = server_ip.to_owned() + ":8080";
+
+    let http_client = HttpClient::new(server_addr, server_username, server_password);
 
     cfg_if! {
         if #[cfg(feature = "raspberry")] {
             let mut input_camera_secret: Option<Vec<u8>> = None;
             let mut connect_to_wifi = false;
         } else {
-            let input_camera_secret: Option<Vec<u8>> = None;
+            let mut input_camera_secret: Option<Vec<u8>> = None;
             let connect_to_wifi = false;
         }
     }
@@ -706,7 +647,7 @@ fn main() -> io::Result<()> {
 
                 if camera_type == "IP" {
                     cfg_if! {
-                           if #[cfg(feature = "ip")] {
+                        if #[cfg(feature = "ip")] {
                             let camera_ip = map
                                 .get(&Value::String("ip".to_string()))
                                 .expect("Missing IP for camera")
@@ -771,7 +712,11 @@ fn main() -> io::Result<()> {
                                 }
                             }
 
-                           } else {
+                            if args.flag_test_motion || args.flag_test_livestream {
+                                input_camera_secret = Some(get_input_camera_secret());
+                            }
+
+                        } else {
                              panic!("IP cameras are only supported with the \"ip\" feature.");
                         }
                     }
@@ -779,7 +724,7 @@ fn main() -> io::Result<()> {
                     cfg_if! {
                        if #[cfg(feature = "raspberry")] {
                             if num_raspberry_pi > 0 {
-                                panic!("cameras.yaml can only specify for Raspberry Pi camera!");
+                                panic!("cameras.yaml can only specify one Raspberry Pi camera!");
                             }
                             num_raspberry_pi += 1;
 
@@ -813,8 +758,7 @@ fn main() -> io::Result<()> {
     for mut camera in camera_list.into_iter() {
         println!("Starting to instantiate camera: {:?}", camera.get_name());
 
-        let delivery_service_addr = delivery_service_addr.clone();
-        let credentials = credentials.clone();
+        let http_client_clone = http_client.clone();
         let args = args.clone();
         let input_camera_secret = input_camera_secret.clone();
 
@@ -822,11 +766,7 @@ fn main() -> io::Result<()> {
         thread::spawn(move || {
             loop {
                 if args.flag_reset {
-                    match reset(
-                        camera.as_ref(),
-                        delivery_service_addr.clone(),
-                        credentials.clone(),
-                    ) {
+                    match reset(camera.as_ref(), &http_client_clone) {
                         Ok(_) => {}
                         Err(e) => {
                             panic!("reset() returned with: {e}");
@@ -839,10 +779,10 @@ fn main() -> io::Result<()> {
                 } else {
                     match core(
                         camera.as_mut(),
-                        delivery_service_addr.clone(),
-                        credentials.clone(),
+                        &http_client_clone,
                         input_camera_secret.clone(),
                         connect_to_wifi,
+                        args.flag_test_motion,
                     ) {
                         Ok(_) => {}
                         Err(e) => {
@@ -863,21 +803,6 @@ fn main() -> io::Result<()> {
     }
 
     Ok(())
-}
-
-/// Helper function to try connecting to the TCP server.
-fn try_connect(camera: &dyn Camera, address: &str) -> io::Result<TcpStream> {
-    match TcpStream::connect(address) {
-        Ok(stream) => Ok(stream),
-        Err(e) => {
-            println!("Error: failed to connect to the delivery service!");
-            let state_dir = camera.get_state_dir();
-            let state_dir_path = Path::new(&state_dir);
-            let registration_done_path = state_dir_path.join("registration_done");
-            let _ = fs::remove_file(registration_done_path);
-            Err(e)
-        }
-    }
 }
 
 #[cfg(feature = "ip")]
@@ -903,11 +828,7 @@ fn ask_user_password(prompt: String) -> io::Result<String> {
     Ok(password.trim().to_string())
 }
 
-fn reset(
-    camera: &dyn Camera,
-    delivery_service_addr: String,
-    credentials: Vec<u8>,
-) -> io::Result<()> {
+fn reset(camera: &dyn Camera, http_client: &HttpClient) -> io::Result<()> {
     // First, deregister from the server
     // FIXME: has some code copy/pasted from core()
     let state_dir = camera.get_state_dir();
@@ -922,50 +843,39 @@ fn reset(
         return Ok(());
     }
 
-    let reregister = false;
-
-    let (camera_motion_name, _group_motion_name) = get_names(
+    let (camera_motion_name, group_motion_name) = get_names(
         camera,
         first_time,
         "camera_motion_name".to_string(),
         "group_motion_name".to_string(),
     );
 
-    let (camera_livestream_name, _group_livestream_name) = get_names(
+    let (camera_livestream_name, group_livestream_name) = get_names(
         camera,
         first_time,
         "camera_livestream_name".to_string(),
         "group_livestream_name".to_string(),
     );
 
-    let (camera_fcm_name, _group_fcm_name) = get_names(
+    let (camera_fcm_name, group_fcm_name) = get_names(
         camera,
         first_time,
         "camera_fcm_name".to_string(),
         "group_fcm_name".to_string(),
     );
 
-    let (camera_config_name, _group_config_name) = get_names(
+    let (camera_config_name, group_config_name) = get_names(
         camera,
         first_time,
         "camera_config_name".to_string(),
         "group_config_name".to_string(),
     );
 
-    let server_motion_stream = try_connect(camera, &delivery_service_addr)?;
-    let server_livestream_stream = try_connect(camera, &delivery_service_addr)?;
-    let server_fcm_stream = try_connect(camera, &delivery_service_addr)?;
-    let server_config_stream = try_connect(camera, &delivery_service_addr)?;
-
     match User::new(
         camera_motion_name,
-        Some(server_motion_stream),
         first_time,
-        reregister,
         state_dir.clone(),
         "motion".to_string(),
-        credentials.clone(),
-        false,
     ) {
         Ok(mut client) => match client.deregister() {
             Ok(_) => {
@@ -982,13 +892,9 @@ fn reset(
 
     match User::new(
         camera_livestream_name,
-        Some(server_livestream_stream),
         first_time,
-        reregister,
         state_dir.clone(),
         "livestream".to_string(),
-        credentials.clone(),
-        false,
     ) {
         Ok(mut client) => match client.deregister() {
             Ok(_) => {
@@ -1005,13 +911,9 @@ fn reset(
 
     match User::new(
         camera_fcm_name,
-        Some(server_fcm_stream),
         first_time,
-        reregister,
         state_dir.clone(),
         "fcm".to_string(),
-        credentials.clone(),
-        false,
     ) {
         Ok(mut client) => match client.deregister() {
             Ok(_) => {
@@ -1028,13 +930,9 @@ fn reset(
 
     match User::new(
         camera_config_name,
-        Some(server_config_stream),
         first_time,
-        reregister,
         state_dir,
         "config".to_string(),
-        credentials,
-        false,
     ) {
         Ok(mut client) => match client.deregister() {
             Ok(_) => {
@@ -1057,22 +955,75 @@ fn reset(
     let video_dir_path = Path::new(&video_dir);
     let _ = fs::remove_dir_all(video_dir_path);
 
+    //Fourth, delete data in the server
+    match http_client.deregister(&group_motion_name) {
+        Ok(_) => {
+            info!("Motion data on server deleted successfully.")
+        }
+        Err(e) => {
+            error!(
+                "Error: Deleting motion data from server failed: {e}.\
+                Sometimes, this error is okay since the app might have deleted the data already\
+                or no data existed in the first place."
+            );
+        }
+    }
+
+    match http_client.deregister(&group_livestream_name) {
+        Ok(_) => {
+            info!("Livestream data on server deleted successfully.")
+        }
+        Err(e) => {
+            error!(
+                "Error: Deleting livestream data from server failed: {e}.\
+                Sometimes, this error is okay since the app might have deleted the data already\
+                or no data existed in the first place."
+            );
+        }
+    }
+
+    match http_client.deregister(&group_fcm_name) {
+        Ok(_) => {
+            info!("FCM data on server deleted successfully.")
+        }
+        Err(e) => {
+            error!(
+                "Error: Deleting FCM data from server failed: {e}.\
+                Sometimes, this error is okay since the app might have deleted the data already\
+                or no data existed in the first place."
+            );
+        }
+    }
+
+    match http_client.deregister(&group_config_name) {
+        Ok(_) => {
+            info!("Config data on server deleted successfully.")
+        }
+        Err(e) => {
+            error!(
+                "Error: Deleting config data from server failed: {e}.\
+                Sometimes, this error is okay since the app might have deleted the data already\
+                or no data existed in the first place."
+            );
+        }
+    }
+
     println!("Reset finished.");
     Ok(())
 }
 
 fn core(
     camera: &mut dyn Camera,
-    delivery_service_addr: String,
-    credentials: Vec<u8>,
+    http_client: &HttpClient,
     input_camera_secret: Option<Vec<u8>>,
     connect_to_wifi: bool,
+    test_mode: bool,
 ) -> io::Result<()> {
     let state_dir = camera.get_state_dir();
-    let mut first_time: bool = !Path::new(&(state_dir.clone() + "/first_time_done")).exists();
-    let reregister: bool = !Path::new(&(state_dir.clone() + "/registration_done")).exists();
+    let first_time: bool = !Path::new(&(state_dir.clone() + "/first_time_done")).exists();
 
     if first_time && connect_to_wifi {
+        println!("Creating WiFi hotspot.");
         create_wifi_hotspot();
     }
 
@@ -1114,13 +1065,9 @@ fn core(
 
     let mut client_motion = User::new(
         camera_motion_name.clone(),
-        None,
         first_time,
-        reregister,
         state_dir.clone(),
         "motion".to_string(),
-        credentials.clone(),
-        true,
     )
     .map_err(|e| {
         error!("User::new() returned error:");
@@ -1130,13 +1077,9 @@ fn core(
 
     let mut client_livestream = User::new(
         camera_livestream_name.clone(),
-        None,
         first_time,
-        reregister,
         state_dir.clone(),
         "livestream".to_string(),
-        credentials.clone(),
-        true,
     )
     .map_err(|e| {
         error!("User::new() returned error:");
@@ -1146,13 +1089,9 @@ fn core(
 
     let mut client_fcm = User::new(
         camera_fcm_name.clone(),
-        None,
         first_time,
-        reregister,
         state_dir.clone(),
         "fcm".to_string(),
-        credentials.clone(),
-        true,
     )
     .map_err(|e| {
         error!("User::new() returned error:");
@@ -1162,13 +1101,9 @@ fn core(
 
     let mut client_config = User::new(
         camera_config_name.clone(),
-        None,
         first_time,
-        reregister,
         state_dir.clone(),
         "config".to_string(),
-        credentials.clone(),
-        true,
     )
     .map_err(|e| {
         error!("User::new() returned error:");
@@ -1195,90 +1130,22 @@ fn core(
             input_camera_secret,
             connect_to_wifi,
         )?;
+        File::create(camera.get_state_dir() + "/first_time_done").expect("Could not create file");
+
         println!("[{}] Pairing successful.", camera_name);
     }
-
-    // Now, we have access to Internet and we can connect to the delivery service
-    let server_motion_stream = try_connect(camera, &delivery_service_addr)?;
-    let server_livestream_stream = try_connect(camera, &delivery_service_addr)?;
-    let server_fcm_stream = try_connect(camera, &delivery_service_addr)?;
-    let server_config_stream = try_connect(camera, &delivery_service_addr)?;
-    first_time = false;
-
-    let mut client_motion = User::new(
-        camera_motion_name,
-        Some(server_motion_stream),
-        first_time,
-        reregister,
-        state_dir.clone(),
-        "motion".to_string(),
-        credentials.clone(),
-        true,
-    )
-    .map_err(|e| {
-        error!("User::new() returned error:");
-        e
-    })?;
-    debug!("Motion client created.");
-
-    let mut client_livestream = User::new(
-        camera_livestream_name,
-        Some(server_livestream_stream),
-        first_time,
-        reregister,
-        state_dir.clone(),
-        "livestream".to_string(),
-        credentials.clone(),
-        true,
-    )
-    .map_err(|e| {
-        error!("User::new() returned error:");
-        e
-    })?;
-    let mut client_fcm = User::new(
-        camera_fcm_name,
-        Some(server_fcm_stream),
-        first_time,
-        reregister,
-        state_dir.clone(),
-        "fcm".to_string(),
-        credentials.clone(),
-        true,
-    )
-    .map_err(|e| {
-        error!("User::new() returned error:");
-        e
-    })?;
-    debug!("FCM client created.");
-
-    let _client_config = User::new(
-        camera_config_name,
-        Some(server_config_stream),
-        first_time,
-        reregister,
-        state_dir.clone(),
-        "config".to_string(),
-        credentials,
-        true,
-    )
-    .map_err(|e| {
-        error!("User::new() returned error:");
-        e
-    })?;
-    debug!("Config client created.");
-
-    fs::File::create(state_dir.clone() + "/registration_done").expect("Could not create file");
 
     println!("[{}] Running...", camera_name);
 
     let mut locked_motion_check_time: Option<SystemTime> = None;
     let mut locked_delivery_check_time: Option<SystemTime> = None;
+    let mut locked_livestream_check_time: Option<SystemTime> = None;
     let video_dir = camera.get_video_dir();
-    let mut delivery_monitor = DeliveryMonitor::from_file_or_new(video_dir, state_dir, 60);
+    let mut delivery_monitor = DeliveryMonitor::from_file_or_new(video_dir, state_dir);
 
     // Used for anti-dither for motion detection
     loop {
-        // Check motion events from the IP camera every second
+        // Check motion events from the camera every second
         let motion_event = match camera.is_there_motion() {
             Ok(event) => event,
             Err(e) => {
@@ -1288,103 +1155,93 @@ fn core(
         };
 
         // Send motion events only if we haven't sent one in the past minute
-        if motion_event
+        if (motion_event || test_mode)
             && (locked_motion_check_time.is_none()
                 || locked_motion_check_time.unwrap().le(&SystemTime::now()))
         {
             let video_info = VideoInfo::new();
-            info!("Sending the FCM notification with timestamp.");
-            client_fcm.send_fcm(
-                &bincode::serialize(&video_info.timestamp).unwrap(),
-                group_fcm_name.clone(),
-            )?;
-            client_fcm.save_groups_state();
-            match camera.record_motion_video(&video_info) {
-                Ok(_) => {
-                    info!("Sending the FCM notification to start downloading.");
-                    //Timestamp of 0 tells the app it's time to start downloading.
-                    let dummy_timestamp: u64 = 0;
-                    client_fcm.send_fcm(
-                        &bincode::serialize(&dummy_timestamp).unwrap(),
-                        group_fcm_name.clone(),
-                    )?;
-                    client_fcm.save_groups_state();
-                    send_motion_triggered_video(
-                        camera,
-                        &mut client_motion,
-                        group_motion_name.clone(),
-                        video_info,
-                        &mut delivery_monitor,
-                    )?;
-                    locked_motion_check_time = Some(SystemTime::now().add(Duration::from_secs(60)));
-                }
-                Err(e) => {
-                    error!("Error recording motion video: {e}");
-                }
-            }
-        }
-
-        // Livestream request? Start it.
-        if is_there_livestream_start_request(&mut client_livestream)? {
-            livestream(
-                &mut client_livestream,
-                group_livestream_name.clone(),
-                camera,
-            )?;
-        }
-
-        // Process motion acks
-        let any_ack = process_motion_acks(&mut client_motion, &mut delivery_monitor)?;
-
-        // Check with the delivery service every minute
-        if any_ack
-            || (locked_delivery_check_time.is_none()
-                || locked_delivery_check_time.unwrap().le(&SystemTime::now()))
-        {
-            let (resend_list, renotify_list) = delivery_monitor.videos_to_resend_renotify();
-
-            if !resend_list.is_empty() {
-                send_motion_triggered_video(
-                    camera,
-                    &mut client_motion,
-                    group_motion_name.clone(),
-                    resend_list[0].clone(),
-                    &mut delivery_monitor,
+            info!("Detected motion.");
+            if !test_mode {
+                info!("Sending the FCM notification with timestamp.");
+                let notification_msg = client_fcm.encrypt(
+                    &bincode::serialize(&video_info.timestamp).unwrap(),
+                    group_fcm_name.clone(),
                 )?;
-
-                for video_info in &resend_list[1..] {
-                    delivery_monitor.send_event(video_info.clone());
+                client_fcm.save_groups_state();
+                match http_client.send_fcm_notification(notification_msg) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!("Failed to send FCM notification ({})", e);
+                    }
                 }
             }
 
-            // If we resend any videos above, that ends up sending a notification
-            // to the app anyway.
-            if resend_list.is_empty() && !renotify_list.is_empty() {
-                // It's enough to send one notification
-                // We just want to send an FCM message in order to get the app to fetch the messages.
-                debug!("Sending the FCM notification.");
+            info!("Starting to record, prepare, and encrypt video.");
+            let duration = if test_mode {
+                1
+            } else {
+                20
+            };
+
+            camera.record_motion_video(&video_info, duration)?;
+
+            prepare_motion_video(
+                &mut client_motion,
+                group_motion_name.clone(),
+                video_info,
+                &mut delivery_monitor,
+            )?;
+
+            info!("Uploading the encrypted video.");
+            upload_pending_enc_videos(&group_motion_name, &mut delivery_monitor, &http_client);
+
+            if !test_mode {
+                info!("Sending the FCM notification to start downloading.");
+                //Timestamp of 0 tells the app it's time to start downloading.
                 let dummy_timestamp: u64 = 0;
-                client_fcm.send_fcm(
+                let notification_msg = client_fcm.encrypt(
                     &bincode::serialize(&dummy_timestamp).unwrap(),
                     group_fcm_name.clone(),
                 )?;
                 client_fcm.save_groups_state();
-                send_video_notification(
-                    &mut client_motion,
-                    group_motion_name.clone(),
-                    renotify_list[0].clone(),
-                    &mut delivery_monitor,
-                )?;
-
-                // For the rest, just tell the delivery_monitor that we sent a notification.
-                for video_info in &renotify_list[1..] {
-                    delivery_monitor.notify_event(video_info.clone());
+                match http_client.send_fcm_notification(notification_msg) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!("Failed to send FCM notification ({})", e);
+                    }
                 }
             }
 
+            locked_motion_check_time = Some(SystemTime::now().add(Duration::from_secs(60)));
+        }
+
+        // Check for livestream requests every second
+        if locked_livestream_check_time.is_none()
+            || locked_livestream_check_time.unwrap().le(&SystemTime::now())
+        {
+            // Livestream request? Start it.
+            if http_client.livestream_check(&group_livestream_name).is_ok() {
+                info!("Livestream start detected");
+                livestream(
+                    &mut client_livestream,
+                    group_livestream_name.clone(),
+                    camera,
+                    http_client,
+                )?;
+            }
+
+            locked_livestream_check_time = Some(SystemTime::now().add(Duration::from_secs(1)));
+        }
+
+        // Check with the delivery monitor every minute
+        if locked_delivery_check_time.is_none()
+            || locked_delivery_check_time.unwrap().le(&SystemTime::now())
+        {
+            upload_pending_enc_videos(&group_motion_name, &mut delivery_monitor, &http_client);
             locked_delivery_check_time = Some(SystemTime::now().add(Duration::from_secs(60)));
         }
 
-        sleep(Duration::from_millis(10)); // Introduce a small delay since we don't need this constantly checked
+        // Introduce a small delay since we don't need this constantly checked
+        sleep(Duration::from_millis(10));
     }
 }

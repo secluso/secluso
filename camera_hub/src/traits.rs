@@ -1,6 +1,6 @@
 //! Privastead camera traits.
 //!
-//! Copyright (C) 2024  Ardalan Amiri Sani
+//! Copyright (C) 2025  Ardalan Amiri Sani
 //!
 //! This program is free software: you can redistribute it and/or modify
 //! it under the terms of the GNU General Public License as published by
@@ -41,7 +41,7 @@ pub trait Mp4 {
 
 pub trait Camera {
     fn is_there_motion(&mut self) -> Result<bool, Error>;
-    fn record_motion_video(&self, info: &VideoInfo) -> io::Result<()>;
+    fn record_motion_video(&self, info: &VideoInfo, duration: u64) -> io::Result<()>;
     fn launch_livestream(&self, livestream_writer: LivestreamWriter) -> io::Result<()>;
     fn get_name(&self) -> String;
     fn get_state_dir(&self) -> String;

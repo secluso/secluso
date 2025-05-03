@@ -1,4 +1,4 @@
-//! Copyright (C) 2024  Ardalan Amiri Sani
+//! Copyright (C) 2025  Ardalan Amiri Sani
 //!
 //! This program is free software: you can redistribute it and/or modify
 //! it under the terms of the GNU General Public License as published by
@@ -39,21 +39,6 @@ impl VideoNetInfo {
             timestamp,
             num_msg: 0,
             sanity: VIDEONETINFO_SANITY.to_string(),
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, PartialEq)]
-pub struct VideoAckInfo {
-    pub timestamp: u64,
-    pub video_ack: bool, //true if ack for video, false if ack for notification
-}
-
-impl VideoAckInfo {
-    pub fn new(timestamp: u64, video_ack: bool) -> Self {
-        Self {
-            timestamp,
-            video_ack,
         }
     }
 }

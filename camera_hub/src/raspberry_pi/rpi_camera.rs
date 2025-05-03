@@ -292,12 +292,12 @@ impl Camera for RaspberryPiCamera {
         self.motion_detection.handle_motion_event()
     }
 
-    fn record_motion_video(&self, info: &VideoInfo) -> io::Result<()> {
+    fn record_motion_video(&self, info: &VideoInfo, duration: u64) -> io::Result<()> {
         let rt = Runtime::new()?;
 
         let future = Self::write_mp4(
             self.video_dir.clone() + "/" + &info.filename,
-            15, // We'll use 5 seconds before, 15 seconds after.
+            duration,
             Arc::clone(&self.frame_queue),
             self.sps_frame.clone(),
             self.pps_frame.clone(),
