@@ -35,10 +35,10 @@ mod fcm;
 use crate::fcm::send_notification;
 
 // Simple rate limiters for the server
-const MAX_MOTION_FILE_SIZE: usize = 10; // in mebibytes
+const MAX_MOTION_FILE_SIZE: usize = 50; // in mebibytes
 const MAX_NUM_PENDING_MOTION_FILES: usize = 100;
-const MAX_LIVESTREAM_FILE_SIZE: usize = 1; // in mebibytes
-const MAX_NUM_PENDING_LIVESTREAM_FILES: usize = 10;
+const MAX_LIVESTREAM_FILE_SIZE: usize = 20; // in mebibytes
+const MAX_NUM_PENDING_LIVESTREAM_FILES: usize = 50;
 
 async fn get_num_files(path: &Path) -> io::Result<usize> {
     let mut entries = fs::read_dir(path).await?;

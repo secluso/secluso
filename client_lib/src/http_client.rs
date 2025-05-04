@@ -18,6 +18,7 @@
 use std::fs::File;
 use std::io::{self, Write, BufReader, BufWriter};
 use std::path::Path;
+use std::time::Duration;
 use reqwest::blocking::{Client, Body};
 use base64::{engine::general_purpose, Engine as _};
 
@@ -66,7 +67,11 @@ impl HttpClient {
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
         let auth_header = format!("Basic {}", auth_encoded);
 
-        let client = Client::new();
+        let client = Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
         let response = client
             .post(server_url)
             .header("Content-Type", "application/octet-stream")
@@ -103,7 +108,11 @@ impl HttpClient {
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
         let auth_header = format!("Basic {}", auth_encoded);
 
-        let client = Client::new();
+        let client = Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
         let mut response = client
             .get(&server_url)
             .header("Authorization", auth_header.clone())
@@ -275,7 +284,11 @@ impl HttpClient {
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
         let auth_header = format!("Basic {}", auth_encoded);
 
-        let client = Client::new();
+        let client = Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
         let response = client
             .post(server_url)
             .header("Content-Type", "application/octet-stream")
@@ -312,7 +325,11 @@ impl HttpClient {
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
         let auth_header = format!("Basic {}", auth_encoded);
 
-        let client = Client::new();
+        let client = Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
         let response = client
             .get(&server_url)
             .header("Authorization", auth_header.clone())

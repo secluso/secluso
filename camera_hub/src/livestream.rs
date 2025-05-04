@@ -25,6 +25,13 @@ use std::sync::mpsc::Sender;
 use std::task::{Context, Poll};
 use tokio::io::AsyncWrite;
 
+/// Used to determine when to end livestream
+// FIXME: a bit arbitrary. We should set them based on their equivalent time duration.
+#[cfg(feature = "ip")]
+const MAX_NUM_PENDING_LIVESTREAM_CHUNKS: usize = 5;
+#[cfg(feature = "raspberry")]
+const MAX_NUM_PENDING_LIVESTREAM_CHUNKS: usize = 30;
+
 pub struct LivestreamWriter {
     sender: Sender<Vec<u8>>,
     buffer: Vec<u8>,
@@ -108,7 +115,7 @@ pub fn livestream(
             http_client.livestream_upload(&group_name, enc_data, chunk_number)?;
         chunk_number += 1;
 
-        if num_pending_files > 5 {
+        if num_pending_files > MAX_NUM_PENDING_LIVESTREAM_CHUNKS {
             info!("Ending livestream.");
             break;
         }

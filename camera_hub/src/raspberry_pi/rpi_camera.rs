@@ -44,7 +44,7 @@ use crate::{
 // Frame dimensions
 const WIDTH: usize = 1296;
 const HEIGHT: usize = 972;
-const TOTAL_FRAME_RATE: usize = 30;
+const TOTAL_FRAME_RATE: usize = 10;
 
 //These are for our local SPS/PPS channel
 #[derive(PartialEq, Debug, Clone)]
