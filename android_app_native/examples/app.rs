@@ -174,7 +174,8 @@ fn motion_loop(
     };
     
     let group_name = get_motion_group_name(clients.lock().unwrap(), CAMERA_NAME.to_string())?;
-    for _i in 0..5 {
+    let mut iter = 0;
+    loop {
         let enc_filename = format!("{}", epoch);
         let enc_filepath = Path::new(DATA_DIR).join(&enc_filename);
         match http_client.fetch_enc_video(&group_name, &enc_filepath) {
@@ -199,12 +200,15 @@ fn motion_loop(
                 thread::sleep(Duration::from_secs(1));
             }
         }
-    }
 
-    return Err(io::Error::new(
-        io::ErrorKind::Other,
-        format!("Error: could not fetch motion video (timeout)!"),
-    ));
+        iter += 1;
+        if one_video_only && iter > 5 {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Error: could not fetch motion video (timeout)!"),
+            ));
+        }
+    }
 }
 
 fn livestream_loop(

@@ -45,7 +45,7 @@ use std::ops::Add;
 use std::path::Path;
 use std::process::{exit, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, Arc};
 use std::thread::sleep;
 use std::time::SystemTime;
 use std::{thread, time::Duration};
@@ -1142,6 +1142,19 @@ fn core(
     let mut locked_livestream_check_time: Option<SystemTime> = None;
     let video_dir = camera.get_video_dir();
     let mut delivery_monitor = DeliveryMonitor::from_file_or_new(video_dir, state_dir);
+    let livestream_request = Arc::new(Mutex::new(false));
+    let livestream_request_clone = Arc::clone(&livestream_request);
+    let group_livestream_name_clone = group_livestream_name.clone();
+    let http_client_clone = http_client.clone();
+
+    thread::spawn(move || {
+        loop {
+            if http_client_clone.livestream_check(&group_livestream_name_clone).is_ok() {
+                let mut check = livestream_request_clone.lock().unwrap();
+                *check = true;
+            }
+        }
+    });
 
     // Used for anti-dither for motion detection
     loop {
@@ -1220,8 +1233,10 @@ fn core(
             || locked_livestream_check_time.unwrap().le(&SystemTime::now())
         {
             // Livestream request? Start it.
-            if http_client.livestream_check(&group_livestream_name).is_ok() {
+            let mut check = livestream_request.lock().unwrap();
+            if *check == true {
                 info!("Livestream start detected");
+                *check = false;
                 livestream(
                     &mut client_livestream,
                     group_livestream_name.clone(),

@@ -16,7 +16,7 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::fs::File;
-use std::io::{self, Write, BufReader, BufWriter};
+use std::io::{self, Write, BufReader, BufWriter, BufRead};
 use std::path::Path;
 use std::time::Duration;
 use reqwest::blocking::{Client, Body};
@@ -241,32 +241,36 @@ impl HttpClient {
 
     /// Checks to see if there's a livestream request. If so, returns the epoch is the client
     /// is expecting the livestream to be on.
-    pub fn livestream_check(
-        &self,
-        group_name: &str,
-    ) -> io::Result<()> {
+    pub fn livestream_check(&self, group_name: &str) -> io::Result<()> {
         let server_url = format!("http://{}/livestream/{}", self.server_addr, group_name);
-
+    
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
         let auth_header = format!("Basic {}", auth_encoded);
-
-        let client = Client::new();
+    
+        let client = Client::builder()
+            .timeout(None) // Disable timeout to allow long-polling
+            .build()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    
         let response = client
             .get(&server_url)
-            .header("Authorization", auth_header.clone())
+            .header("Authorization", auth_header)
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
             .error_for_status()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-
-        if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Server error: {}", response.status()),
-            ));
+    
+        let reader = BufReader::new(response);
+    
+        for line in reader.lines() {
+            let line = line?;
+            if line.starts_with("data: ") {
+                println!("Received event data: {}", &line[6..]);
+                break;
+            }
         }
-
+    
         Ok(())
     }
     

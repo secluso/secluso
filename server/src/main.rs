@@ -27,12 +27,28 @@ use rocket::data::{Data, ToByteUnit};
 use rocket::response::content::RawText;
 use rocket::tokio::fs::{self, File};
 use rocket::tokio::task;
+use rocket::tokio::sync::broadcast::{channel, Sender};
+use rocket::response::stream::{Event, EventStream};
+use rocket::Shutdown;
+use rocket::tokio::select;
+use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
+use std::sync::Arc;
 
 mod auth;
 use crate::auth::{initialize_users, BasicAuth};
 
 mod fcm;
 use crate::fcm::send_notification;
+
+// Per-user livestream start state
+#[derive(Clone)]
+struct LivestreamStartState {
+    sender: Sender<()>,
+    cameras_started: Arc<DashMap<String, String>>,
+}
+
+type AllLiveStreamStartState = Arc<DashMap<String, LivestreamStartState>>;
 
 // Simple rate limiters for the server
 const MAX_MOTION_FILE_SIZE: usize = 50; // in mebibytes
@@ -139,18 +155,26 @@ async fn send_fcm_notification(data: Data<'_>, auth: BasicAuth) -> io::Result<St
     Ok("ok".to_string())
 }
 
+fn get_user_state(all_state: AllLiveStreamStartState, username: &str) -> LivestreamStartState {
+    // retun the LivestreamStartState for the user. If it doesn't exist, add it and return it.
+    match all_state.entry(username.to_string()) {
+        Entry::Occupied(entry) => entry.get().clone(),
+        Entry::Vacant(entry) => {
+            let (tx, _) = channel(1024);
+            let user_state = LivestreamStartState {
+                cameras_started: Arc::new(DashMap::new()),
+                sender: tx,
+            };
+            entry.insert(user_state.clone());
+            user_state
+        }
+    }
+}
+
 #[post("/livestream/<camera>")]
-async fn livestream_start(camera: &str, auth: BasicAuth) -> io::Result<()> {
+async fn livestream_start(camera: &str, auth: BasicAuth, all_state: &rocket::State<AllLiveStreamStartState>) -> io::Result<()> {
     let root = format!("./{}/{}", "data", auth.username);
     let camera_path = Path::new(&root).join(camera);
-    let livestream_path = Path::new(&camera_path).join("livestream");
-
-    if livestream_path.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "Error: There is a pending livestream start request.",
-        ));
-    }
 
     let update_path = Path::new(&camera_path).join("0");
     if update_path.exists() {
@@ -161,25 +185,48 @@ async fn livestream_start(camera: &str, auth: BasicAuth) -> io::Result<()> {
     }
 
     fs::create_dir_all(&camera_path).await?;
-    let _ = File::create(livestream_path).await?;
+
+    let user_state = get_user_state(all_state.inner().clone(), &auth.username);
+
+    let epoch = format!("placeholder");
+    user_state.cameras_started.insert(camera.to_string(), epoch);
+    let _ = user_state.sender.send(());
 
     Ok(())
 }
 
 #[get("/livestream/<camera>")]
-async fn livestream_check(camera: &str, auth: BasicAuth) -> Option<()> {
-    let root = format!("./{}/{}", "data", auth.username);
-    let camera_path = Path::new(&root).join(camera);
-    let livestream_path = Path::new(&camera_path).join("livestream");
-    if livestream_path.exists() {
-        // wipe all the data from the previous stream (if any)
-        // FIXME: error is ignored here and other uses of ok()
-        fs::remove_dir_all(&camera_path).await.ok();
-        fs::create_dir_all(&camera_path).await.ok();
-        return Some(());
-    }
+async fn livestream_check(camera: &str, auth: BasicAuth, all_state: &rocket::State<AllLiveStreamStartState>, mut end: Shutdown) -> EventStream![] {
+    let camera = camera.to_string();
+    let all_state = all_state.inner().clone();
 
-    None
+    let root = format!("./{}/{}", "data", auth.username);
+    let camera_path = Path::new(&root).join(&camera);
+
+    let user_state = get_user_state(all_state, &auth.username);
+
+    let mut rx = user_state.sender.subscribe();
+
+    EventStream! {
+        loop {
+            if let Some((_key, epoch)) = user_state.cameras_started.remove(&camera) {
+                // wipe all the data from the previous stream (if any)
+                // FIXME: error is ignored here and other uses of ok()
+                fs::remove_dir_all(&camera_path).await.ok();
+                fs::create_dir_all(&camera_path).await.ok();
+                yield Event::data(epoch.to_string());
+                break;
+            }
+
+            select! {
+                msg = rx.recv() => match msg {
+                    Ok(()) => {},
+                    Err(_) => break,
+                },
+                _ = &mut end => break,
+            };
+        }
+    }
 }
 
 #[post("/livestream/<camera>/<filename>", data = "<data>")]
@@ -239,25 +286,30 @@ async fn livestream_retrieve(
 
 #[launch]
 fn rocket() -> _ {
+    let all_livestream_start_state: AllLiveStreamStartState = Arc::new(DashMap::new());
+    
     let config = rocket::Config {
         port: 8080,
         address: "0.0.0.0".parse().unwrap(),
         ..rocket::Config::default()
     };
 
-    rocket::custom(config).manage(initialize_users()).mount(
-        "/",
-        routes![
-            upload,
-            retrieve,
-            delete_file,
-            delete_camera,
-            upload_fcm_token,
-            send_fcm_notification,
-            livestream_start,
-            livestream_check,
-            livestream_upload,
-            livestream_retrieve
-        ],
-    )
+    rocket::custom(config)
+        .manage(all_livestream_start_state)
+        .manage(initialize_users())
+        .mount(
+            "/",
+            routes![
+                upload,
+                retrieve,
+                delete_file,
+                delete_camera,
+                upload_fcm_token,
+                send_fcm_notification,
+                livestream_start,
+                livestream_check,
+                livestream_upload,
+                livestream_retrieve
+            ],
+        )
 }
