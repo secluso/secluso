@@ -265,13 +265,16 @@ impl HttpClient {
     
         for line in reader.lines() {
             let line = line?;
-            if line.starts_with("data: ") {
-                println!("Received event data: {}", &line[6..]);
-                break;
+            if line.starts_with("data:") {
+                //println!("Received event data: {}", &line[5..]);
+                return Ok(());
             }
         }
     
-        Ok(())
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Server error"),
+        ));
     }
     
     /// Uploads some (encrypted) livestream data to the server.

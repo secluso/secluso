@@ -45,6 +45,7 @@ use crate::{
 const WIDTH: usize = 1296;
 const HEIGHT: usize = 972;
 const TOTAL_FRAME_RATE: usize = 10;
+const I_FRAME_INTERVAL: usize = TOTAL_FRAME_RATE; // 1-second fragments
 
 //These are for our local SPS/PPS channel
 #[derive(PartialEq, Debug, Clone)]
@@ -101,6 +102,7 @@ impl RaspberryPiCamera {
             WIDTH,
             HEIGHT,
             TOTAL_FRAME_RATE,
+            I_FRAME_INTERVAL,
             Arc::clone(&latest_frame),
             Arc::clone(&frame_queue),
             ps_tx,

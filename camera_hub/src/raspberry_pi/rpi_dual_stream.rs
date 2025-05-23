@@ -45,6 +45,7 @@ pub fn start(
     width: usize,
     height: usize,
     total_frame_rate: usize,
+    i_frame_interval: usize,
     motion_latest_frame: Arc<Mutex<Option<RawFrame>>>,
     frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>,
     ps_tx: Sender<VideoFrame>,
@@ -59,8 +60,8 @@ pub fn start(
 
     // Spawn rpicam‑vid with output directed to stdout (to get rid of TCP dependency for reduced complexity)
     let rpicam_cmd = format!(
-        "rpicam-vid -t 0 -n --width {} --height {} --framerate {} --codec h264 -o -",
-        width, height, total_frame_rate
+        "rpicam-vid -t 0 -n --width {} --height {} --framerate {} --codec h264 --intra {} -o -",
+        width, height, total_frame_rate, i_frame_interval
     );
     let mut rpicam_child = Command::new("sh")
         .arg("-c")

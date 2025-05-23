@@ -1152,6 +1152,8 @@ fn core(
             if http_client_clone.livestream_check(&group_livestream_name_clone).is_ok() {
                 let mut check = livestream_request_clone.lock().unwrap();
                 *check = true;
+            } else {
+                sleep(Duration::from_secs(1));
             }
         }
     });

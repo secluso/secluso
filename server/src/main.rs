@@ -103,7 +103,11 @@ async fn upload(
 }
 
 #[get("/<camera>/<filename>")]
-async fn retrieve(camera: &str, filename: &str, auth: BasicAuth) -> Option<RawText<File>> {
+async fn retrieve(
+    camera: &str,
+    filename: &str,
+    auth: BasicAuth,
+) -> Option<RawText<File>> {
     let root = format!("./{}/{}", "data", auth.username);
     let camera_path = Path::new(&root).join(camera);
     let filepath = Path::new(&camera_path).join(filename);
@@ -111,7 +115,11 @@ async fn retrieve(camera: &str, filename: &str, auth: BasicAuth) -> Option<RawTe
 }
 
 #[delete("/<camera>/<filename>")]
-async fn delete_file(camera: &str, filename: &str, auth: BasicAuth) -> Option<()> {
+async fn delete_file(
+    camera: &str,
+    filename: &str,
+    auth: BasicAuth,
+) -> Option<()> {
     let root = format!("./{}/{}", "data", auth.username);
     let camera_path = Path::new(&root).join(camera);
     let filepath = Path::new(&camera_path).join(filename);
@@ -119,14 +127,20 @@ async fn delete_file(camera: &str, filename: &str, auth: BasicAuth) -> Option<()
 }
 
 #[delete("/<camera>")]
-async fn delete_camera(camera: &str, auth: BasicAuth) -> io::Result<()> {
+async fn delete_camera(
+    camera: &str,
+    auth: BasicAuth,
+) -> io::Result<()> {
     let root = format!("./{}/{}", "data", auth.username);
     let camera_path = Path::new(&root).join(camera);
     fs::remove_dir_all(camera_path).await
 }
 
 #[post("/fcm_token", data = "<data>")]
-async fn upload_fcm_token(data: Data<'_>, auth: BasicAuth) -> io::Result<String> {
+async fn upload_fcm_token(
+    data: Data<'_>,
+    auth: BasicAuth
+) -> io::Result<String> {
     let root = format!("./{}/{}", "data", auth.username);
     let token_path = Path::new(&root).join("fcm_token");
     // FIXME: hardcoded max size
@@ -135,7 +149,10 @@ async fn upload_fcm_token(data: Data<'_>, auth: BasicAuth) -> io::Result<String>
 }
 
 #[post("/fcm_notification", data = "<data>")]
-async fn send_fcm_notification(data: Data<'_>, auth: BasicAuth) -> io::Result<String> {
+async fn send_fcm_notification(
+    data: Data<'_>,
+    auth: BasicAuth,
+) -> io::Result<String> {
     let root = format!("./{}/{}", "data", auth.username);
     let token_path = Path::new(&root).join("fcm_token");
     if !token_path.exists() {
@@ -155,7 +172,10 @@ async fn send_fcm_notification(data: Data<'_>, auth: BasicAuth) -> io::Result<St
     Ok("ok".to_string())
 }
 
-fn get_user_state(all_state: AllLiveStreamStartState, username: &str) -> LivestreamStartState {
+fn get_user_state(
+    all_state: AllLiveStreamStartState,
+    username: &str,
+) -> LivestreamStartState {
     // retun the LivestreamStartState for the user. If it doesn't exist, add it and return it.
     match all_state.entry(username.to_string()) {
         Entry::Occupied(entry) => entry.get().clone(),
@@ -172,7 +192,11 @@ fn get_user_state(all_state: AllLiveStreamStartState, username: &str) -> Livestr
 }
 
 #[post("/livestream/<camera>")]
-async fn livestream_start(camera: &str, auth: BasicAuth, all_state: &rocket::State<AllLiveStreamStartState>) -> io::Result<()> {
+async fn livestream_start(
+    camera: &str,
+    auth: BasicAuth,
+    all_state: &rocket::State<AllLiveStreamStartState>,
+) -> io::Result<()> {
     let root = format!("./{}/{}", "data", auth.username);
     let camera_path = Path::new(&root).join(camera);
 
@@ -182,6 +206,11 @@ async fn livestream_start(camera: &str, auth: BasicAuth, all_state: &rocket::Sta
             io::ErrorKind::Other,
             "Error: Previous update has not been retrieved yet.",
         ));
+    }
+
+    let livestream_end_path = Path::new(&camera_path).join("livestream_end");
+    if livestream_end_path.exists() {
+        fs::remove_file(livestream_end_path).await.ok();
     }
 
     fs::create_dir_all(&camera_path).await?;
@@ -196,15 +225,18 @@ async fn livestream_start(camera: &str, auth: BasicAuth, all_state: &rocket::Sta
 }
 
 #[get("/livestream/<camera>")]
-async fn livestream_check(camera: &str, auth: BasicAuth, all_state: &rocket::State<AllLiveStreamStartState>, mut end: Shutdown) -> EventStream![] {
+async fn livestream_check(
+    camera: &str,
+    auth: BasicAuth,
+    all_state: &rocket::State<AllLiveStreamStartState>,
+    mut end: Shutdown,
+) -> EventStream![] {
     let camera = camera.to_string();
-    let all_state = all_state.inner().clone();
 
     let root = format!("./{}/{}", "data", auth.username);
     let camera_path = Path::new(&root).join(&camera);
 
-    let user_state = get_user_state(all_state, &auth.username);
-
+    let user_state = get_user_state(all_state.inner().clone(), &auth.username);
     let mut rx = user_state.sender.subscribe();
 
     EventStream! {
@@ -235,6 +267,7 @@ async fn livestream_upload(
     filename: &str,
     data: Data<'_>,
     auth: BasicAuth,
+    all_state: &rocket::State<AllLiveStreamStartState>,
 ) -> io::Result<String> {
     let root = format!("./{}/{}", "data", auth.username);
     let camera_path = Path::new(&root).join(camera);
@@ -243,6 +276,12 @@ async fn livestream_upload(
             io::ErrorKind::Other,
             "Error: Livestream session not started properly.",
         ));
+    }
+
+    let livestream_end_path = Path::new(&camera_path).join("livestream_end");
+    if livestream_end_path.exists() {
+        fs::remove_file(livestream_end_path).await.ok();
+        return Ok(0.to_string());
     }
 
     let num_pending_files = get_num_files(&camera_path).await?;
@@ -262,6 +301,9 @@ async fn livestream_upload(
     // We write to a temp file first and then rename to avoid a race with the retrieve operation.
     fs::rename(filepath_tmp, filepath).await?;
 
+    let user_state = get_user_state(all_state.inner().clone(), &auth.username);
+    let _ = user_state.sender.send(());
+
     // Returns the number of pending files
     Ok((num_pending_files + 1).to_string())
 }
@@ -271,17 +313,34 @@ async fn livestream_retrieve(
     camera: &str,
     filename: &str,
     auth: BasicAuth,
+    all_state: &rocket::State<AllLiveStreamStartState>,
 ) -> Option<RawText<File>> {
     let root = format!("./{}/{}", "data", auth.username);
     let camera_path = Path::new(&root).join(camera);
     let filepath = Path::new(&camera_path).join(filename);
+
     if camera_path.exists() {
+        if !filepath.exists() {
+            let user_state = get_user_state(all_state.inner().clone(), &auth.username);
+            let mut rx = user_state.sender.subscribe();
+            let _ = rx.recv().await;
+        }
         let response = File::open(&filepath).await.map(RawText).ok();
-        fs::remove_file(filepath).await.ok();
         return response;
     }
 
     None
+}
+
+#[post("/livestream_end/<camera>")]
+async fn livestream_end(camera: &str, auth: BasicAuth) -> io::Result<()> {
+    let root = format!("./{}/{}", "data", auth.username);
+    let camera_path = Path::new(&root).join(camera);
+    let livestream_end_path = Path::new(&camera_path).join("livestream_end");
+
+    let _ = File::create(livestream_end_path).await?;
+
+    Ok(())
 }
 
 #[launch]
@@ -309,7 +368,8 @@ fn rocket() -> _ {
                 livestream_start,
                 livestream_check,
                 livestream_upload,
-                livestream_retrieve
+                livestream_retrieve,
+                livestream_end,
             ],
         )
 }

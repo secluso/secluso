@@ -45,6 +45,7 @@ use bytes::{BufMut, BytesMut};
 
 use std::convert::TryFrom;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
+use cfg_if::cfg_if;
 
 /// Tracks the parts of a `trak` atom which are common between video and audio samples.
 #[derive(Default)]
@@ -162,10 +163,13 @@ impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Fmp4Writer<W
             });
             self.core
                 .write_video_trak(&mut buf, &self.video_trak.core)?;
-            /* disable audio for now
-            self.core
-                .write_audio_trak(&mut buf, &self.audio_trak.core)?;
-            */
+            // disable audio for Raspberry Pi for now
+            cfg_if! {
+                if #[cfg(feature = "ip")] {
+                    self.core
+                        .write_audio_trak(&mut buf, &self.audio_trak.core)?;
+                }
+            }
             write_box!(&mut buf, b"mvex", {
                 write_box!(&mut buf, b"trex", {
                     buf.put_u32(1 << 24); // version, flags
@@ -175,16 +179,19 @@ impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Fmp4Writer<W
                     buf.put_u32(0); // default sample size
                     buf.put_u32(0); // default sample flags
                 });
-                /* disable audio for now
-                write_box!(&mut buf, b"trex", {
-                    buf.put_u32(1 << 24); // version, flags
-                    buf.put_u32(2); // track id
-                    buf.put_u32(1); // default sample description index
-                    buf.put_u32(0); // default sample duration
-                    buf.put_u32(0); // default sample size
-                    buf.put_u32(0); // default sample flags
-                });
-                */
+                // disable audio for Raspberry Pi for now
+                cfg_if! {
+                    if #[cfg(feature = "ip")] {
+                        write_box!(&mut buf, b"trex", {
+                            buf.put_u32(1 << 24); // version, flags
+                            buf.put_u32(2); // track id
+                            buf.put_u32(1); // default sample description index
+                            buf.put_u32(0); // default sample duration
+                            buf.put_u32(0); // default sample size
+                            buf.put_u32(0); // default sample flags
+                        });
+                    }
+                }
             });
         });
         self.core.inner.write_all(&buf).await?;
@@ -281,6 +288,7 @@ impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Mp4 for Fmp4
         self.core.inner.write_all(&buf).await?;
         self.core.inner.write_all(&self.fbuf_video).await?;
         self.core.inner.write_all(&self.fbuf_audio).await?;
+        self.core.inner.flush().await?;
 
         self.video_trak.clean();
         self.audio_trak.clean();

@@ -26,11 +26,7 @@ use std::task::{Context, Poll};
 use tokio::io::AsyncWrite;
 
 /// Used to determine when to end livestream
-// FIXME: a bit arbitrary. We should set them based on their equivalent time duration.
-#[cfg(feature = "ip")]
 const MAX_NUM_PENDING_LIVESTREAM_CHUNKS: usize = 5;
-#[cfg(feature = "raspberry")]
-const MAX_NUM_PENDING_LIVESTREAM_CHUNKS: usize = 30;
 
 pub struct LivestreamWriter {
     sender: Sender<Vec<u8>>,
@@ -52,35 +48,21 @@ impl AsyncWrite for LivestreamWriter {
         _cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        // We want each encrypted message to fit within one TCP packet (max size: 64 kB or 65535 B).
-        // With these numbers, some experiments show that the encrypted message will have the max
-        // size of 64687 B.
-        let max_buf_size: usize = 62 * 1024;
-        let min_buf_size: usize = 60 * 1024;
-
         self.buffer.extend_from_slice(buf);
-
-        while self.buffer.len() >= min_buf_size {
-            let len_to_send = if self.buffer.len() > max_buf_size {
-                max_buf_size
-            } else {
-                self.buffer.len()
-            };
-
-            let data = self.buffer.drain(..len_to_send).collect();
-
-            if self.sender.send(data).is_err() {
-                return Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Failed to send data over the channel",
-                )));
-            }
-        }
 
         Poll::Ready(Ok(buf.len()))
     }
 
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    fn poll_flush(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let data = self.buffer.drain(..).collect();
+
+        if self.sender.send(data).is_err() {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Failed to send data over the channel",
+            )));
+        }
+
         Poll::Ready(Ok(()))
     }
 
@@ -115,7 +97,8 @@ pub fn livestream(
             http_client.livestream_upload(&group_name, enc_data, chunk_number)?;
         chunk_number += 1;
 
-        if num_pending_files > MAX_NUM_PENDING_LIVESTREAM_CHUNKS {
+        // The server returns 0 when the app has explicitly ended livestream
+        if num_pending_files == 0 || num_pending_files > MAX_NUM_PENDING_LIVESTREAM_CHUNKS {
             info!("Ending livestream.");
             break;
         }
