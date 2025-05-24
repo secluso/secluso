@@ -16,6 +16,7 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::Camera;
+use crate::delivery_monitor::DeliveryMonitor;
 use privastead_client_lib::http_client::HttpClient;
 use privastead_client_lib::user::User;
 use std::io;
@@ -75,13 +76,28 @@ pub fn livestream(
     client: &mut User,
     group_name: String,
     camera: &dyn Camera,
+    delivery_monitor: &mut DeliveryMonitor,
     http_client: &HttpClient,
 ) -> io::Result<()> {
     // Update MLS epoch
     let (commit_msg, _epoch) = client.update(group_name.clone())?;
     client.save_groups_state();
-    //FIXME: fatal crash point here. We have committed the update, but we will never send it.
-    http_client.livestream_upload(&group_name, commit_msg, 0)?;
+
+    // Why bother with enqueueing the updates in the delivery monitor?
+    // If we just try to send the update, we will have a severe fatal crash point.
+    // The fatal crash point would be here because we have committed the update, but we would never send it.
+    // It's severe because it is not that unlikely for it to happen, e.g., when there's something wrong
+    // with the upload attempt to the server.
+    // With the delivery monitor trick, we mitigate this.
+    // We still have a fatal crash point here, but it's less severe (let's say medium severity).
+    // This is because both operations before and after the fatal crash point are file system writes.
+    // FIXME: fatal crash point here (see the comment above).
+    delivery_monitor.enqueue_livestream_update(commit_msg);
+    let pending_livestream_updates = delivery_monitor.get_livestream_updates();
+    let updates_data = bincode::serialize(&pending_livestream_updates).unwrap();
+
+    http_client.livestream_upload(&group_name, updates_data, 0)?;
+    delivery_monitor.dequeue_livestream_updates();
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let livestream_writer = LivestreamWriter::new(tx);

@@ -459,7 +459,7 @@ pub mod android {
             .expect("Couldn't covert to Rust String")
             .into();
 
-        let commit_msg: Vec<u8> = env.convert_byte_array(msg).unwrap();
+        let updates_msg: Vec<u8> = env.convert_byte_array(msg).unwrap();
 
         if (*clients).is_none() {
             my_log(Some(&logger), "Error: clients hashmap not initialized!");
@@ -474,7 +474,7 @@ pub mod android {
             .lock()
             .unwrap();
 
-        match livestream_update(camera_clients, commit_msg) {
+        match livestream_update(camera_clients, updates_msg) {
             Ok(_) => {
                 return true as jboolean;
             }

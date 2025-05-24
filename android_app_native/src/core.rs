@@ -723,7 +723,7 @@ pub fn livestream_decrypt(
 
 pub fn livestream_update(
     mut clients: MutexGuard<'_, Option<Box<Clients>>>,
-    commit_msg: Vec<u8>,
+    updates_msg: Vec<u8>,
 ) -> io::Result<()> {
     if clients.is_none() {
         return Err(io::Error::new(
@@ -732,11 +732,22 @@ pub fn livestream_update(
         ));
     }
 
-    let _ = clients
-        .as_mut()
-        .unwrap()
-        .client_livestream
-        .decrypt(commit_msg, false)?;
+    let update_commit_msgs: Vec<Vec<u8>> = bincode::deserialize(&updates_msg)
+        .map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("Error: deserialization of updates_msg failed! - {e}"),
+            )
+        })?;
+
+    for commit_msg in update_commit_msgs {
+        let _ = clients
+            .as_mut()
+            .unwrap()
+            .client_livestream
+            .decrypt(commit_msg, false)?;
+    }
+
     clients
         .as_mut()
         .unwrap()

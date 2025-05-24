@@ -520,7 +520,9 @@ fn prepare_motion_video(
     enc_file.sync_all().unwrap();
     client.save_groups_state();
 
-    //FIXME: fatal crash point here. We have committed the update, but we will never send it.
+    // FIXME: fatal crash point here. We have committed the update, but we will never enqueue it for sending.
+    // Severity: medium.
+    // Rationale: Both operations before and after the fatal crash point are file system writes.
 
     info!(
         "Video {} is enqueued for sending to server.",
@@ -1247,6 +1249,7 @@ fn core(
                     &mut client_livestream,
                     group_livestream_name.clone(),
                     camera,
+                    &mut delivery_monitor,
                     http_client,
                 )?;
             }

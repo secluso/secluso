@@ -52,6 +52,7 @@ pub struct DeliveryMonitor {
     watch_list: HashMap<u64, VideoInfo>, //<video timestamp, video info>
     video_dir: String,
     state_dir: String,
+    pending_livestream_updates: Vec<Vec<u8>>,
 }
 
 impl DeliveryMonitor {
@@ -73,6 +74,7 @@ impl DeliveryMonitor {
             watch_list: HashMap::new(),
             video_dir,
             state_dir,
+            pending_livestream_updates: vec![],
         }
     }
 
@@ -124,6 +126,22 @@ impl DeliveryMonitor {
         send_list.sort_by_key(|key| key.timestamp);
 
         send_list
+    }
+
+    pub fn enqueue_livestream_update(&mut self, update_commit_msg: Vec<u8>) {
+        self.pending_livestream_updates.push(update_commit_msg);
+
+        self.save_state();
+    }
+
+    pub fn dequeue_livestream_updates(&mut self) {
+        self.pending_livestream_updates.clear();
+
+        self.save_state();
+    }
+
+    pub fn get_livestream_updates(&self) -> Vec<Vec<u8>> {
+        self.pending_livestream_updates.clone()
     }
 
     pub fn get_video_file_path(&self, info: &VideoInfo) -> PathBuf {
