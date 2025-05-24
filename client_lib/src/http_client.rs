@@ -327,6 +327,7 @@ impl HttpClient {
         chunk_number: u64,
     ) -> io::Result<Vec<u8>> {
         let server_url = format!("http://{}/livestream/{}/{}", self.server_addr, group_name, chunk_number);
+        let server_del_url = format!("http://{}/{}/{}", self.server_addr, group_name, chunk_number);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
@@ -357,6 +358,51 @@ impl HttpClient {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?
             .to_vec();
 
+        let del_response = client
+            .delete(&server_del_url)
+            .header("Authorization", auth_header)
+            .send()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
+            .error_for_status()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        if !del_response.status().is_success() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Server error: {}", del_response.status()),
+            ));
+        }
+
         Ok(response_vec)
+    }
+
+    /// End a livestream session
+    // FIXME: shares a lot of code with livestream_start
+    pub fn livestream_end(  
+        &self,      
+        group_name: &str,       
+    ) -> io::Result<()> {
+        let server_url = format!("http://{}/livestream_end/{}", self.server_addr, group_name);
+
+        let auth_value = format!("{}:{}", self.server_username, self.server_password);
+        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
+        let auth_header = format!("Basic {}", auth_encoded);
+
+        let client = Client::new();
+        let response = client
+            .post(server_url)
+            .header("Content-Type", "application/octet-stream")
+            .header("Authorization", auth_header)
+            .send()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Server error: {}", response.status()),
+            ));
+        }
+
+        Ok(())
     }
 }

@@ -474,7 +474,8 @@ fn prepare_motion_video(
     let file = File::open(video_file_path).expect("Could not open video file to send");
     let file_len = file.metadata().unwrap().len();
 
-    const READ_SIZE: usize = 63 * 1024;
+    // FIXME: why this chunk size? Test larger and smaller chunks.
+    const READ_SIZE: usize = 64 * 1024;
     let mut reader = BufReader::with_capacity(READ_SIZE, file);
 
     let net_info = VideoNetInfo::new(video_info.timestamp, file_len, READ_SIZE as u64);
@@ -487,20 +488,23 @@ fn prepare_motion_video(
         })?;
     append_to_file(&enc_file, msg);
 
-    for i in 0..net_info.num_msg {
-        let buffer = reader.fill_buf().unwrap();
+    for chunk_number in 0..net_info.num_msg {
+        // We include the chunk number in the chunk itself (and check it in the app)
+        // to prevent a malicious server from reordering the chunks.
+        let mut buffer: Vec<u8> = chunk_number.to_be_bytes().to_vec();
+        buffer.extend(reader.fill_buf().unwrap());
         let length = buffer.len();
         // Sanity checks
-        if i < (net_info.num_msg - 1) {
-            assert_eq!(length, READ_SIZE);
+        if chunk_number < (net_info.num_msg - 1) {
+            assert_eq!(length, READ_SIZE + 8);
         } else {
             assert_eq!(
                 length,
-                <u64 as TryInto<usize>>::try_into(file_len).unwrap() % READ_SIZE
+                (<u64 as TryInto<usize>>::try_into(file_len).unwrap() % READ_SIZE) + 8
             );
         }
 
-        let msg = client.encrypt(buffer, group_name.clone()).map_err(|e| {
+        let msg = client.encrypt(&buffer, group_name.clone()).map_err(|e| {
             error!("send_video() returned error:");
             client.save_groups_state();
             e

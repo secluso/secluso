@@ -28,7 +28,7 @@ mod logger;
 #[allow(non_snake_case)]
 pub mod android {
     use jni::objects::{JClass, JString};
-    use jni::sys::{jboolean, jbyteArray, jstring, JNI_TRUE};
+    use jni::sys::{jboolean, jbyteArray, jstring, jlong, JNI_TRUE};
     use jni::JNIEnv;
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -390,6 +390,7 @@ pub mod android {
         _: JClass,
         name: JString,
         data: jbyteArray,
+        expected: jlong,
     ) -> jbyteArray {
         let mut clients = CLIENTS.lock().unwrap();
 
@@ -402,6 +403,13 @@ pub mod android {
             .into();
 
         let enc_data: Vec<u8> = env.convert_byte_array(data).unwrap();
+
+        if expected < 0 {
+            //FIXME: There's no good way to return an error. So we panic instead.
+            panic!("Error: invalid expected chunk number!");
+        }
+
+        let expected_chunk_number = expected as u64;
 
         if (*clients).is_none() {
             my_log(Some(&logger), "Error: clients hashmap not initialized!");
@@ -417,11 +425,14 @@ pub mod android {
             .lock()
             .unwrap();
 
-        let ret = match livestream_decrypt(camera_clients, enc_data) {
+        let ret = match livestream_decrypt(camera_clients, enc_data, expected_chunk_number) {
             Ok(dec_data) => dec_data,
             Err(e) => {
                 my_log(Some(&logger), format!("Error: {}", e));
-                vec![]
+                // An error could indicate a malicious input, e.g., invalid chunk order.
+                // We shouldn't resume livestreaming after this point.
+                // This should crash the livestreaming thread.
+                panic!("Error: {}", e);
             }
         };
 

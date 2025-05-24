@@ -259,9 +259,11 @@ fn livestream(
 
     for i in 1..num_chunks {
         let enc_data = fetch_livestream_chunk(http_client, &group_name, i)?;
-        let dec_data = livestream_decrypt(clients.lock().unwrap(), enc_data)?;
+        let dec_data = livestream_decrypt(clients.lock().unwrap(), enc_data, i as u64)?;
         println!("Received {} of livestream data.", dec_data.len());
     }
+
+    http_client.livestream_end(&group_name)?;
     println!("Finished livestreaming!");
 
     Ok(())

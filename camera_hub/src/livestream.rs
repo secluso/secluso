@@ -90,7 +90,10 @@ pub fn livestream(
     let mut chunk_number: u64 = 1;
 
     loop {
-        let data = rx.recv().unwrap();
+        // We include the chunk number in the chunk itself (and check it in the app)
+        // to prevent a malicious server from reordering the chunks.
+        let mut data: Vec<u8> = chunk_number.to_be_bytes().to_vec();
+        data.extend(rx.recv().unwrap());
         let enc_data = client.encrypt(&data, group_name.clone())?;
 
         let num_pending_files =

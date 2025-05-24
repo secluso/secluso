@@ -562,17 +562,37 @@ pub fn decrypt_video(
     let dec_filename = format!("video_{}.mp4", info.timestamp);
     let dec_pathname: String = file_dir.to_owned() + "/" + &dec_filename;
 
-    let mut dec_file = fs::File::create(dec_pathname).expect("Could not create decrypted file");
+    let mut dec_file = fs::File::create(&dec_pathname).expect("Could not create decrypted file");
 
-    for _i in 0..info.num_msg {
+    for expected_chunk_number in 0..info.num_msg {
         let enc_msg = read_next_msg_from_file(&mut enc_file)?;
+        
         let dec_msg = clients
             .as_mut()
             .unwrap()
             .client_motion
             .decrypt(enc_msg, true)?;
 
-        let _ = dec_file.write_all(&dec_msg);
+        // check the chunk number
+        if dec_msg.len() < 8 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Error: too few bytes!"),
+            ));
+        }
+
+        let chunk_number = u64::from_be_bytes(dec_msg[..8].try_into().unwrap());
+        if chunk_number != expected_chunk_number {
+            // Need to save groups state since we might have committed an update.
+            clients.as_mut().unwrap().client_motion.save_groups_state();
+            let _ = fs::remove_file(&dec_pathname);
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Error: invalid chunk number!"),
+            ));
+        }
+
+        let _ = dec_file.write_all(&dec_msg[8..]);
     }
 
     // Here, we first make sure the dec_file is flushed.
@@ -662,6 +682,7 @@ pub fn get_livestream_group_name(
 pub fn livestream_decrypt(
     mut clients: MutexGuard<'_, Option<Box<Clients>>>,
     enc_data: Vec<u8>,
+    expected_chunk_number: u64,
 ) -> io::Result<Vec<u8>> {
     if clients.is_none() {
         return Err(io::Error::new(
@@ -681,7 +702,23 @@ pub fn livestream_decrypt(
         .client_livestream
         .save_groups_state();
 
-    Ok(dec_data)
+    // check the chunk number
+    if dec_data.len() < 8 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Error: too few bytes!"),
+        ));
+    }
+
+    let chunk_number = u64::from_be_bytes(dec_data[..8].try_into().unwrap());
+    if chunk_number != expected_chunk_number {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Error: invalid chunk number!"),
+        ));
+    }
+
+    Ok(dec_data[8..].to_vec())
 }
 
 pub fn livestream_update(
