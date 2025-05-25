@@ -20,6 +20,7 @@ openmls = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.6.0-pr
 ds-lib = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.6.0-pre.1" }
 openmls_traits = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.6.0-pre.1" }
 openmls_rust_crypto = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.6.0-pre.1" }
+openmls_libcrux_crypto = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.6.0-pre.1" }
 openmls_memory_storage = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.6.0-pre.1", features = ["persistence"] }
 openmls_basic_credential = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.6.0-pre.1" }
 hmac = "0.12.1"

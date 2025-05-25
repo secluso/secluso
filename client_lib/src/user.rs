@@ -30,7 +30,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashMap;
 use tls_codec::{Serialize as TlsSerialize, Deserialize as TlsDeserialize};
 
-const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+// Post-quantum secure ciphersuite: https://cryspen.com/post/pq-openmls/
+const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_256_XWING_CHACHA20POLY1305_SHA256_Ed25519;
 
 pub type KeyPackages = Vec<(Vec<u8>, KeyPackage)>;
 
@@ -178,6 +179,7 @@ impl User {
         // NOTE: Since the DS currently doesn't distribute copies of the group's ratchet
         // tree, we need to include the ratchet_tree_extension.
         let group_config = MlsGroupCreateConfig::builder()
+            .ciphersuite(CIPHERSUITE)
             .use_ratchet_tree_extension(true)
             .build();
 
