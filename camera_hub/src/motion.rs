@@ -16,13 +16,12 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use privastead_client_lib::video_net_info::VideoNetInfo;
-use privastead_client_lib::user::User;
 use privastead_client_lib::http_client::HttpClient;
 use std::fs::File;
 use std::io;
 use std::io::{Write, BufReader, BufRead};
 use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
-
+use crate::Client;
 
 fn append_to_file(mut file: &File, msg: Vec<u8>) {
     let msg_len: u32 = msg.len().try_into().unwrap();
@@ -61,8 +60,7 @@ pub fn upload_pending_enc_videos(
 }
 
 pub fn prepare_motion_video(
-    client: &mut User,
-    group_name: String,
+    client: &mut Client,
     mut video_info: VideoInfo,
     delivery_monitor: &mut DeliveryMonitor,
 ) -> io::Result<()> {
@@ -71,7 +69,7 @@ pub fn prepare_motion_video(
     debug!("Starting to send video.");
 
     // Update MLS epoch
-    let (commit_msg, epoch) = client.update(group_name.clone())?;
+    let (commit_msg, epoch) = client.user.update(&client.group_name)?;
 
     video_info.epoch = epoch;
     let enc_video_file_path = delivery_monitor.get_enc_video_file_path(&video_info);
@@ -90,7 +88,8 @@ pub fn prepare_motion_video(
     let net_info = VideoNetInfo::new(video_info.timestamp, file_len, READ_SIZE as u64);
 
     let msg = client
-        .encrypt(&bincode::serialize(&net_info).unwrap(), group_name.clone())
+        .user
+        .encrypt(&bincode::serialize(&net_info).unwrap(), &client.group_name)
         .map_err(|e| {
             error!("encrypt() returned error:");
             e
@@ -113,9 +112,9 @@ pub fn prepare_motion_video(
             );
         }
 
-        let msg = client.encrypt(&buffer, group_name.clone()).map_err(|e| {
+        let msg = client.user.encrypt(&buffer, &client.group_name).map_err(|e| {
             error!("send_video() returned error:");
-            client.save_groups_state();
+            client.user.save_groups_state();
             e
         })?;
         append_to_file(&enc_file, msg);
@@ -127,7 +126,7 @@ pub fn prepare_motion_video(
     // Then, we enqueue to be uploaded to the server.
     enc_file.flush().unwrap();
     enc_file.sync_all().unwrap();
-    client.save_groups_state();
+    client.user.save_groups_state();
 
     // FIXME: fatal crash point here. We have committed the update, but we will never enqueue it for sending.
     // Severity: medium.

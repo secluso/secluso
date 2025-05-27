@@ -31,7 +31,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io;
-use std::io::Write;
 use std::ops::Add;
 use std::path::Path;
 use std::process::exit;
@@ -40,6 +39,9 @@ use std::sync::{Mutex, Arc};
 use std::thread::sleep;
 use std::time::SystemTime;
 use std::{thread, time::Duration};
+use std::array;
+#[cfg(feature = "ip")]
+use std::io::Write;
 
 mod delivery_monitor;
 use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
@@ -78,6 +80,27 @@ const VIDEO_DIR_GENERAL: &str = "pending_videos";
 
 // A counter representing the amount of active camera threads
 static GLOBAL_THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+const NUM_CLIENTS: usize = 4;
+static CLIENT_TAGS: [&str; NUM_CLIENTS] = [
+    "motion",
+    "livestream",
+    "fcm",
+    "config",
+];
+// indices for different clients
+const MOTION: usize = 0;
+const LIVESTREAM: usize = 1;
+const FCM: usize = 2;
+const CONFIG: usize = 3;
+
+struct Client {
+    user: User,
+    group_name: String,
+}
+
+type Clients = [Client; NUM_CLIENTS];
+
 
 const USAGE: &str = "
 Privastead camera hub: connects to an IP camera and send videos to the privastead app end-to-end encrypted (through an untrusted server).
@@ -372,11 +395,9 @@ fn ask_user_password(prompt: String) -> io::Result<String> {
 }
 
 fn reset(camera: &dyn Camera, http_client: &HttpClient) -> io::Result<()> {
-    // First, deregister from the server
     // FIXME: has some code copy/pasted from core()
     let state_dir = camera.get_state_dir();
-    let state_dir_clone = state_dir.clone();
-    let state_dir_path = Path::new(&state_dir_clone);
+    let state_dir_path = Path::new(&state_dir);
     let first_time_done_path = state_dir_path.join("first_time_done");
     println!("{:?}", first_time_done_path);
     let first_time: bool = !first_time_done_path.exists();
@@ -386,170 +407,56 @@ fn reset(camera: &dyn Camera, http_client: &HttpClient) -> io::Result<()> {
         return Ok(());
     }
 
-    let (camera_motion_name, group_motion_name) = get_names(
-        camera,
-        first_time,
-        "camera_motion_name".to_string(),
-        "group_motion_name".to_string(),
-    );
+    for i in 0..NUM_CLIENTS {
+        let (camera_name, group_name) = get_names(
+            camera,
+            first_time,
+            format!("camera_{}_name", CLIENT_TAGS[i]),
+            format!("group_{}_name", CLIENT_TAGS[i]),
+        );
 
-    let (camera_livestream_name, group_livestream_name) = get_names(
-        camera,
-        first_time,
-        "camera_livestream_name".to_string(),
-        "group_livestream_name".to_string(),
-    );
+        // First, clean up MLS users
+        match User::new(
+            camera_name,
+            first_time,
+            state_dir.clone(),
+            CLIENT_TAGS[i].to_string(),
+        ) {
+            Ok(mut client) => match client.clean() {
+                Ok(_) => {
+                    info!("{} client cleaned successfully.", CLIENT_TAGS[i])
+                }
+                Err(e) => {
+                    error!("Error: Cleaning client_{} failed: {e}", CLIENT_TAGS[i]);
+                }
+            },
+            Err(e) => {
+                error!("Error: Creating client_{} failed: {e}", CLIENT_TAGS[i]);
+            }
+        };
 
-    let (camera_fcm_name, group_fcm_name) = get_names(
-        camera,
-        first_time,
-        "camera_fcm_name".to_string(),
-        "group_fcm_name".to_string(),
-    );
-
-    let (camera_config_name, group_config_name) = get_names(
-        camera,
-        first_time,
-        "camera_config_name".to_string(),
-        "group_config_name".to_string(),
-    );
-
-    match User::new(
-        camera_motion_name,
-        first_time,
-        state_dir.clone(),
-        "motion".to_string(),
-    ) {
-        Ok(mut client) => match client.deregister() {
+        //Second, delete data in the server
+        match http_client.deregister(&group_name) {
             Ok(_) => {
-                info!("Motion client deregistered successfully.")
+                info!("{} data on server deleted successfully.", CLIENT_TAGS[i])
             }
             Err(e) => {
-                error!("Error: Deregistering client_motion failed: {e}");
+                error!(
+                    "Error: Deleting {} data from server failed: {e}.\
+                    Sometimes, this error is okay since the app might have deleted the data already\
+                    or no data existed in the first place.", CLIENT_TAGS[i]
+                );
             }
-        },
-        Err(e) => {
-            error!("Error: Creating client_motion failed: {e}");
         }
-    };
+    }
 
-    match User::new(
-        camera_livestream_name,
-        first_time,
-        state_dir.clone(),
-        "livestream".to_string(),
-    ) {
-        Ok(mut client) => match client.deregister() {
-            Ok(_) => {
-                info!("Livestream client deregistered successfully.")
-            }
-            Err(e) => {
-                error!("Error: Deregistering client_livestream failed: {e}");
-            }
-        },
-        Err(e) => {
-            error!("Error: Creating client_livestream failed: {e}");
-        }
-    };
-
-    match User::new(
-        camera_fcm_name,
-        first_time,
-        state_dir.clone(),
-        "fcm".to_string(),
-    ) {
-        Ok(mut client) => match client.deregister() {
-            Ok(_) => {
-                info!("FCM client deregistered successfully.")
-            }
-            Err(e) => {
-                error!("Error: Deregistering client_fcm failed: {e}");
-            }
-        },
-        Err(e) => {
-            error!("Error: Creating client_fcm failed: {e}");
-        }
-    };
-
-    match User::new(
-        camera_config_name,
-        first_time,
-        state_dir,
-        "config".to_string(),
-    ) {
-        Ok(mut client) => match client.deregister() {
-            Ok(_) => {
-                info!("Config client deregistered successfully.")
-            }
-            Err(e) => {
-                error!("Error: Deregistering client_config failed: {e}");
-            }
-        },
-        Err(e) => {
-            error!("Error: Creating client_config failed: {e}");
-        }
-    };
-
-    //Second, delete all the local state files.
+    //Third, delete all the local state files.
     let _ = fs::remove_dir_all(state_dir_path);
 
-    //Third, delete all the pending videos (those that were never successfully delivered)
+    //Fourth, delete all the pending videos (those that were never successfully delivered)
     let video_dir = camera.get_video_dir();
     let video_dir_path = Path::new(&video_dir);
     let _ = fs::remove_dir_all(video_dir_path);
-
-    //Fourth, delete data in the server
-    match http_client.deregister(&group_motion_name) {
-        Ok(_) => {
-            info!("Motion data on server deleted successfully.")
-        }
-        Err(e) => {
-            error!(
-                "Error: Deleting motion data from server failed: {e}.\
-                Sometimes, this error is okay since the app might have deleted the data already\
-                or no data existed in the first place."
-            );
-        }
-    }
-
-    match http_client.deregister(&group_livestream_name) {
-        Ok(_) => {
-            info!("Livestream data on server deleted successfully.")
-        }
-        Err(e) => {
-            error!(
-                "Error: Deleting livestream data from server failed: {e}.\
-                Sometimes, this error is okay since the app might have deleted the data already\
-                or no data existed in the first place."
-            );
-        }
-    }
-
-    match http_client.deregister(&group_fcm_name) {
-        Ok(_) => {
-            info!("FCM data on server deleted successfully.")
-        }
-        Err(e) => {
-            error!(
-                "Error: Deleting FCM data from server failed: {e}.\
-                Sometimes, this error is okay since the app might have deleted the data already\
-                or no data existed in the first place."
-            );
-        }
-    }
-
-    match http_client.deregister(&group_config_name) {
-        Ok(_) => {
-            info!("Config data on server deleted successfully.")
-        }
-        Err(e) => {
-            error!(
-                "Error: Deleting config data from server failed: {e}.\
-                Sometimes, this error is okay since the app might have deleted the data already\
-                or no data existed in the first place."
-            );
-        }
-    }
 
     println!("Reset finished.");
     Ok(())
@@ -570,91 +477,33 @@ fn core(
         create_wifi_hotspot();
     }
 
-    let (camera_motion_name, group_motion_name) = get_names(
-        camera,
-        first_time,
-        "camera_motion_name".to_string(),
-        "group_motion_name".to_string(),
-    );
-    debug!("camera_motion_name = {}", camera_motion_name);
-    debug!("group_motion_name = {}", group_motion_name);
+    let mut clients: Clients = array::from_fn(|i| {
+        let (camera_name, group_name) = get_names(
+            camera,
+            first_time,
+            format!("camera_{}_name", CLIENT_TAGS[i]),
+            format!("group_{}_name", CLIENT_TAGS[i]),
+        );
+        debug!("{} camera_name = {}", CLIENT_TAGS[i], camera_name);
+        debug!("{} group_name = {}", CLIENT_TAGS[i], group_name);
 
-    let (camera_livestream_name, group_livestream_name) = get_names(
-        camera,
-        first_time,
-        "camera_livestream_name".to_string(),
-        "group_livestream_name".to_string(),
-    );
-    debug!("camera_livestream_name = {}", camera_livestream_name);
-    debug!("group_livestream_name = {}", group_livestream_name);
+        let mut user = User::new(
+            camera_name,
+            first_time,
+            state_dir.clone(),
+            CLIENT_TAGS[i].to_string()
+        ).expect("User::new() for returned error.");
 
-    let (camera_fcm_name, group_fcm_name) = get_names(
-        camera,
-        first_time,
-        "camera_fcm_name".to_string(),
-        "group_fcm_name".to_string(),
-    );
-    debug!("camera_fcm_name = {}", camera_fcm_name);
-    debug!("group_fcm_name = {}", group_fcm_name);
+        user.save_groups_state();
 
-    let (camera_config_name, group_config_name) = get_names(
-        camera,
-        first_time,
-        "camera_config_name".to_string(),
-        "group_config_name".to_string(),
-    );
-    debug!("camera_config_name = {}", camera_config_name);
-    debug!("group_config_name = {}", group_config_name);
-
-    let mut client_motion = User::new(
-        camera_motion_name.clone(),
-        first_time,
-        state_dir.clone(),
-        "motion".to_string(),
-    )
-    .map_err(|e| {
-        error!("User::new() returned error:");
-        e
-    })?;
-    debug!("Motion client created.");
-
-    let mut client_livestream = User::new(
-        camera_livestream_name.clone(),
-        first_time,
-        state_dir.clone(),
-        "livestream".to_string(),
-    )
-    .map_err(|e| {
-        error!("User::new() returned error:");
-        e
-    })?;
-    debug!("Livestream client created.");
-
-    let mut client_fcm = User::new(
-        camera_fcm_name.clone(),
-        first_time,
-        state_dir.clone(),
-        "fcm".to_string(),
-    )
-    .map_err(|e| {
-        error!("User::new() returned error:");
-        e
-    })?;
-    debug!("FCM client created.");
-
-    let mut client_config = User::new(
-        camera_config_name.clone(),
-        first_time,
-        state_dir.clone(),
-        "config".to_string(),
-    )
-    .map_err(|e| {
-        error!("User::new() returned error:");
-        e
-    })?;
-    debug!("Config client created.");
+        Client {
+            user,
+            group_name,
+        }
+    });
 
     let camera_name = camera.get_name();
+
     if first_time {
         println!(
             "[{}] Waiting to be paired with the mobile app.",
@@ -662,17 +511,11 @@ fn core(
         );
         create_camera_groups(
             camera,
-            &mut client_motion,
-            &mut client_livestream,
-            &mut client_fcm,
-            &mut client_config,
-            group_motion_name.clone(),
-            group_livestream_name.clone(),
-            group_fcm_name.clone(),
-            group_config_name.clone(),
+            &mut clients,
             input_camera_secret,
             connect_to_wifi,
         )?;
+
         File::create(camera.get_state_dir() + "/first_time_done").expect("Could not create file");
 
         println!("[{}] Pairing successful.", camera_name);
@@ -687,7 +530,7 @@ fn core(
     let mut delivery_monitor = DeliveryMonitor::from_file_or_new(video_dir, state_dir);
     let livestream_request = Arc::new(Mutex::new(false));
     let livestream_request_clone = Arc::clone(&livestream_request);
-    let group_livestream_name_clone = group_livestream_name.clone();
+    let group_livestream_name_clone = clients[LIVESTREAM].group_name.clone();
     let http_client_clone = http_client.clone();
 
     thread::spawn(move || {
@@ -721,11 +564,11 @@ fn core(
             info!("Detected motion.");
             if !test_mode {
                 info!("Sending the FCM notification with timestamp.");
-                let notification_msg = client_fcm.encrypt(
+                let notification_msg = clients[FCM].user.encrypt(
                     &bincode::serialize(&video_info.timestamp).unwrap(),
-                    group_fcm_name.clone(),
+                    &clients[FCM].group_name,
                 )?;
-                client_fcm.save_groups_state();
+                clients[FCM].user.save_groups_state();
                 match http_client.send_fcm_notification(notification_msg) {
                     Ok(_) => {}
                     Err(e) => {
@@ -744,24 +587,23 @@ fn core(
             camera.record_motion_video(&video_info, duration)?;
 
             prepare_motion_video(
-                &mut client_motion,
-                group_motion_name.clone(),
+                &mut clients[MOTION],
                 video_info,
                 &mut delivery_monitor,
             )?;
 
             info!("Uploading the encrypted video.");
-            upload_pending_enc_videos(&group_motion_name, &mut delivery_monitor, &http_client);
+            upload_pending_enc_videos(&clients[MOTION].group_name, &mut delivery_monitor, &http_client);
 
             if !test_mode {
                 info!("Sending the FCM notification to start downloading.");
                 //Timestamp of 0 tells the app it's time to start downloading.
                 let dummy_timestamp: u64 = 0;
-                let notification_msg = client_fcm.encrypt(
+                let notification_msg = clients[FCM].user.encrypt(
                     &bincode::serialize(&dummy_timestamp).unwrap(),
-                    group_fcm_name.clone(),
+                    &clients[FCM].group_name,
                 )?;
-                client_fcm.save_groups_state();
+                clients[FCM].user.save_groups_state();
                 match http_client.send_fcm_notification(notification_msg) {
                     Ok(_) => {}
                     Err(e) => {
@@ -783,8 +625,7 @@ fn core(
                 info!("Livestream start detected");
                 *check = false;
                 livestream(
-                    &mut client_livestream,
-                    group_livestream_name.clone(),
+                    &mut clients[LIVESTREAM],
                     camera,
                     &mut delivery_monitor,
                     http_client,
@@ -798,7 +639,7 @@ fn core(
         if locked_delivery_check_time.is_none()
             || locked_delivery_check_time.unwrap().le(&SystemTime::now())
         {
-            upload_pending_enc_videos(&group_motion_name, &mut delivery_monitor, &http_client);
+            upload_pending_enc_videos(&clients[MOTION].group_name, &mut delivery_monitor, &http_client);
             locked_delivery_check_time = Some(SystemTime::now().add(Duration::from_secs(60)));
         }
 

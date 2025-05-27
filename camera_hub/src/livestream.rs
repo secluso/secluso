@@ -18,13 +18,13 @@
 use crate::Camera;
 use crate::delivery_monitor::DeliveryMonitor;
 use privastead_client_lib::http_client::HttpClient;
-use privastead_client_lib::user::User;
 use std::io;
 use std::pin::Pin;
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
 use std::task::{Context, Poll};
 use tokio::io::AsyncWrite;
+use crate::Client;
 
 /// Used to determine when to end livestream
 const MAX_NUM_PENDING_LIVESTREAM_CHUNKS: usize = 5;
@@ -73,15 +73,14 @@ impl AsyncWrite for LivestreamWriter {
 }
 
 pub fn livestream(
-    client: &mut User,
-    group_name: String,
+    client: &mut Client,
     camera: &dyn Camera,
     delivery_monitor: &mut DeliveryMonitor,
     http_client: &HttpClient,
 ) -> io::Result<()> {
     // Update MLS epoch
-    let (commit_msg, _epoch) = client.update(group_name.clone())?;
-    client.save_groups_state();
+    let (commit_msg, _epoch) = client.user.update(&client.group_name)?;
+    client.user.save_groups_state();
 
     // Why bother with enqueueing the updates in the delivery monitor?
     // If we just try to send the update, we will have a severe fatal crash point.
@@ -96,7 +95,7 @@ pub fn livestream(
     let pending_livestream_updates = delivery_monitor.get_livestream_updates();
     let updates_data = bincode::serialize(&pending_livestream_updates).unwrap();
 
-    http_client.livestream_upload(&group_name, updates_data, 0)?;
+    http_client.livestream_upload(&client.group_name, updates_data, 0)?;
     delivery_monitor.dequeue_livestream_updates();
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
@@ -110,10 +109,10 @@ pub fn livestream(
         // to prevent a malicious server from reordering the chunks.
         let mut data: Vec<u8> = chunk_number.to_be_bytes().to_vec();
         data.extend(rx.recv().unwrap());
-        let enc_data = client.encrypt(&data, group_name.clone())?;
+        let enc_data = client.user.encrypt(&data, &client.group_name)?;
 
         let num_pending_files =
-            http_client.livestream_upload(&group_name, enc_data, chunk_number)?;
+            http_client.livestream_upload(&client.group_name, enc_data, chunk_number)?;
         chunk_number += 1;
 
         // The server returns 0 when the app has explicitly ended livestream
@@ -123,7 +122,7 @@ pub fn livestream(
         }
     }
 
-    client.save_groups_state();
+    client.user.save_groups_state();
 
     Ok(())
 }

@@ -33,6 +33,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::{thread, time::Duration};
 use crate::traits::Camera;
+use crate::{Clients, Client, CONFIG};
 
 // Used to generate random names.
 // With 16 alphanumeric characters, the probability of collision is very low.
@@ -129,22 +130,21 @@ fn pair_with_app(
 
 fn create_group_and_invite(
     stream: &mut TcpStream,
-    client: &mut User,
-    group_name: String,
+    client: &mut Client,
     app_key_packages: KeyPackages,
 ) -> io::Result<()> {
-    let app_contact = client.add_contact("app".to_string(), app_key_packages)?;
+    let app_contact = client.user.add_contact("app", app_key_packages)?;
     debug!("Added contact.");
 
-    client.create_group(group_name.clone());
-    client.save_groups_state();
+    client.user.create_group(&client.group_name);
+    client.user.save_groups_state();
     debug!("Created group.");
 
-    let welcome_msg_vec = client.invite(&app_contact, group_name).map_err(|e| {
+    let welcome_msg_vec = client.user.invite(&app_contact, &client.group_name).map_err(|e| {
         error!("invite() returned error:");
         e
     })?;
-    client.save_groups_state();
+    client.user.save_groups_state();
     debug!("App invited to the group.");
 
     write_varying_len(stream, &welcome_msg_vec);
@@ -220,14 +220,7 @@ pub fn create_wifi_hotspot() {
 #[allow(clippy::too_many_arguments)]
 pub fn create_camera_groups(
     camera: &dyn Camera,
-    client_motion: &mut User,
-    client_livestream: &mut User,
-    client_fcm: &mut User,
-    client_config: &mut User,
-    group_motion_name: String,
-    group_livestream_name: String,
-    group_fcm_name: String,
-    group_config_name: String,
+    clients: &mut Clients,
     input_camera_secret: Option<Vec<u8>>,
     connect_to_wifi: bool,
 ) -> io::Result<()> {
@@ -250,44 +243,16 @@ pub fn create_camera_groups(
     let listener = TcpListener::bind("0.0.0.0:12348").unwrap();
     let (mut stream, _) = listener.accept().unwrap();
 
-    let app_motion_key_packages =
-        pair_with_app(&mut stream, client_motion.key_packages(), secret.clone());
-    create_group_and_invite(
-        &mut stream,
-        client_motion,
-        group_motion_name,
-        app_motion_key_packages,
-    )?;
+    for client in &mut *clients {
+        let app_key_packages =
+            pair_with_app(&mut stream, client.user.key_packages(), secret.clone());
 
-    let app_livestream_key_packages = pair_with_app(
-        &mut stream,
-        client_livestream.key_packages(),
-        secret.clone(),
-    );
-
-    create_group_and_invite(
-        &mut stream,
-        client_livestream,
-        group_livestream_name,
-        app_livestream_key_packages,
-    )?;
-
-    let app_fcm_key_packages =
-        pair_with_app(&mut stream, client_fcm.key_packages(), secret.clone());
-    create_group_and_invite(
-        &mut stream,
-        client_fcm,
-        group_fcm_name,
-        app_fcm_key_packages,
-    )?;
-
-    let app_config_key_packages = pair_with_app(&mut stream, client_config.key_packages(), secret);
-    create_group_and_invite(
-        &mut stream,
-        client_config,
-        group_config_name,
-        app_config_key_packages,
-    )?;
+        create_group_and_invite(
+            &mut stream,
+            client,
+            app_key_packages,
+        )?;
+    }
 
     if input_camera_secret.is_none() {
         let _ = fs::remove_file(format!(
@@ -301,7 +266,7 @@ pub fn create_camera_groups(
 
     // Send WiFi info to the app.
     if connect_to_wifi {
-        get_wifi_info_and_connect(&mut stream, client_config)?;
+        get_wifi_info_and_connect(&mut stream, &mut clients[CONFIG].user)?;
     }
 
     Ok(())

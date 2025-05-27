@@ -124,7 +124,7 @@ impl User {
         Ok(out)
     }
 
-    pub fn deregister(&mut self) -> io::Result<()> {
+    pub fn clean(&mut self) -> io::Result<()> {
         self.identity
             .delete_signature_key(self.file_dir.clone(), self.tag.clone());
 
@@ -170,7 +170,7 @@ impl User {
     }
 
     /// Create a group with the given name.
-    pub fn create_group(&mut self, name: String) {
+    pub fn create_group(&mut self, name: &str) {
         log::debug!("{} creates group {}", self.username, name);
         let group_id = name.as_bytes();
         let mut group_aad = group_id.to_vec();
@@ -195,7 +195,7 @@ impl User {
         mls_group.set_aad(group_aad);
 
         let group = Group {
-            group_name: name.clone(),
+            group_name: name.to_string(),
             mls_group: mls_group,
             only_contact: None,
         };
@@ -210,7 +210,7 @@ impl User {
     }
 
     /// Invite a contact to a group.
-    pub fn invite(&mut self, contact: &Contact, group_name: String) -> io::Result<Vec<u8>> {
+    pub fn invite(&mut self, contact: &Contact, group_name: &str) -> io::Result<Vec<u8>> {
         let joiner_key_package = contact.key_packages[0].1.clone();
 
         // Build a proposal with this key package and do the MLS bits.
@@ -485,7 +485,7 @@ impl User {
             .ok()
     }
 
-    pub fn add_contact(&mut self, name: String, key_packages: KeyPackages) -> io::Result<Contact> {
+    pub fn add_contact(&mut self, name: &str, key_packages: KeyPackages) -> io::Result<Contact> {
         // FIXME: The identity of a client is defined as the identity of the first key
         // package right now.
         // Note: we only use one key package anyway.
@@ -496,7 +496,7 @@ impl User {
             .serialized_content()
             .to_vec();
         let contact = Contact {
-            username: name,
+            username: name.to_string(),
             key_packages,
             id: id.clone(),
         };
@@ -514,7 +514,7 @@ impl User {
         Ok(contact)
     }
 
-    pub fn get_group_name(&self, only_contact_name: String) -> io::Result<String> {
+    pub fn get_group_name(&self, only_contact_name: &str) -> io::Result<String> {
         for (_, group) in self.groups.iter() {
             if group.only_contact.is_some()
                 && group.only_contact.as_ref().unwrap().username == only_contact_name
@@ -531,7 +531,7 @@ impl User {
 
     /// Generate a commit to update self leaf node in the ratchet tree, merge the commit, and return the message
     /// to be sent to other group members.
-    pub fn update(&mut self, group_name: String) -> io::Result<(Vec<u8>, u64)> {
+    pub fn update(&mut self, group_name: &str) -> io::Result<(Vec<u8>, u64)> {
         let groups = &mut self.groups;
         let group: &mut Group = match groups.get_mut(group_name.as_bytes()) {
             Some(g) => g,
@@ -584,7 +584,7 @@ impl User {
     }
 
     /// Encrypts a message and returns the ciphertext
-    pub fn encrypt(&mut self, bytes: &[u8], group_name: String) -> io::Result<Vec<u8>> {
+    pub fn encrypt(&mut self, bytes: &[u8], group_name: &str) -> io::Result<Vec<u8>> {
         let groups = &mut self.groups;
         let group: &mut Group = match groups.get_mut(group_name.as_bytes()) {
             Some(g) => g,
