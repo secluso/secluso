@@ -15,6 +15,8 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::traits::Camera;
+use crate::{Client, Clients, CLIENT_TAGS, CONFIG};
 use image::Luma;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::random::OpenMlsRand;
@@ -23,7 +25,6 @@ use privastead_client_lib::pairing;
 use privastead_client_lib::user::{KeyPackages, User};
 use qrcode::QrCode;
 use rand::Rng;
-use std::fs;
 use std::fs::File;
 use std::io;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -31,9 +32,8 @@ use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
+use std::{array, fs};
 use std::{thread, time::Duration};
-use crate::traits::Camera;
-use crate::{Clients, Client, CONFIG};
 
 // Used to generate random names.
 // With 16 alphanumeric characters, the probability of collision is very low.
@@ -44,39 +44,41 @@ const NUM_RANDOM_CHARS: u8 = 16;
 // Used to ensure there can't be attempted concurrent pairing
 static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-fn write_varying_len(stream: &mut TcpStream, msg: &[u8]) {
+fn write_varying_len(stream: &mut TcpStream, msg: &[u8]) -> io::Result<()> {
     // FIXME: is u64 necessary?
     let len = msg.len() as u64;
     let len_data = len.to_be_bytes();
 
-    stream.write_all(&len_data).unwrap();
-    stream.write_all(msg).unwrap();
-    stream.flush().unwrap();
+    stream.write_all(&len_data)?;
+    stream.write_all(msg)?;
+    stream.flush()?;
+
+    Ok(())
 }
 
-fn read_varying_len(stream: &mut TcpStream) -> Vec<u8> {
+fn read_varying_len(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
     let mut len_data = [0u8; 8];
-    stream.read_exact(&mut len_data).unwrap();
+    stream.read_exact(&mut len_data)?;
     let len = u64::from_be_bytes(len_data);
 
     let mut msg = vec![0u8; len as usize];
-    stream.read_exact(&mut msg).unwrap();
+    stream.read_exact(&mut msg)?;
 
-    msg
+    Ok(msg)
 }
 
 fn perform_pairing_handshake(
     stream: &mut TcpStream,
     camera_key_packages: KeyPackages,
     camera_secret: [u8; pairing::NUM_SECRET_BYTES],
-) -> KeyPackages {
+) -> io::Result<KeyPackages> {
     let pairing = pairing::Camera::new(camera_secret, camera_key_packages);
 
-    let app_msg = read_varying_len(stream);
+    let app_msg = read_varying_len(stream)?;
     let (app_key_packages, camera_msg) = pairing.process_app_msg_and_generate_msg_to_app(app_msg);
-    write_varying_len(stream, &camera_msg);
+    write_varying_len(stream, &camera_msg)?;
 
-    app_key_packages
+    Ok(app_key_packages)
 }
 
 fn generate_camera_secret(camera: &dyn Camera) -> Vec<u8> {
@@ -115,7 +117,7 @@ fn pair_with_app(
     stream: &mut TcpStream,
     camera_key_packages: KeyPackages,
     input_camera_secret: Vec<u8>,
-) -> KeyPackages {
+) -> io::Result<KeyPackages> {
     if input_camera_secret.len() != pairing::NUM_SECRET_BYTES {
         panic!("Invalid number of bytes in secret!");
     }
@@ -140,14 +142,32 @@ fn create_group_and_invite(
     client.user.save_groups_state();
     debug!("Created group.");
 
-    let welcome_msg_vec = client.user.invite(&app_contact, &client.group_name).map_err(|e| {
-        error!("invite() returned error:");
-        e
-    })?;
+    let welcome_msg_vec = client
+        .user
+        .invite(&app_contact, &client.group_name)
+        .map_err(|e| {
+            error!("invite() returned error:");
+            e
+        })?;
     client.user.save_groups_state();
     debug!("App invited to the group.");
 
-    write_varying_len(stream, &welcome_msg_vec);
+    write_varying_len(stream, &welcome_msg_vec)?;
+
+    Ok(())
+}
+
+// TODO: Use this in FCM message to alert of pairing success
+#[allow(dead_code)]
+fn encrypt_and_send_msg(
+    stream: &mut TcpStream,
+    client: &mut User,
+    msg: String,
+    group_name: &str,
+) -> io::Result<()> {
+    let encrypted_msg = client.encrypt(&msg.into_bytes(), group_name)?;
+    write_varying_len(stream, encrypted_msg.as_slice())?;
+    client.save_groups_state();
 
     Ok(())
 }
@@ -159,38 +179,62 @@ fn decrypt_msg(client: &mut User, msg: Vec<u8>) -> io::Result<Vec<u8>> {
     Ok(decrypted_msg)
 }
 
-fn get_wifi_info_and_connect(stream: &mut TcpStream, client: &mut User) -> io::Result<()> {
-    let ssid_msg = read_varying_len(stream);
+fn request_wifi_info(stream: &mut TcpStream, client: &mut User) -> io::Result<(String, String)> {
+    let ssid_msg = read_varying_len(stream)?;
     let ssid_bytes = decrypt_msg(client, ssid_msg)?;
     let ssid = String::from_utf8(ssid_bytes).expect("Invalid UTF-8 for WiFi SSID");
-    let password_msg = read_varying_len(stream);
+    let password_msg = read_varying_len(stream)?;
     let password_bytes = decrypt_msg(client, password_msg)?;
     let password = String::from_utf8(password_bytes).expect("Invalid UTF-8 for WiFi password");
 
+    Ok((ssid, password))
+}
+
+fn attempt_wifi_connection(ssid: String, password: String) -> io::Result<()> {
     // Disable the Hotspot first
     let _ = Command::new("sh")
         .arg("-c")
         .arg("nmcli connection down id Hotspot")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+        .output()?; // Wait for command to complete
 
     // Wait a bit for Hotspot to get disabled
     thread::sleep(Duration::from_secs(5));
 
     // Connect to SSID
-    let _ = Command::new("sh")
+    let connect_output = Command::new("sh")
         .arg("-c")
         .arg(format!(
-            "nmcli device wifi connect \"{}\" password \"{}\"",
-            ssid.clone(),
-            password
+            "nmcli device wifi connect \"{}\" password \"{}\" hidden yes",
+            ssid, password
         ))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+        .output()?; // Wait for command to complete
+
+    if !connect_output.status.success() {
+        eprintln!(
+            "Connection failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&connect_output.stdout),
+            String::from_utf8_lossy(&connect_output.stderr),
+        );
+
+        // Connection failed... bring the Hotspot back up to re-attempt pairing again
+        let _ = Command::new("sh")
+            .arg("-c")
+            .arg("nmcli connection up id Hotspot")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .output()?; // Wait for restart
+
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!(
+                "Failed to connect to Wi-Fi '{}': {}",
+                ssid,
+                String::from_utf8_lossy(&connect_output.stderr)
+            ),
+        ));
+    }
 
     // Set up autoconnect to SSID on reboot
     let _ = Command::new("sh")
@@ -201,8 +245,7 @@ fn get_wifi_info_and_connect(stream: &mut TcpStream, client: &mut User) -> io::R
         ))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+        .output()?;
 
     Ok(())
 }
@@ -239,19 +282,104 @@ pub fn create_camera_groups(
         println!("Use the camera QR code in the app to pair.");
     }
 
-    // Wait for the app to connect.
+    // Loop and continuously try to pair with the app (in case of failures)
     let listener = TcpListener::bind("0.0.0.0:12348").unwrap();
-    let (mut stream, _) = listener.accept().unwrap();
+    for incoming in listener.incoming() {
+        match incoming {
+            Ok(mut stream) => {
+                println!("Got connection from {:?}", stream.peer_addr());
+                let result = {
+                    let clients_ref = &mut *clients;
+                    let mut success = true;
 
-    for client in &mut *clients {
-        let app_key_packages =
-            pair_with_app(&mut stream, client.user.key_packages(), secret.clone());
+                    for client in clients_ref.iter_mut() {
+                        match pair_with_app(&mut stream, client.user.key_packages(), secret.clone())
+                        {
+                            Ok(app_key_packages) => {
+                                if let Err(e) =
+                                    create_group_and_invite(&mut stream, client, app_key_packages)
+                                {
+                                    eprintln!("Failed to create group: {e}");
+                                    success = false;
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Pairing failed: {e}");
+                                success = false;
+                                break;
+                            }
+                        }
+                    }
 
-        create_group_and_invite(
-            &mut stream,
-            client,
-            app_key_packages,
-        )?;
+                    if connect_to_wifi && success {
+                        match request_wifi_info(&mut stream, &mut clients[CONFIG].user) {
+                            Ok((ssid, password)) => {
+                                if connect_to_wifi {
+                                    match attempt_wifi_connection(ssid, password) {
+                                        Ok(_) => {}
+                                        Err(e) => {
+                                            println!(
+                                                "Error connecting to user provided WiFi: {}",
+                                                e
+                                            );
+                                            success = false;
+                                        }
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                println!("Failed to retrieve user WiFi information.");
+                                success = false;
+                            }
+                        }
+                    }
+
+                    success
+                };
+
+                if result {
+                    break;
+                } else {
+                    // Get rid of any potential failed pairs beforehand.
+                    for client in clients.iter_mut() {
+                        client.user.clean().unwrap();
+                    }
+
+                    // We cannot use the old user objects, so create new clients.
+                    *clients = array::from_fn(|i| {
+                        let (camera_name, group_name) = get_names(
+                            camera,
+                            true,
+                            format!("camera_{}_name", CLIENT_TAGS[i]),
+                            format!("group_{}_name", CLIENT_TAGS[i]),
+                        );
+                        debug!("{} camera_name = {}", CLIENT_TAGS[i], camera_name);
+                        debug!("{} group_name = {}", CLIENT_TAGS[i], group_name);
+
+                        let mut user = User::new(
+                            camera_name,
+                            true,
+                            camera.get_state_dir().clone(),
+                            CLIENT_TAGS[i].to_string(),
+                        )
+                        .expect("User::new() for returned error.");
+
+                        user.save_groups_state();
+
+                        Client { user, group_name }
+                    });
+
+                    println!("Pairing error — resetting for next connection");
+                    continue;
+                }
+            }
+
+            Err(e) => {
+                eprintln!("Incoming connection error: {e}");
+                continue;
+            }
+        }
     }
 
     if input_camera_secret.is_none() {
@@ -259,14 +387,6 @@ pub fn create_camera_groups(
             "camera_{}_secret_qrcode.png",
             camera.get_name().replace(" ", "_").to_lowercase()
         ));
-    }
-
-    // FIXME: a fatal crash point here. The app thinks that pairing is finalized, but
-    // not the camera.
-
-    // Send WiFi info to the app.
-    if connect_to_wifi {
-        get_wifi_info_and_connect(&mut stream, &mut clients[CONFIG].user)?;
     }
 
     Ok(())
