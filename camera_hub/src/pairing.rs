@@ -16,7 +16,7 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::traits::Camera;
-use crate::{Client, Clients, CLIENT_TAGS, CONFIG};
+use crate::{Client, Clients, CLIENT_TAGS, CONFIG, FCM};
 use image::Luma;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::random::OpenMlsRand;
@@ -34,6 +34,9 @@ use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::{array, fs};
 use std::{thread, time::Duration};
+use std::time::{SystemTime, UNIX_EPOCH};
+use privastead_client_lib::http_client::HttpClient;
+use serde_json::{json, Value};
 
 // Used to generate random names.
 // With 16 alphanumeric characters, the probability of collision is very low.
@@ -157,21 +160,6 @@ fn create_group_and_invite(
     Ok(())
 }
 
-// TODO: Use this in FCM message to alert of pairing success
-#[allow(dead_code)]
-fn encrypt_and_send_msg(
-    stream: &mut TcpStream,
-    client: &mut User,
-    msg: String,
-    group_name: &str,
-) -> io::Result<()> {
-    let encrypted_msg = client.encrypt(&msg.into_bytes(), group_name)?;
-    write_varying_len(stream, encrypted_msg.as_slice())?;
-    client.save_groups_state();
-
-    Ok(())
-}
-
 fn decrypt_msg(client: &mut User, msg: Vec<u8>) -> io::Result<Vec<u8>> {
     let decrypted_msg = client.decrypt(msg, true)?;
     client.save_groups_state();
@@ -180,17 +168,19 @@ fn decrypt_msg(client: &mut User, msg: Vec<u8>) -> io::Result<Vec<u8>> {
 }
 
 fn request_wifi_info(stream: &mut TcpStream, client: &mut User) -> io::Result<(String, String)> {
-    let ssid_msg = read_varying_len(stream)?;
-    let ssid_bytes = decrypt_msg(client, ssid_msg)?;
-    let ssid = String::from_utf8(ssid_bytes).expect("Invalid UTF-8 for WiFi SSID");
-    let password_msg = read_varying_len(stream)?;
-    let password_bytes = decrypt_msg(client, password_msg)?;
-    let password = String::from_utf8(password_bytes).expect("Invalid UTF-8 for WiFi password");
+    // Combine into one message to reduce risk of non-blocking errors
+    let wifi_msg = read_varying_len(stream)?;
+    let wifi_bytes = decrypt_msg(client, wifi_msg)?;
 
-    Ok((ssid, password))
+    let payload_msg = String::from_utf8(wifi_bytes).expect("Invalid UTF-8 for WiFi message");
+    debug!("Recieved Wifi Payload: {payload_msg}");
+    let json: Value = serde_json::from_str(&payload_msg)?;
+
+    Ok((json["ssid"].to_string(), json["passphrase"].to_string()))
 }
 
 fn attempt_wifi_connection(ssid: String, password: String) -> io::Result<()> {
+    debug!("[Pairing] Attempting wifi connection");
     // Disable the Hotspot first
     let _ = Command::new("sh")
         .arg("-c")
@@ -202,38 +192,47 @@ fn attempt_wifi_connection(ssid: String, password: String) -> io::Result<()> {
     // Wait a bit for Hotspot to get disabled
     thread::sleep(Duration::from_secs(5));
 
-    // Connect to SSID
-    let connect_output = Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "nmcli device wifi connect \"{}\" password \"{}\" hidden yes",
-            ssid, password
-        ))
-        .output()?; // Wait for command to complete
-
-    if !connect_output.status.success() {
-        eprintln!(
-            "Connection failed:\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&connect_output.stdout),
-            String::from_utf8_lossy(&connect_output.stderr),
-        );
-
-        // Connection failed... bring the Hotspot back up to re-attempt pairing again
-        let _ = Command::new("sh")
+    for n in 1..=3 {
+        println!("[Pairing] Attempt {n} to connect to Wi-Fi '{}'", ssid);
+        // Connect to SSID
+        let connect_output = Command::new("sh")
             .arg("-c")
-            .arg("nmcli connection up id Hotspot")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .output()?; // Wait for restart
+            .arg(format!(
+                "nmcli device wifi connect \"{}\" password \"{}\"",
+                ssid, password
+            ))
+            .output()?; // Wait for command to complete
 
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "Failed to connect to Wi-Fi '{}': {}",
-                ssid,
-                String::from_utf8_lossy(&connect_output.stderr)
-            ),
-        ));
+        if !connect_output.status.success() {
+            debug!(
+                "Connection failed:\nstdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&connect_output.stdout),
+                String::from_utf8_lossy(&connect_output.stderr),
+            );
+
+            if n == 3 {
+                // Connection failed... bring the Hotspot back up to re-attempt pairing again
+                let _ = Command::new("sh")
+                    .arg("-c")
+                    .arg("nmcli connection up id Hotspot")
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .output()?; // Wait for restart
+
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!(
+                        "Failed to connect to Wi-Fi '{}': {}",
+                        ssid,
+                        String::from_utf8_lossy(&connect_output.stderr)
+                    ),
+                ));
+            }
+        } else {
+            break;
+        }
+
+        thread::sleep(Duration::from_secs(5));
     }
 
     // Set up autoconnect to SSID on reboot
@@ -266,6 +265,7 @@ pub fn create_camera_groups(
     clients: &mut Clients,
     input_camera_secret: Option<Vec<u8>>,
     connect_to_wifi: bool,
+    http_client: &HttpClient,
 ) -> io::Result<()> {
     // Ensure that two cameras don't attempt to pair at the same time (as this would introduce an error when opening two of the same port simultaneously)
     let _lock = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
@@ -287,11 +287,20 @@ pub fn create_camera_groups(
     for incoming in listener.incoming() {
         match incoming {
             Ok(mut stream) => {
-                println!("Got connection from {:?}", stream.peer_addr());
+                debug!("[Pairing] Incoming connection accepted.");
+
+                if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(10))) {
+                    debug!("[Pairing] Failed to set read timeout: {e}");
+                }
+
+                if let Err(e) = stream.set_write_timeout(Some(Duration::from_secs(10))) {
+                    debug!("[Pairing] Failed to set write timeout: {e}");
+                }
                 let result = {
                     let clients_ref = &mut *clients;
                     let mut success = true;
 
+                    debug!("[Pairing] Before pairing");
                     for client in clients_ref.iter_mut() {
                         match pair_with_app(&mut stream, client.user.key_packages(), secret.clone())
                         {
@@ -299,13 +308,13 @@ pub fn create_camera_groups(
                                 if let Err(e) =
                                     create_group_and_invite(&mut stream, client, app_key_packages)
                                 {
-                                    eprintln!("Failed to create group: {e}");
+                                    debug!("[Pairing] Failed to create group: {e}");
                                     success = false;
                                     break;
                                 }
                             }
                             Err(e) => {
-                                eprintln!("Pairing failed: {e}");
+                                debug!("[Pairing] Pairing failed: {e}");
                                 success = false;
                                 break;
                             }
@@ -313,14 +322,30 @@ pub fn create_camera_groups(
                     }
 
                     if connect_to_wifi && success {
+                        debug!("[Pairing] Before request wifi info");
                         match request_wifi_info(&mut stream, &mut clients[CONFIG].user) {
                             Ok((ssid, password)) => {
                                 if connect_to_wifi {
                                     match attempt_wifi_connection(ssid, password) {
-                                        Ok(_) => {}
+                                        Ok(_) => {
+                                            debug!("[Pairing] Sending the successful WiFi FCM notification.");
+                                            let payload = json!({"type": "wifi_success","timestamp": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()});
+                                            let notification_msg = clients[FCM].user.encrypt(
+                                                &serde_json::to_vec(&payload)?,
+                                                &clients[FCM].group_name,
+                                            )?;
+                                            clients[FCM].user.save_groups_state();
+                                            match http_client.send_fcm_notification(notification_msg) {
+                                                Ok(_) => {}
+                                                Err(e) => {
+                                                    error!("[Pairing] Failed to send FCM notification ({})", e);
+                                                    success = false;
+                                                }
+                                            }
+                                        }
                                         Err(e) => {
-                                            println!(
-                                                "Error connecting to user provided WiFi: {}",
+                                            debug!(
+                                                "[Pairing] Error connecting to user provided WiFi: {}",
                                                 e
                                             );
                                             success = false;
@@ -328,8 +353,8 @@ pub fn create_camera_groups(
                                     }
                                 }
                             }
-                            Err(_) => {
-                                println!("Failed to retrieve user WiFi information.");
+                            Err(e) => {
+                                debug!("[Pairing] Failed to retrieve user WiFi information: {}", e);
                                 success = false;
                             }
                         }
@@ -363,20 +388,20 @@ pub fn create_camera_groups(
                             camera.get_state_dir().clone(),
                             CLIENT_TAGS[i].to_string(),
                         )
-                        .expect("User::new() for returned error.");
+                            .expect("User::new() for returned error.");
 
                         user.save_groups_state();
 
                         Client { user, group_name }
                     });
 
-                    println!("Pairing error — resetting for next connection");
+                    debug!("[Pairing] Error — resetting for next connection");
                     continue;
                 }
             }
 
             Err(e) => {
-                eprintln!("Incoming connection error: {e}");
+                debug!("[Pairing] Incoming connection error: {e}");
                 continue;
             }
         }

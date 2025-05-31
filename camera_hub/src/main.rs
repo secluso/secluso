@@ -514,6 +514,7 @@ fn core(
             &mut clients,
             input_camera_secret,
             connect_to_wifi,
+            http_client
         )?;
 
         File::create(camera.get_state_dir() + "/first_time_done").expect("Could not create file");
