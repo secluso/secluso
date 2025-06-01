@@ -74,11 +74,11 @@ fn perform_pairing_handshake(
     stream: &mut TcpStream,
     camera_key_packages: KeyPackages,
     camera_secret: [u8; pairing::NUM_SECRET_BYTES],
-) -> io::Result<KeyPackages> {
+) -> anyhow::Result<KeyPackages> {
     let pairing = pairing::Camera::new(camera_secret, camera_key_packages);
 
     let app_msg = read_varying_len(stream)?;
-    let (app_key_packages, camera_msg) = pairing.process_app_msg_and_generate_msg_to_app(app_msg);
+    let (app_key_packages, camera_msg) = pairing.process_app_msg_and_generate_msg_to_app(app_msg)?;
     write_varying_len(stream, &camera_msg)?;
 
     Ok(app_key_packages)
@@ -120,7 +120,7 @@ fn pair_with_app(
     stream: &mut TcpStream,
     camera_key_packages: KeyPackages,
     input_camera_secret: Vec<u8>,
-) -> io::Result<KeyPackages> {
+) -> anyhow::Result<KeyPackages> {
     if input_camera_secret.len() != pairing::NUM_SECRET_BYTES {
         panic!("Invalid number of bytes in secret!");
     }
@@ -129,7 +129,6 @@ fn pair_with_app(
     camera_secret.copy_from_slice(&input_camera_secret[..]);
 
     let app_key_packages = perform_pairing_handshake(stream, camera_key_packages, camera_secret);
-
     app_key_packages
 }
 

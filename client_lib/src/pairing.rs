@@ -19,7 +19,7 @@ use crate::user::KeyPackages;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha3::Sha3_512;
-use std::io;
+use anyhow::{Context};
 
 // Key size for HMAC-Sha3-512
 // Same key size used here: https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.hmacsha3_512.-ctor?view=net-9.0
@@ -63,12 +63,12 @@ fn get_hmac(secret: &[u8; NUM_SECRET_BYTES], msg: &[u8]) -> Vec<u8> {
     code_bytes[..].to_vec()
 }
 
-fn verify_hmac(secret: &[u8; NUM_SECRET_BYTES], msg: &[u8], code_bytes: &[u8]) -> io::Result<()> {
+fn verify_hmac(secret: &[u8; NUM_SECRET_BYTES], msg: &[u8], code_bytes: &[u8]) -> anyhow::Result<()> {
     let mut mac = HmacType::new_from_slice(secret).unwrap();
     mac.update(msg);
 
     // `verify_slice` will return `Ok(())` if code is correct, `Err(MacError)` otherwise
-    mac.verify_slice(code_bytes).unwrap();
+    mac.verify_slice(code_bytes)?;
 
     Ok(())
 }
@@ -103,21 +103,21 @@ impl App {
         bincode::serialize(&msg).unwrap()
     }
 
-    pub fn process_camera_msg(&self, camera_msg_vec: Vec<u8>) -> KeyPackages {
-        let camera_msg: PairingMsg = bincode::deserialize(&camera_msg_vec).unwrap();
+    pub fn process_camera_msg(&self, camera_msg_vec: Vec<u8>) -> anyhow::Result<KeyPackages> {
+        let camera_msg: PairingMsg = bincode::deserialize(&camera_msg_vec)?;
 
         // Check the msg tag
         verify_hmac(&self.secret, &camera_msg.content_vec, &camera_msg.tag)
-            .expect("Received invalid pairing message!");
+            .context("Received invalid pairing message")?;
 
         let camera_msg_content: PairingMsgContent =
-            bincode::deserialize(&camera_msg.content_vec).unwrap();
+            bincode::deserialize(&camera_msg.content_vec)?;
         // Check the message type
         if camera_msg_content.msg_type != PairingMsgType::CameraToAppMsg {
             panic!("Received invalid pairing message!");
         }
 
-        camera_msg_content.key_packages
+        Ok(camera_msg_content.key_packages)
     }
 }
 
@@ -138,12 +138,11 @@ impl Camera {
     pub fn process_app_msg_and_generate_msg_to_app(
         &self,
         app_msg_vec: Vec<u8>,
-    ) -> (KeyPackages, Vec<u8>) {
+    ) -> anyhow::Result<(KeyPackages, Vec<u8>)> {
         let app_msg: PairingMsg = bincode::deserialize(&app_msg_vec).unwrap();
 
         // Check the msg tag
-        verify_hmac(&self.secret, &app_msg.content_vec, &app_msg.tag)
-            .expect("Received invalid pairing message!");
+        verify_hmac(&self.secret, &app_msg.content_vec, &app_msg.tag)?;
 
         let app_msg_content: PairingMsgContent =
             bincode::deserialize(&app_msg.content_vec).unwrap();
@@ -168,6 +167,6 @@ impl Camera {
 
         let resp_msg_vec = bincode::serialize(&resp_msg).unwrap();
 
-        (app_msg_content.key_packages, resp_msg_vec)
+        Ok((app_msg_content.key_packages, resp_msg_vec))
     }
 }
