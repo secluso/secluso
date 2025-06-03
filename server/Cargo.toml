@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
 
 [dependencies]
-rocket = "0.5.1"
+rocket = { version="0.5.1" , features= ["json"] }
 base64 = "0.22.1"
 privastead-client-server-lib = { path = "../client_server_lib" }
 serde = "1.0"

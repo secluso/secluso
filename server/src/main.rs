@@ -27,6 +27,7 @@ use rocket::data::{Data, ToByteUnit};
 use rocket::response::content::RawText;
 use rocket::tokio::fs::{self, File};
 use rocket::tokio::task;
+use rocket::serde::json::Json;
 use rocket::tokio::sync::broadcast::{channel, Sender};
 use rocket::response::stream::{Event, EventStream};
 use rocket::Shutdown;
@@ -34,11 +35,15 @@ use rocket::tokio::select;
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use std::sync::Arc;
+use rocket::serde::Deserialize;
+use serde_json::Number;
 
 mod auth;
+
 use crate::auth::{initialize_users, BasicAuth};
 
 mod fcm;
+
 use crate::fcm::send_notification;
 
 // Per-user livestream start state
@@ -102,6 +107,47 @@ async fn upload(
     Ok("ok".to_string())
 }
 
+
+// We use JSON for expandability and easy parsing
+
+#[derive(Deserialize)]
+struct MotionPair {
+    group_name: String,
+    epoch_to_check: Number,
+}
+
+#[derive(Deserialize)]
+struct MotionPairs {
+    group_names: Vec<MotionPair>,
+}
+
+#[post("/bulkCheck", format = "application/json", data = "<data>")]
+async fn bulk_group_check(
+    data: Json<MotionPairs>,
+    auth: BasicAuth,
+) -> RawText<String> {
+    let root = format!("./{}/{}", "data", auth.username);
+    let pairs_wrapper: MotionPairs = data.into_inner();
+    let pair_list = pairs_wrapper.group_names;
+
+    let mut valid_pairs = Vec::new();
+
+    for pair in pair_list {
+        let group_name = pair.group_name;
+        let epoch_to_check = pair.epoch_to_check;
+
+        let camera_path = Path::new(&root).join(group_name.clone());
+        let filepath = Path::new(&camera_path).join(epoch_to_check.to_string());
+        if let Ok(val) = Path::try_exists(&filepath) {
+            if val {
+                valid_pairs.push(group_name);
+            }
+        }
+    }
+
+    RawText(valid_pairs.iter().map(|x| x.to_string() + ",").collect::<String>())
+}
+
 #[get("/<camera>/<filename>")]
 async fn retrieve(
     camera: &str,
@@ -139,7 +185,7 @@ async fn delete_camera(
 #[post("/fcm_token", data = "<data>")]
 async fn upload_fcm_token(
     data: Data<'_>,
-    auth: BasicAuth
+    auth: BasicAuth,
 ) -> io::Result<String> {
     let root = format!("./{}/{}", "data", auth.username);
     let token_path = Path::new(&root).join("fcm_token");
@@ -167,7 +213,15 @@ async fn send_fcm_notification(
     let notification_msg = data.open(8.kibibytes()).into_bytes().await?;
     task::block_in_place(|| {
         // FIXME: caller won't know if the notification failed to send
-        let _ = send_notification(token, notification_msg.to_vec());
+
+        match send_notification(token, notification_msg.to_vec()) {
+            Ok(_) => {
+                debug!("Notification sent successfully.");
+            }
+            Err(e) => {
+                debug!("Failed to send notification: {}", e);
+            }
+        }
     });
     Ok("ok".to_string())
 }
@@ -346,7 +400,7 @@ async fn livestream_end(camera: &str, auth: BasicAuth) -> io::Result<()> {
 #[launch]
 fn rocket() -> _ {
     let all_livestream_start_state: AllLiveStreamStartState = Arc::new(DashMap::new());
-    
+
     let config = rocket::Config {
         port: 8080,
         address: "0.0.0.0".parse().unwrap(),
@@ -360,6 +414,7 @@ fn rocket() -> _ {
             "/",
             routes![
                 upload,
+                bulk_group_check,
                 retrieve,
                 delete_file,
                 delete_camera,
