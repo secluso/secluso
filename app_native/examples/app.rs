@@ -15,7 +15,7 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use privastead_android_app_native::core::{
+use privastead_android_app_native::{
     add_camera, decrypt_video, deregister, get_livestream_group_name, get_motion_group_name,
     initialize, livestream_decrypt, livestream_update, Clients,
 };

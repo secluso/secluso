@@ -1,5 +1,5 @@
 [package]
-name = "privastead-android-app-native"
+name = "privastead-app-native"
 version = "0.1.0"
 edition = "2021"
 authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
@@ -10,16 +10,14 @@ privastead-client-server-lib = { path = "../client_server_lib" }
 bincode = "1.2.1"
 rand="0.8"
 lazy_static = "1.4"
+serde_json="1.0.140"
+log = { version="0.4.27", features=["kv"] }
+anyhow = "^1.0.64" # Locked to this version due to flutter_rust_bridge usage in app
+flutter_rust_bridge = "=2.10.0"
 
 [features]
 default = []
 for-example = ["privastead-client-lib/http_client"]
-
-[lib]
-crate-type = ["dylib", "rlib"]
-
-[target.'cfg(target_os="android")'.dependencies]
-jni = { version = "0.20", default-features = false }
 
 [[example]]
 name = "app"

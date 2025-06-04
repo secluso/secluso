@@ -1,46 +1,20 @@
-//! Privastead app native code
-//!
-//! Copyright (C) 2025  Ardalan Amiri Sani
-//!
-//! This program is free software: you can redistribute it and/or modify
-//! it under the terms of the GNU General Public License as published by
-//! the Free Software Foundation, either version 3 of the License, or
-//! (at your option) any later version.
-//!
-//! This program is distributed in the hope that it will be useful,
-//! but WITHOUT ANY WARRANTY; without even the implied warranty of
-//! MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//! GNU General Public License for more details.
-//!
-//! You should have received a copy of the GNU General Public License
-//! along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
 use rand::Rng;
 use std::fs;
 use std::fs::File;
 use std::io;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
+use std::net::TcpStream;
 use std::str::FromStr;
-use std::sync::MutexGuard;
+use std::str;
 use std::array;
+
+use log::info;
 
 use privastead_client_lib::pairing;
 use privastead_client_lib::user::{Contact, KeyPackages, User};
 use privastead_client_lib::video_net_info::{VideoNetInfo, VIDEONETINFO_SANITY};
-
-#[cfg(target_os = "android")]
-use crate::logger::{AndroidLogger, Logger};
-
-#[cfg(not(target_os = "android"))]
-pub struct AndroidLogger {}
-
-#[cfg(not(target_os = "android"))]
-impl AndroidLogger {
-    fn d<T>(&self, _text: T) -> io::Result<()> {
-        Ok(())
-    }
-}
+use serde_json::json;
 
 // Used to generate random names.
 // With 16 alphanumeric characters, the probability of collision is very low.
@@ -62,10 +36,12 @@ const LIVESTREAM: usize = 1;
 const FCM: usize = 2;
 const CONFIG: usize = 3;
 
+#[flutter_rust_bridge::frb]
 pub struct Clients {
     users: [User; NUM_CLIENTS],
 }
 
+#[flutter_rust_bridge::frb]
 impl Clients {
     pub fn new(
         first_time: bool,
@@ -91,54 +67,6 @@ impl Clients {
         Ok(Self {
             users,
         })
-        
-        /*
-        let app_livestream_name = get_app_name(
-            first_time,
-            file_dir.clone(),
-            "app_livestream_name".to_string(),
-        );
-        let app_fcm_name = get_app_name(first_time, file_dir.clone(), "app_fcm_name".to_string());
-        let app_config_name = get_app_name(first_time, file_dir.clone(), "app_config_name".to_string());
-
-        
-
-        
-
-        let mut client_livestream = User::new(
-            app_livestream_name,
-            first_time,
-            file_dir.clone(),
-            "livestream".to_string(),
-        )?;
-
-        client_livestream.save_groups_state();
-
-        let mut client_fcm = User::new(
-            app_fcm_name,
-            first_time,
-            file_dir.clone(),
-            "fcm".to_string(),
-        )?;
-
-        client_fcm.save_groups_state();
-
-        let mut client_config = User::new(
-            app_config_name,
-            first_time,
-            file_dir.clone(),
-            "config".to_string(),
-        )?;
-
-        client_config.save_groups_state();
-
-        Ok(Self {
-            client_motion,
-            client_livestream,
-            client_fcm,
-            client_config,
-        })
-        */
     }
 }
 
@@ -196,12 +124,12 @@ fn perform_pairing_handshake(
     stream: &mut TcpStream,
     app_key_packages: KeyPackages,
     secret: [u8; pairing::NUM_SECRET_BYTES],
-) -> io::Result<KeyPackages> {
+) -> anyhow::Result<KeyPackages> {
     let pairing = pairing::App::new(secret, app_key_packages);
     let app_msg = pairing.generate_msg_to_camera();
     write_varying_len(stream, &app_msg)?;
     let camera_msg = read_varying_len(stream)?;
-    let camera_key_packages = pairing.process_camera_msg(camera_msg);
+    let camera_key_packages = pairing.process_camera_msg(camera_msg)?;
 
     Ok(camera_key_packages)
 }
@@ -213,21 +141,34 @@ fn send_wifi_info(
     wifi_ssid: String,
     wifi_password: String,
 ) -> io::Result<()> {
-    let wifi_ssid_msg = client.encrypt(&wifi_ssid.into_bytes(), &group_name)?;
-    write_varying_len(stream, &wifi_ssid_msg)?;
-    let wifi_password_msg = client.encrypt(&wifi_password.into_bytes(), &group_name)?;
-    write_varying_len(stream, &wifi_password_msg)?;
+    let wifi_msg = json!({
+        "ssid": wifi_ssid,
+        "passphrase": wifi_password
+    });
+    info!("Sending wifi info {}", wifi_msg);
+    let wifi_info_msg = match client.encrypt(&serde_json::to_vec(&wifi_msg)?, &group_name) {
+        Ok(msg) => msg,
+        Err(e) => {
+            info!("Failed to encrypt SSID: {e}");
+            return Err(e);
+        }
+    };
+    info!("Before Wifi Msg Sent");
+    write_varying_len(stream, &wifi_info_msg)?;
+    info!("After Wifi Msg Sent");
+
     client.save_groups_state();
 
     Ok(())
 }
 
+#[flutter_rust_bridge::frb]
 fn pair_with_camera(
     stream: &mut TcpStream,
     camera_name: &str,
     users: &mut [User; NUM_CLIENTS],
     secret: [u8; pairing::NUM_SECRET_BYTES],
-) -> io::Result<()> {
+) -> anyhow::Result<()> {
     for mut user in users {
         let app_key_packages = user.key_packages();
 
@@ -246,86 +187,6 @@ fn pair_with_camera(
         )?;
     }
 
-    /*
-    clients.as_mut().unwrap().client_motion.key_packages(),
-        clients.as_mut().unwrap().client_livestream.key_packages(),
-        clients.as_mut().unwrap().client_fcm.key_packages(),
-        clients.as_mut().unwrap().client_config.key_packages()
-
-    let camera_motion_key_packages =
-        perform_pairing_handshake(stream, app_motion_key_packages, secret)?;
-    let camera_motion_welcome_msg = read_varying_len(stream)?;
-
-    let camera_livestream_key_packages =
-        perform_pairing_handshake(stream, app_livestream_key_packages, secret)?;
-    let camera_livestream_welcome_msg = read_varying_len(stream)?;
-
-    let camera_fcm_key_packages = perform_pairing_handshake(stream, app_fcm_key_packages, secret)?;
-    let camera_fcm_welcome_msg = read_varying_len(stream)?;
-
-    let camera_config_key_packages =
-        perform_pairing_handshake(stream, app_config_key_packages, secret)?;
-    let camera_config_welcome_msg = read_varying_len(stream)?;
-
-    let motion_contact = clients
-        .as_mut()
-        .unwrap()
-        .client_motion
-        .add_contact(camera_name.clone(), camera_motion_key_packages)?;
-
-    process_welcome_message(
-        &mut clients.as_mut().unwrap().client_motion,
-        motion_contact,
-        camera_motion_welcome_msg,
-    )?;
-
-    let livestream_contact = clients
-        .as_mut()
-        .unwrap()
-        .client_livestream
-        .add_contact(camera_name.clone(), camera_livestream_key_packages)?;
-
-    process_welcome_message(
-        &mut clients.as_mut().unwrap().client_livestream,
-        livestream_contact,
-        camera_livestream_welcome_msg,
-    )?;
-
-    let fcm_contact = clients
-        .as_mut()
-        .unwrap()
-        .client_fcm
-        .add_contact(camera_name.clone(), camera_fcm_key_packages)?;
-
-    process_welcome_message(
-        &mut clients.as_mut().unwrap().client_fcm,
-        fcm_contact,
-        camera_fcm_welcome_msg,
-    )?;
-
-    let config_contact = clients
-        .as_mut()
-        .unwrap()
-        .client_config
-        .add_contact(camera_name.clone(), camera_config_key_packages)?;
-
-    process_welcome_message(
-        &mut clients.as_mut().unwrap().client_config,
-        config_contact,
-        camera_config_welcome_msg,
-    )?;
-
-    Ok((
-        camera_motion_key_packages,
-        camera_motion_welcome_msg,
-        camera_livestream_key_packages,
-        camera_livestream_welcome_msg,
-        camera_fcm_key_packages,
-        camera_fcm_welcome_msg,
-        camera_config_key_packages,
-        camera_config_welcome_msg,
-    ))
-    */
     Ok(())
 }
 
@@ -340,202 +201,102 @@ fn process_welcome_message(
     Ok(())
 }
 
-pub(crate) fn my_log<T: ToString + std::fmt::Display>(logger: Option<&AndroidLogger>, log: T) {
-    if logger.is_some() {
-        logger.unwrap().d(log.to_string()).expect("Failed to log");
-    } else {
-        println!("{}", log);
-    }
-}
-
-pub fn initialize(
-    mut clients: MutexGuard<'_, Option<Box<Clients>>>,
-    file_dir: String,
-    first_time: bool,
-) -> io::Result<()> {
-    *clients = Some(Box::new(Clients::new(
-        first_time,
-        file_dir,
-    )?));
-
-    Ok(())
-}
-
-pub fn deregister(
-    mut clients: MutexGuard<'_, Option<Box<Clients>>>,
-    logger: Option<&AndroidLogger>,
-) {
-    if clients.is_none() {
-        my_log(logger, "Error: clients not initialized!");
-        return;
-    }
-
-    let users = &mut clients.as_mut().unwrap().users;
-
-    for i in 0..NUM_CLIENTS {
-        let file_dir = users[i].get_file_dir();
-
-        match users[i].clean() {
-            Ok(_) => {}
-            Err(e) => {
-                my_log(
-                    logger,
-                    format!("Error: Cleaning client_{} failed: {e}", CLIENT_TAGS[i]),
-                );
-            }
-        }
-
-        let _ = fs::remove_file(format!("{}/app_{}_name", file_dir, CLIENT_TAGS[i]));
-    }
-
-    /*
-    let file_dir = clients.as_mut().unwrap().users[MOTION].get_file_dir();
-
-    match clients.as_mut().unwrap().users[MOTION].deregister() {
-        Ok(_) => {}
-        Err(e) => {
-            my_log(
-                logger,
-                format!("Error: Deregistering client_motion failed: {e}"),
-            );
-        }
-    }
-
-    match clients.as_mut().unwrap().client_livestream.deregister() {
-        Ok(_) => {}
-        Err(e) => {
-            my_log(
-                logger,
-                format!("Error: Deregistering client_livestream failed: {e}"),
-            );
-        }
-    }
-
-    match clients.as_mut().unwrap().client_fcm.deregister() {
-        Ok(_) => {}
-        Err(e) => {
-            my_log(
-                logger,
-                format!("Error: Deregistering client_fcm failed: {e}"),
-            );
-        }
-    }
-
-    match clients.as_mut().unwrap().client_config.deregister() {
-        Ok(_) => {}
-        Err(e) => {
-            my_log(
-                logger,
-                format!("Error: Deregistering client_config failed: {e}"),
-            );
-        }
-    }
-
-    // FIXME: We currently support one camera only. Therefore, here, we delete all state files.
-    let _ = fs::remove_file(file_dir.clone() + "/app_motion_name");
-    let _ = fs::remove_file(file_dir.clone() + "/app_livestream_name");
-    let _ = fs::remove_file(file_dir.clone() + "/app_fcm_name");
-    let _ = fs::remove_file(file_dir.clone() + "/app_config_name");
-    */
-
-    *clients = None;
-}
-
+#[flutter_rust_bridge::frb]
 pub fn add_camera(
-    mut clients: MutexGuard<'_, Option<Box<Clients>>>,
+    clients_reg: &mut Option<Box<Clients>>,
     camera_name: String,
     camera_ip: String,
     secret_vec: Vec<u8>,
     standalone_camera: bool,
     wifi_ssid: String,
     wifi_password: String,
-) -> io::Result<()> {
-    if clients.is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error: clients not initialized!"),
-        ));
+) -> bool {
+    info!("Rust: add_camera method triggered");
+    if clients_reg.is_none() {
+        info!("Error: clients not initialized!");
+        return false;
     }
+
+    let clients = clients_reg.as_mut().unwrap();
 
     //Make sure the camera_name is not used before for another camera.
-    for user in &clients.as_mut().unwrap().users {
+    for user in &clients.as_mut().users {
         if user.get_group_name(&camera_name).is_ok() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Error: camera_name used before!"),
-            ));
+            info!("Error: camera_name used before!");
+            return false;
         }
     }
-    /*
-    if clients
-        .as_mut()
-        .unwrap()
-        .client_motion
-        .get_group_name(camera_name.clone())
-        .is_ok()
-        || clients
-            .as_mut()
-            .unwrap()
-            .client_livestream
-            .get_group_name(camera_name.clone())
-            .is_ok()
-        || clients
-            .as_mut()
-            .unwrap()
-            .client_fcm
-            .get_group_name(camera_name.clone())
-            .is_ok()
-        || clients
-            .as_mut()
-            .unwrap()
-            .client_config
-            .get_group_name(camera_name.clone())
-            .is_ok()
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error: camera_name used before!"),
-        ));
-    }
-    */
 
     if secret_vec.len() != pairing::NUM_SECRET_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error: incorrect number of bytes in secret!"),
-        ));
+        info!("Error: incorrect number of bytes in secret!");
+        return false;
     }
+
     let mut camera_secret = [0u8; pairing::NUM_SECRET_BYTES];
     camera_secret.copy_from_slice(&secret_vec[..]);
 
+    // Connect to the camera
     //FIXME: port number hardcoded.
-    let addr = SocketAddr::from_str(&(camera_ip + ":12348")).expect("Invalid IP address/port");
-    let mut stream = TcpStream::connect(&addr)?;
+    let addr = match SocketAddr::from_str(&(camera_ip + ":12348")) {
+        Ok(a) => a,
+        Err(e) => {
+            info!("Error: invalid IP address: {e}");
+            return false;
+        }
+    };
 
-    pair_with_camera(
+    let mut stream = match TcpStream::connect(&addr) {
+        Ok(s) => s,
+        Err(e) => {
+            info!("Error: {e}");
+            return false;
+        }
+    };
+
+    // Perform pairing
+    if let Err(e) = pair_with_camera(
         &mut stream,
         &camera_name,
-        &mut clients.as_mut().unwrap().users,
+        &mut clients.as_mut().users,
         camera_secret,
-    )?;    
+    ) {
+        info!("Error: {e}");
+        return false;
+    }
 
+    // Send Wi-Fi info
     if standalone_camera {
         let group_name = clients
-            .as_mut()
-            .unwrap()
             .users[CONFIG]
             .get_group_name(&camera_name)
             .unwrap();
-        send_wifi_info(
+        if let Err(e) = send_wifi_info(
             &mut stream,
-            &mut clients.as_mut().unwrap().users[CONFIG],
+            &mut clients.users[CONFIG],
             group_name,
             wifi_ssid,
             wifi_password,
-        )?;
+        ) {
+            info!("Error: {e}");
+            return false;
+        }
     }
 
-    Ok(())
+    true
+}
+
+pub fn initialize(
+    clients: &mut Option<Box<Clients>>,
+    file_dir: String,
+    first_time: bool,
+) -> io::Result<bool> {
+    info!("Initialize start");
+    *clients = Some(Box::new(Clients::new(
+        first_time,
+        file_dir,
+    )?));
+
+    Ok(true)
 }
 
 fn read_next_msg_from_file(file: &mut File) -> io::Result<Vec<u8>> {
@@ -563,7 +324,7 @@ fn read_next_msg_from_file(file: &mut File) -> io::Result<Vec<u8>> {
 }
 
 pub fn decrypt_video(
-    mut clients: MutexGuard<'_, Option<Box<Clients>>>,
+    clients: &mut Option<Box<Clients>>,
     encrypted_filename: String,
 ) -> io::Result<String> {
     if clients.is_none() {
@@ -574,7 +335,8 @@ pub fn decrypt_video(
     }
 
     let file_dir = clients.as_mut().unwrap().users[MOTION].get_file_dir();
-    let enc_pathname: String = file_dir.to_owned() + "/" + &encrypted_filename;
+    info!("File dir: {}", file_dir);
+    let enc_pathname: String = encrypted_filename;
 
     let mut enc_file = fs::File::open(enc_pathname).expect("Could not open encrypted file");
 
@@ -618,7 +380,6 @@ pub fn decrypt_video(
 
     for expected_chunk_number in 0..info.num_msg {
         let enc_msg = read_next_msg_from_file(&mut enc_file)?;
-        
         let dec_msg = clients
             .as_mut()
             .unwrap()
@@ -656,8 +417,8 @@ pub fn decrypt_video(
     Ok(dec_filename)
 }
 
-pub fn decrypt_fcm_timestamp(
-    mut clients: MutexGuard<'_, Option<Box<Clients>>>,
+pub fn decrypt_fcm_message(
+    clients: &mut Option<Box<Clients>>,
     message: Vec<u8>,
 ) -> io::Result<String> {
     if clients.is_none() {
@@ -673,6 +434,13 @@ pub fn decrypt_fcm_timestamp(
         .users[FCM]
         .decrypt(message, true)?;
     clients.as_mut().unwrap().users[FCM].save_groups_state();
+
+    // New JSON structure. Ensure valid JSON string
+    if let Ok(message) = str::from_utf8(&dec_msg_bytes) {
+        if serde_json::from_str::<serde_json::Value>(message).is_ok() {
+            return Ok(message.to_string());
+        }
+    }
 
     let response = if dec_msg_bytes.len() == 8 {
         let timestamp: u64 = bincode::deserialize(&dec_msg_bytes)
@@ -696,7 +464,7 @@ pub fn decrypt_fcm_timestamp(
 }
 
 pub fn get_motion_group_name(
-    mut clients: MutexGuard<'_, Option<Box<Clients>>>,
+    clients: &mut Option<Box<Clients>>,
     camera_name: String,
 ) -> io::Result<String> {
     if clients.is_none() {
@@ -714,7 +482,7 @@ pub fn get_motion_group_name(
 }
 
 pub fn get_livestream_group_name(
-    mut clients: MutexGuard<'_, Option<Box<Clients>>>,
+    clients: &mut Option<Box<Clients>>,
     camera_name: String,
 ) -> io::Result<String> {
     if clients.is_none() {
@@ -732,7 +500,7 @@ pub fn get_livestream_group_name(
 }
 
 pub fn livestream_decrypt(
-    mut clients: MutexGuard<'_, Option<Box<Clients>>>,
+    clients: &mut Option<Box<Clients>>,
     enc_data: Vec<u8>,
     expected_chunk_number: u64,
 ) -> io::Result<Vec<u8>> {
@@ -774,7 +542,7 @@ pub fn livestream_decrypt(
 }
 
 pub fn livestream_update(
-    mut clients: MutexGuard<'_, Option<Box<Clients>>>,
+    clients: &mut Option<Box<Clients>>,
     updates_msg: Vec<u8>,
 ) -> io::Result<()> {
     if clients.is_none() {
@@ -807,4 +575,26 @@ pub fn livestream_update(
         .save_groups_state();
 
     Ok(())
+}
+
+pub fn deregister(clients: &mut Option<Box<Clients>>) {
+    if clients.is_none() {
+        info!("Error: clients not initialized!");
+        return;
+    }
+
+    let users = &mut clients.as_mut().unwrap().users;
+
+    for i in 0..NUM_CLIENTS {
+        let file_dir = users[i].get_file_dir();
+
+        if let Err(e) = users[i].clean() {
+            info!("Error: Cleaning client_{} failed: {e}", CLIENT_TAGS[i]);
+        }
+
+        let _ = fs::remove_file(format!("{}/app_{}_name", file_dir, CLIENT_TAGS[i]));
+    }
+
+
+    *clients = None;
 }
