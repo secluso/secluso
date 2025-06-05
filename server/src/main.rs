@@ -39,11 +39,11 @@ use rocket::serde::Deserialize;
 use serde_json::Number;
 
 mod auth;
+mod fcm;
+mod security;
 
 use crate::auth::{initialize_users, BasicAuth};
-
-mod fcm;
-
+use crate::security::{check_path_sandboxed};
 use crate::fcm::send_notification;
 
 // Per-user livestream start state
@@ -51,6 +51,19 @@ use crate::fcm::send_notification;
 struct LivestreamStartState {
     sender: Sender<()>,
     cameras_started: Arc<DashMap<String, String>>,
+}
+
+// Bulk check JSON structures
+
+#[derive(Deserialize)]
+struct MotionPair {
+    group_name: String,
+    epoch_to_check: Number,
+}
+
+#[derive(Deserialize)]
+struct MotionPairs {
+    group_names: Vec<MotionPair>,
 }
 
 type AllLiveStreamStartState = Arc<DashMap<String, LivestreamStartState>>;
@@ -81,8 +94,8 @@ async fn upload(
     data: Data<'_>,
     auth: BasicAuth,
 ) -> io::Result<String> {
-    let root = format!("./{}/{}", "data", auth.username);
-    let camera_path = Path::new(&root).join(camera);
+    let root = Path::new("data").join(&auth.username);
+    let camera_path = root.join(camera);
     if !camera_path.exists() {
         fs::create_dir_all(&camera_path).await?;
     }
@@ -108,25 +121,12 @@ async fn upload(
 }
 
 
-// We use JSON for expandability and easy parsing
-
-#[derive(Deserialize)]
-struct MotionPair {
-    group_name: String,
-    epoch_to_check: Number,
-}
-
-#[derive(Deserialize)]
-struct MotionPairs {
-    group_names: Vec<MotionPair>,
-}
-
 #[post("/bulkCheck", format = "application/json", data = "<data>")]
 async fn bulk_group_check(
     data: Json<MotionPairs>,
     auth: BasicAuth,
 ) -> RawText<String> {
-    let root = format!("./{}/{}", "data", auth.username);
+    let root = Path::new("data").join(&auth.username);
     let pairs_wrapper: MotionPairs = data.into_inner();
     let pair_list = pairs_wrapper.group_names;
 
@@ -136,12 +136,15 @@ async fn bulk_group_check(
         let group_name = pair.group_name;
         let epoch_to_check = pair.epoch_to_check;
 
-        let camera_path = Path::new(&root).join(group_name.clone());
-        let filepath = Path::new(&camera_path).join(epoch_to_check.to_string());
-        if let Ok(val) = Path::try_exists(&filepath) {
-            if val {
-                valid_pairs.push(group_name);
-            }
+        let camera_path = root.join(&group_name);
+        let filepath = camera_path.join(epoch_to_check.to_string());
+
+        if check_path_sandboxed(&root, &filepath).is_err() {
+            continue;
+        }
+
+        if let Ok(true) = Path::try_exists(&filepath) {
+            valid_pairs.push(group_name);
         }
     }
 
@@ -154,9 +157,14 @@ async fn retrieve(
     filename: &str,
     auth: BasicAuth,
 ) -> Option<RawText<File>> {
-    let root = format!("./{}/{}", "data", auth.username);
-    let camera_path = Path::new(&root).join(camera);
-    let filepath = Path::new(&camera_path).join(filename);
+    let root = Path::new("data").join(&auth.username);
+    let camera_path = root.join(camera);
+    let filepath = camera_path.join(filename);
+
+    if check_path_sandboxed(&root, &filepath).is_err() {
+        return None;
+    }
+
     File::open(filepath).await.map(RawText).ok()
 }
 
@@ -166,9 +174,14 @@ async fn delete_file(
     filename: &str,
     auth: BasicAuth,
 ) -> Option<()> {
-    let root = format!("./{}/{}", "data", auth.username);
-    let camera_path = Path::new(&root).join(camera);
-    let filepath = Path::new(&camera_path).join(filename);
+    let root = Path::new("data").join(&auth.username);
+    let camera_path = root.join(camera);
+    let filepath = camera_path.join(filename);
+
+    if check_path_sandboxed(&root, &filepath).is_err() {
+        return None;
+    }
+
     fs::remove_file(filepath).await.ok()
 }
 
@@ -177,8 +190,11 @@ async fn delete_camera(
     camera: &str,
     auth: BasicAuth,
 ) -> io::Result<()> {
-    let root = format!("./{}/{}", "data", auth.username);
-    let camera_path = Path::new(&root).join(camera);
+    let root = Path::new("data").join(&auth.username);
+    let camera_path = root.join(camera);
+
+    check_path_sandboxed(&root, &camera_path)?;
+
     fs::remove_dir_all(camera_path).await
 }
 
@@ -187,8 +203,11 @@ async fn upload_fcm_token(
     data: Data<'_>,
     auth: BasicAuth,
 ) -> io::Result<String> {
-    let root = format!("./{}/{}", "data", auth.username);
-    let token_path = Path::new(&root).join("fcm_token");
+    let root = Path::new("data").join(&auth.username);
+    let token_path = root.join("fcm_token");
+
+    check_path_sandboxed(&Path::new("data"), &token_path)?;
+
     // FIXME: hardcoded max size
     data.open(5.kibibytes()).into_file(token_path).await?;
     Ok("ok".to_string())
@@ -199,8 +218,8 @@ async fn send_fcm_notification(
     data: Data<'_>,
     auth: BasicAuth,
 ) -> io::Result<String> {
-    let root = format!("./{}/{}", "data", auth.username);
-    let token_path = Path::new(&root).join("fcm_token");
+    let root = Path::new("data").join(&auth.username);
+    let token_path = root.join("fcm_token");
     if !token_path.exists() {
         return Err(io::Error::new(
             io::ErrorKind::Other,
@@ -251,10 +270,16 @@ async fn livestream_start(
     auth: BasicAuth,
     all_state: &rocket::State<AllLiveStreamStartState>,
 ) -> io::Result<()> {
-    let root = format!("./{}/{}", "data", auth.username);
-    let camera_path = Path::new(&root).join(camera);
+    let root = Path::new("data").join(&auth.username);
+    let camera_path = root.join(camera);
+
+    check_path_sandboxed(&root, &camera_path)?;
 
     let update_path = Path::new(&camera_path).join("0");
+    let livestream_end_path = Path::new(&camera_path).join("livestream_end");
+
+    check_path_sandboxed(&root, &update_path)?;
+    check_path_sandboxed(&root, &livestream_end_path)?;
     if update_path.exists() {
         return Err(io::Error::new(
             io::ErrorKind::Other,
@@ -262,7 +287,6 @@ async fn livestream_start(
         ));
     }
 
-    let livestream_end_path = Path::new(&camera_path).join("livestream_end");
     if livestream_end_path.exists() {
         fs::remove_file(livestream_end_path).await.ok();
     }
@@ -287,13 +311,18 @@ async fn livestream_check(
 ) -> EventStream![] {
     let camera = camera.to_string();
 
-    let root = format!("./{}/{}", "data", auth.username);
-    let camera_path = Path::new(&root).join(&camera);
+    let root = Path::new("data").join(&auth.username);
+    let camera_path = root.join(&camera);
 
     let user_state = get_user_state(all_state.inner().clone(), &auth.username);
     let mut rx = user_state.sender.subscribe();
 
     EventStream! {
+        if check_path_sandboxed(&root, &camera_path).is_err() {
+            yield Event::data("invalid");
+            return;
+        }
+
         loop {
             if let Some((_key, epoch)) = user_state.cameras_started.remove(&camera) {
                 // wipe all the data from the previous stream (if any)
@@ -323,8 +352,9 @@ async fn livestream_upload(
     auth: BasicAuth,
     all_state: &rocket::State<AllLiveStreamStartState>,
 ) -> io::Result<String> {
-    let root = format!("./{}/{}", "data", auth.username);
-    let camera_path = Path::new(&root).join(camera);
+    let root = Path::new("data").join(&auth.username);
+    let camera_path = root.join(camera);
+
     if !camera_path.exists() {
         return Err(io::Error::new(
             io::ErrorKind::Other,
@@ -332,7 +362,7 @@ async fn livestream_upload(
         ));
     }
 
-    let livestream_end_path = Path::new(&camera_path).join("livestream_end");
+    let livestream_end_path = camera_path.join("livestream_end");
     if livestream_end_path.exists() {
         fs::remove_file(livestream_end_path).await.ok();
         return Ok(0.to_string());
@@ -348,6 +378,9 @@ async fn livestream_upload(
 
     let filepath = Path::new(&camera_path).join(filename);
     let filepath_tmp = Path::new(&camera_path).join(format!("{}_tmp", filename));
+
+    check_path_sandboxed(&root, &filepath)?;
+    check_path_sandboxed(&root, &filepath_tmp)?;
 
     data.open(MAX_LIVESTREAM_FILE_SIZE.mebibytes())
         .into_file(&filepath_tmp)
@@ -369,9 +402,13 @@ async fn livestream_retrieve(
     auth: BasicAuth,
     all_state: &rocket::State<AllLiveStreamStartState>,
 ) -> Option<RawText<File>> {
-    let root = format!("./{}/{}", "data", auth.username);
-    let camera_path = Path::new(&root).join(camera);
-    let filepath = Path::new(&camera_path).join(filename);
+    let root = Path::new("data").join(&auth.username);
+    let camera_path = root.join(camera);
+    let filepath = camera_path.join(filename);
+
+    if check_path_sandboxed(&root, &filepath).is_err() {
+        return None;
+    }
 
     if camera_path.exists() {
         if !filepath.exists() {
@@ -388,9 +425,15 @@ async fn livestream_retrieve(
 
 #[post("/livestream_end/<camera>")]
 async fn livestream_end(camera: &str, auth: BasicAuth) -> io::Result<()> {
-    let root = format!("./{}/{}", "data", auth.username);
-    let camera_path = Path::new(&root).join(camera);
-    let livestream_end_path = Path::new(&camera_path).join("livestream_end");
+    let root = Path::new("data").join(&auth.username);
+    let camera_path = root.join(camera);
+    let livestream_end_path = camera_path.join("livestream_end");
+
+    check_path_sandboxed(&root, &livestream_end_path)?;
+
+    if !camera_path.exists() {
+        rocket::tokio::fs::create_dir_all(&camera_path).await?;
+    }
 
     let _ = File::create(livestream_end_path).await?;
 
