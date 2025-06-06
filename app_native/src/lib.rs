@@ -47,9 +47,8 @@ impl Clients {
         first_time: bool,
         file_dir: String,
     ) -> io::Result<Self> {
-
         let users: [User; NUM_CLIENTS] = array::from_fn(|i| {
-            let app_name = get_app_name(first_time, file_dir.clone(), format!("app_{}_name", CLIENT_TAGS[i]));    
+            let app_name = get_app_name(first_time, file_dir.clone(), format!("app_{}_name", CLIENT_TAGS[i]));
 
             let mut user = User::new(
                 app_name,
@@ -173,7 +172,7 @@ fn pair_with_camera(
         let app_key_packages = user.key_packages();
 
         let camera_key_packages =
-        perform_pairing_handshake(stream, app_key_packages, secret)?;
+            perform_pairing_handshake(stream, app_key_packages, secret)?;
 
         let camera_welcome_msg = read_varying_len(stream)?;
 
@@ -417,8 +416,9 @@ pub fn decrypt_video(
     Ok(dec_filename)
 }
 
-pub fn decrypt_fcm_message(
+pub fn decrypt_message(
     clients: &mut Option<Box<Clients>>,
+    client_tag: String,
     message: Vec<u8>,
 ) -> io::Result<String> {
     if clients.is_none() {
@@ -428,12 +428,20 @@ pub fn decrypt_fcm_message(
         ));
     }
 
+    let user = client_tag_to_index(&client_tag);
+    if user.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Error: No matching client!"),
+        ));
+    }
+
     let dec_msg_bytes = clients
         .as_mut()
         .unwrap()
-        .users[FCM]
+        .users[user.unwrap()]
         .decrypt(message, true)?;
-    clients.as_mut().unwrap().users[FCM].save_groups_state();
+    clients.as_mut().unwrap().users[user.unwrap()].save_groups_state();
 
     // New JSON structure. Ensure valid JSON string
     if let Ok(message) = str::from_utf8(&dec_msg_bytes) {
@@ -442,6 +450,7 @@ pub fn decrypt_fcm_message(
         }
     }
 
+    // For messages not in JSON. For now, this is only for decoding FCM messages. TODO: Port all FCM over to JSON
     let response = if dec_msg_bytes.len() == 8 {
         let timestamp: u64 = bincode::deserialize(&dec_msg_bytes)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
@@ -463,8 +472,9 @@ pub fn decrypt_fcm_message(
     Ok(response)
 }
 
-pub fn get_motion_group_name(
+pub fn get_group_name(
     clients: &mut Option<Box<Clients>>,
+    client_tag: String,
     camera_name: String,
 ) -> io::Result<String> {
     if clients.is_none() {
@@ -474,29 +484,29 @@ pub fn get_motion_group_name(
         ));
     }
 
+    let user = client_tag_to_index(&client_tag);
+    if user.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Error: No matching client!"),
+        ));
+    }
+
     clients
         .as_mut()
         .unwrap()
-        .users[MOTION]
+        .users[user.unwrap()]
         .get_group_name(&camera_name)
 }
 
-pub fn get_livestream_group_name(
-    clients: &mut Option<Box<Clients>>,
-    camera_name: String,
-) -> io::Result<String> {
-    if clients.is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error: clients not initialized!"),
-        ));
+fn client_tag_to_index(tag: &str) -> Option<usize> {
+    match tag {
+        "motion" => Some(MOTION),
+        "livestream" => Some(LIVESTREAM),
+        "fcm" => Some(FCM),
+        "config" => Some(CONFIG),
+        _ => None,
     }
-
-    clients
-        .as_mut()
-        .unwrap()
-        .users[LIVESTREAM]
-        .get_group_name(&camera_name)
 }
 
 pub fn livestream_decrypt(
