@@ -10,7 +10,10 @@ use std::str;
 use std::array;
 
 use log::info;
+use log::debug;
 
+use anyhow::Context;
+use anyhow::anyhow;
 use privastead_client_lib::pairing;
 use privastead_client_lib::user::{Contact, KeyPackages, User};
 use privastead_client_lib::video_net_info::{VideoNetInfo, VIDEONETINFO_SANITY};
@@ -133,16 +136,18 @@ fn perform_pairing_handshake(
     Ok(camera_key_packages)
 }
 
-fn send_wifi_info(
+fn send_wifi_and_pairing_info(
     stream: &mut TcpStream,
     client: &mut User,
     group_name: String,
     wifi_ssid: String,
     wifi_password: String,
+    pairing_token: String,
 ) -> io::Result<()> {
     let wifi_msg = json!({
         "ssid": wifi_ssid,
-        "passphrase": wifi_password
+        "passphrase": wifi_password,
+        "pairing_token": pairing_token
     });
     info!("Sending wifi info {}", wifi_msg);
     let wifi_info_msg = match client.encrypt(&serde_json::to_vec(&wifi_msg)?, &group_name) {
@@ -200,6 +205,29 @@ fn process_welcome_message(
     Ok(())
 }
 
+pub fn encrypt_settings_message(
+    clients_reg: &mut Option<Box<Clients>>,
+    camera_name: String,
+    message: Vec<u8>,
+) -> anyhow::Result<Vec<u8>> {
+    if clients_reg.is_none() {
+        return Err(anyhow!("Error: clients not initialized!"));
+    }
+
+    let clients = clients_reg.as_mut().unwrap();
+    let config_user = &mut clients.users[CONFIG];
+
+    let group_name = config_user
+        .get_group_name(&camera_name)
+        .unwrap();
+
+    debug!("Encrypting message");
+    let settings_msg = config_user.encrypt(&message, &group_name).context("Failed to encrypt SSID")?;
+    config_user.save_groups_state();
+
+    Ok(settings_msg)
+}
+
 #[flutter_rust_bridge::frb]
 pub fn add_camera(
     clients_reg: &mut Option<Box<Clients>>,
@@ -209,6 +237,7 @@ pub fn add_camera(
     standalone_camera: bool,
     wifi_ssid: String,
     wifi_password: String,
+    pairing_token: String
 ) -> bool {
     info!("Rust: add_camera method triggered");
     if clients_reg.is_none() {
@@ -269,12 +298,13 @@ pub fn add_camera(
             .users[CONFIG]
             .get_group_name(&camera_name)
             .unwrap();
-        if let Err(e) = send_wifi_info(
+        if let Err(e) = send_wifi_and_pairing_info(
             &mut stream,
             &mut clients.users[CONFIG],
             group_name,
             wifi_ssid,
             wifi_password,
+            pairing_token,
         ) {
             info!("Error: {e}");
             return false;

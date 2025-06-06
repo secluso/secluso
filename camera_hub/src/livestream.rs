@@ -15,8 +15,9 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::Camera;
 use crate::delivery_monitor::DeliveryMonitor;
+use crate::Camera;
+use crate::Client;
 use privastead_client_lib::http_client::HttpClient;
 use std::io;
 use std::pin::Pin;
@@ -24,7 +25,6 @@ use std::sync::mpsc;
 use std::sync::mpsc::Sender;
 use std::task::{Context, Poll};
 use tokio::io::AsyncWrite;
-use crate::Client;
 
 /// Used to determine when to end livestream
 const MAX_NUM_PENDING_LIVESTREAM_CHUNKS: usize = 5;

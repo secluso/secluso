@@ -101,8 +101,7 @@ pub fn initialize_users() -> UserStore {
                                     if old.is_some() {
                                         panic!("Duplicate client!");
                                     }
-                                    let files_path_string =
-                                        format!("./data/{}", username);
+                                    let files_path_string = format!("./data/{}", username);
                                     let files_path = Path::new(&files_path_string);
                                     if !files_path.exists() {
                                         fs::create_dir_all(files_path).unwrap();

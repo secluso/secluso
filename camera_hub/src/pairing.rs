@@ -16,15 +16,17 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::traits::Camera;
-use crate::{Client, Clients, CLIENT_TAGS, CONFIG, FCM};
+use crate::{Client, Clients, CLIENT_TAGS, CONFIG};
 use image::Luma;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::random::OpenMlsRand;
 use openmls_traits::OpenMlsProvider;
+use privastead_client_lib::http_client::HttpClient;
 use privastead_client_lib::pairing;
 use privastead_client_lib::user::{KeyPackages, User};
 use qrcode::QrCode;
 use rand::Rng;
+use serde_json::{Value};
 use std::fs::File;
 use std::io;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -34,9 +36,6 @@ use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::{array, fs};
 use std::{thread, time::Duration};
-use std::time::{SystemTime, UNIX_EPOCH};
-use privastead_client_lib::http_client::HttpClient;
-use serde_json::{json, Value};
 
 // Used to generate random names.
 // With 16 alphanumeric characters, the probability of collision is very low.
@@ -59,13 +58,39 @@ fn write_varying_len(stream: &mut TcpStream, msg: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+use std::io::ErrorKind;
+
 fn read_varying_len(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
     let mut len_data = [0u8; 8];
-    stream.read_exact(&mut len_data)?;
-    let len = u64::from_be_bytes(len_data);
 
+    match stream.read_exact(&mut len_data) {
+        Ok(_) => {}
+        Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+            return Err(io::Error::new(ErrorKind::WouldBlock, "Length read would block"));
+        }
+        Err(e) => return Err(e),
+    }
+
+    let len = u64::from_be_bytes(len_data);
     let mut msg = vec![0u8; len as usize];
-    stream.read_exact(&mut msg)?;
+    let mut offset = 0;
+
+    while offset < msg.len() {
+        match stream.read(&mut msg[offset..]) {
+            Ok(0) => {
+                return Err(io::Error::new(ErrorKind::UnexpectedEof, "Socket closed during read"))
+            }
+            Ok(n) => {
+                offset += n;
+            }
+            Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+                // retry a few times with a short delay
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 
     Ok(msg)
 }
@@ -78,7 +103,8 @@ fn perform_pairing_handshake(
     let pairing = pairing::Camera::new(camera_secret, camera_key_packages);
 
     let app_msg = read_varying_len(stream)?;
-    let (app_key_packages, camera_msg) = pairing.process_app_msg_and_generate_msg_to_app(app_msg)?;
+    let (app_key_packages, camera_msg) =
+        pairing.process_app_msg_and_generate_msg_to_app(app_msg)?;
     write_varying_len(stream, &camera_msg)?;
 
     Ok(app_key_packages)
@@ -166,7 +192,10 @@ fn decrypt_msg(client: &mut User, msg: Vec<u8>) -> io::Result<Vec<u8>> {
     Ok(decrypted_msg)
 }
 
-fn request_wifi_info(stream: &mut TcpStream, client: &mut User) -> io::Result<(String, String)> {
+fn request_wifi_info(
+    stream: &mut TcpStream,
+    client: &mut User,
+) -> io::Result<(String, String, String)> {
     // Combine into one message to reduce risk of non-blocking errors
     let wifi_msg = read_varying_len(stream)?;
     let wifi_bytes = decrypt_msg(client, wifi_msg)?;
@@ -175,76 +204,122 @@ fn request_wifi_info(stream: &mut TcpStream, client: &mut User) -> io::Result<(S
     debug!("Recieved Wifi Payload: {payload_msg}");
     let json: Value = serde_json::from_str(&payload_msg)?;
 
-    Ok((json["ssid"].to_string(), json["passphrase"].to_string()))
+    Ok((
+        json["ssid"]
+            .as_str()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing or invalid ssid"))?
+            .to_string(),
+        json["passphrase"]
+            .as_str()
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "Missing or invalid passphrase")
+            })?
+            .to_string(),
+        json["pairing_token"]
+            .as_str()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Missing or invalid pairing token",
+                )
+            })?
+            .to_string(),
+    ))
 }
 
 fn attempt_wifi_connection(ssid: String, password: String) -> io::Result<()> {
     debug!("[Pairing] Attempting wifi connection");
-    // Disable the Hotspot first
+
+    // Disable hotspot
     let _ = Command::new("sh")
         .arg("-c")
         .arg("nmcli connection down id Hotspot")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .output()?; // Wait for command to complete
+        .output()?; // wait for shutdown
 
-    // Wait a bit for Hotspot to get disabled
-    thread::sleep(Duration::from_secs(5));
+    thread::sleep(Duration::from_secs(3));
 
     for n in 1..=3 {
         println!("[Pairing] Attempt {n} to connect to Wi-Fi '{}'", ssid);
-        // Connect to SSID
+
+        // Rescan and wait for SSID to appear
+        let _ = Command::new("nmcli")
+            .arg("dev")
+            .arg("wifi")
+            .arg("rescan")
+            .output();
+
+        thread::sleep(Duration::from_secs(2));
+
+        let check_output = Command::new("sh")
+            .arg("-c")
+            .arg(format!("nmcli -t -f SSID dev wifi | grep -Fx \"{}\"", ssid))
+            .output()?;
+
+        if !check_output.status.success() {
+            debug!("[Pairing] SSID '{}' not found in scan", ssid);
+            if n == 3 {
+                bring_hotspot_back_up()?;
+                return Err(io::Error::new(io::ErrorKind::NotFound, "SSID not found"));
+            }
+            continue;
+        }
+
+        // Delete previous connection if it exists
+        let _ = Command::new("sh")
+            .arg("-c")
+            .arg(format!("nmcli connection delete id \"{}\"", ssid))
+            .output(); // ignore error if it doesn't exist
+
+        // Try connecting
         let connect_output = Command::new("sh")
             .arg("-c")
             .arg(format!(
-                "nmcli device wifi connect \"{}\" password \"{}\"",
+                "nmcli dev wifi connect \"{}\" password \"{}\"",
                 ssid, password
             ))
-            .output()?; // Wait for command to complete
+            .output()?;
 
-        if !connect_output.status.success() {
-            debug!(
-                "Connection failed:\nstdout: {}\nstderr: {}",
-                String::from_utf8_lossy(&connect_output.stdout),
-                String::from_utf8_lossy(&connect_output.stderr),
-            );
+        if connect_output.status.success() {
+            debug!("[Pairing] Connected successfully on attempt {n}");
 
-            if n == 3 {
-                // Connection failed... bring the Hotspot back up to re-attempt pairing again
-                let _ = Command::new("sh")
-                    .arg("-c")
-                    .arg("nmcli connection up id Hotspot")
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .output()?; // Wait for restart
-
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!(
-                        "Failed to connect to Wi-Fi '{}': {}",
-                        ssid,
-                        String::from_utf8_lossy(&connect_output.stderr)
-                    ),
-                ));
-            }
-        } else {
-            break;
+            // Autoconnect on reboot
+            let _ = Command::new("sh")
+                .arg("-c")
+                .arg(format!(
+                    "nmcli connection modify \"{}\" connection.autoconnect yes",
+                    ssid
+                ))
+                .output();
+            return Ok(());
         }
 
-        thread::sleep(Duration::from_secs(5));
+        debug!(
+            "[Pairing] Connection failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&connect_output.stdout),
+            String::from_utf8_lossy(&connect_output.stderr),
+        );
+
+        thread::sleep(Duration::from_secs(3));
     }
 
-    // Set up autoconnect to SSID on reboot
-    let _ = Command::new("sh")
+    bring_hotspot_back_up()?;
+
+    Err(io::Error::new(
+        io::ErrorKind::Other,
+        format!("Failed to connect to Wi-Fi '{}'", ssid),
+    ))
+}
+
+fn bring_hotspot_back_up() -> io::Result<()> {
+    debug!("[Pairing] Bringing hotspot back up...");
+    Command::new("sh")
         .arg("-c")
-        .arg(format!(
-            "nmcli connection modify \"{}\" connection.autoconnect yes",
-            ssid
-        ))
+        .arg("nmcli connection up id Hotspot")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .output()?;
-
     Ok(())
 }
 
@@ -288,6 +363,11 @@ pub fn create_camera_groups(
             Ok(mut stream) => {
                 debug!("[Pairing] Incoming connection accepted.");
 
+                if let Err(e) = stream.set_nonblocking(false) {
+                    debug!("[Pairing] Failed to set blocking mode: {e}");
+                }
+
+
                 if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(10))) {
                     debug!("[Pairing] Failed to set read timeout: {e}");
                 }
@@ -320,24 +400,40 @@ pub fn create_camera_groups(
                         }
                     }
 
+                    let mut changed_wifi = false;
+
                     if connect_to_wifi && success {
                         debug!("[Pairing] Before request wifi info");
                         match request_wifi_info(&mut stream, &mut clients[CONFIG].user) {
-                            Ok((ssid, password)) => {
+                            Ok((ssid, password, pairing_token)) => {
                                 if connect_to_wifi {
                                     match attempt_wifi_connection(ssid, password) {
                                         Ok(_) => {
-                                            debug!("[Pairing] Sending the successful WiFi FCM notification.");
-                                            let payload = json!({"type": "wifi_success","timestamp": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()});
-                                            let notification_msg = clients[FCM].user.encrypt(
-                                                &serde_json::to_vec(&payload)?,
-                                                &clients[FCM].group_name,
-                                            )?;
-                                            clients[FCM].user.save_groups_state();
-                                            match http_client.send_fcm_notification(notification_msg) {
-                                                Ok(_) => {}
+                                            changed_wifi = true;
+                                            debug!("[Pairing] Attempting to confirm pairing...");
+                                            match http_client.send_pairing_token(&pairing_token) {
+                                                Ok(status) => {
+                                                    debug!("[Pairing] Pairing token acknowledged with status: {status}");
+                                                    match status.as_str() {
+                                                        "paired" => {
+                                                            debug!("[Pairing] Success: both sides connected.");
+                                                        }
+                                                        "expired" => {
+                                                            debug!("[Pairing] Error: pairing token expired.");
+                                                            success = false;
+                                                        }
+                                                        "invalid_token" | "invalid_role" => {
+                                                            debug!("[Pairing] Error: invalid input ({status})");
+                                                            success = false;
+                                                        }
+                                                        _ => {
+                                                            debug!("[Pairing] Unexpected status: {status}");
+                                                            success = false;
+                                                        }
+                                                    }
+                                                }
                                                 Err(e) => {
-                                                    error!("[Pairing] Failed to send FCM notification ({})", e);
+                                                    error!("[Pairing] Failed to send pairing token: {e}");
                                                     success = false;
                                                 }
                                             }
@@ -357,6 +453,11 @@ pub fn create_camera_groups(
                                 success = false;
                             }
                         }
+                    }
+
+                    if changed_wifi && !success {
+                        debug!("[Pairing] Creating WiFi hotspot after fail");
+                        create_wifi_hotspot();
                     }
 
                     success

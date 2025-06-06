@@ -21,6 +21,7 @@ use std::path::Path;
 use std::time::Duration;
 use reqwest::blocking::{Client, Body};
 use base64::{engine::general_purpose, Engine as _};
+use serde_json::json;
 
 #[derive(Clone)]
 pub struct HttpClient {
@@ -46,12 +47,58 @@ impl HttpClient {
         }
     }
 
+    /// Atomically confrm pairing with app
+    pub fn send_pairing_token(&self, pairing_token: &str) -> io::Result<String> {
+        let url = format!("http://{}/pair", self.server_addr);
+
+        let auth_value = format!("{}:{}", self.server_username, self.server_password);
+        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
+        let auth_header = format!("Basic {}", auth_encoded);
+
+        let body = json!({
+            "pairing_token": pairing_token,
+            "role": "camera",
+        });
+
+        let client = Client::builder()
+            .timeout(Duration::from_secs(45)) // Wait up to 45s
+            .build()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        let response = client
+            .post(&url)
+            .header("Authorization", auth_header)
+            .header("Content-Type", "application/json")
+            .body(body.to_string())
+            .send()
+            .map_err(|e| io::Error::new(io::ErrorKind::TimedOut, e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Pairing failed: {}", response.status()),
+            ));
+        }
+
+        let text = response
+            .text()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+        let json: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+
+        let status = json["status"]
+            .as_str()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing 'status'"))?;
+
+        Ok(status.to_string())
+    }
+
     /// Uploads an (encrypted) video file.
-    pub fn upload_enc_video(  
-        &self,      
+    pub fn upload_enc_video(
+        &self,
         group_name: &str,
-        enc_file_path: &Path,        
-    ) -> io::Result<()> {        
+        enc_file_path: &Path,
+    ) -> io::Result<()> {
         let enc_file_name = enc_file_path
             .file_name()
             .and_then(|name| name.to_str())
@@ -101,7 +148,7 @@ impl HttpClient {
             .and_then(|name| name.to_str())
             .unwrap()
             .to_string();
-    
+
         let server_url = format!("http://{}/{}/{}", self.server_addr, group_name, enc_file_name);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
@@ -129,10 +176,10 @@ impl HttpClient {
         }
 
         let mut file = BufWriter::new(File::create(enc_file_path)?);
-        
+
         io::copy(&mut response, &mut file)?;
         file.flush().unwrap();
-        file.into_inner()?.sync_all()?; 
+        file.into_inner()?.sync_all()?;
 
         let del_response = client
             .delete(&server_url)
@@ -181,10 +228,10 @@ impl HttpClient {
         Ok(())
     }
 
-    pub fn send_fcm_notification(  
-        &self,      
-        notification: Vec<u8>,        
-    ) -> io::Result<()> {        
+    pub fn send_fcm_notification(
+        &self,
+        notification: Vec<u8>,
+    ) -> io::Result<()> {
         let server_url = format!("http://{}/fcm_notification", self.server_addr);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
@@ -211,9 +258,9 @@ impl HttpClient {
     }
 
     /// Start a livestream session
-    pub fn livestream_start(  
-        &self,      
-        group_name: &str,       
+    pub fn livestream_start(
+        &self,
+        group_name: &str,
     ) -> io::Result<()> {
         let server_url = format!("http://{}/livestream/{}", self.server_addr, group_name);
 
@@ -243,16 +290,16 @@ impl HttpClient {
     /// is expecting the livestream to be on.
     pub fn livestream_check(&self, group_name: &str) -> io::Result<()> {
         let server_url = format!("http://{}/livestream/{}", self.server_addr, group_name);
-    
+
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
         let auth_header = format!("Basic {}", auth_encoded);
-    
+
         let client = Client::builder()
             .timeout(None) // Disable timeout to allow long-polling
             .build()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-    
+
         let response = client
             .get(&server_url)
             .header("Authorization", auth_header)
@@ -260,9 +307,9 @@ impl HttpClient {
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
             .error_for_status()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-    
+
         let reader = BufReader::new(response);
-    
+
         for line in reader.lines() {
             let line = line?;
             if line.starts_with("data:") {
@@ -270,20 +317,20 @@ impl HttpClient {
                 return Ok(());
             }
         }
-    
+
         return Err(io::Error::new(
             io::ErrorKind::Other,
             format!("Server error"),
         ));
     }
-    
+
     /// Uploads some (encrypted) livestream data to the server.
     /// Returns the number of pending files in the server.
-    pub fn livestream_upload(  
-        &self,      
+    pub fn livestream_upload(
+        &self,
         group_name: &str,
         data: Vec<u8>,
-        chunk_number: u64,        
+        chunk_number: u64,
     ) -> io::Result<usize> {
         let server_url = format!("http://{}/livestream/{}/{}", self.server_addr, group_name, chunk_number);
 
@@ -378,9 +425,9 @@ impl HttpClient {
 
     /// End a livestream session
     // FIXME: shares a lot of code with livestream_start
-    pub fn livestream_end(  
-        &self,      
-        group_name: &str,       
+    pub fn livestream_end(
+        &self,
+        group_name: &str,
     ) -> io::Result<()> {
         let server_url = format!("http://{}/livestream_end/{}", self.server_addr, group_name);
 

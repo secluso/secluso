@@ -43,9 +43,9 @@ use crate::write_box;
 use anyhow::{anyhow, Error};
 use bytes::{BufMut, BytesMut};
 
+use cfg_if::cfg_if;
 use std::convert::TryFrom;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
-use cfg_if::cfg_if;
 
 /// Tracks the parts of a `trak` atom which are common between video and audio samples.
 #[derive(Default)]

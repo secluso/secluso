@@ -20,31 +20,36 @@
 #[macro_use]
 extern crate rocket;
 
+use std::collections::HashMap;
 use std::io;
 use std::path::Path;
+use std::time::Duration;
 
+use dashmap::mapref::entry::Entry;
+use dashmap::DashMap;
 use rocket::data::{Data, ToByteUnit};
 use rocket::response::content::RawText;
-use rocket::tokio::fs::{self, File};
-use rocket::tokio::task;
-use rocket::serde::json::Json;
-use rocket::tokio::sync::broadcast::{channel, Sender};
 use rocket::response::stream::{Event, EventStream};
-use rocket::Shutdown;
-use rocket::tokio::select;
-use dashmap::DashMap;
-use dashmap::mapref::entry::Entry;
-use std::sync::Arc;
+use rocket::serde::json::Json;
 use rocket::serde::Deserialize;
+use rocket::tokio::fs::{self, File};
+use rocket::tokio::select;
+use rocket::tokio::sync::broadcast::{channel, Sender};
+use rocket::tokio::sync::Notify;
+use rocket::tokio::task;
+use rocket::tokio::time::timeout;
+use rocket::Shutdown;
 use serde_json::Number;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 mod auth;
 mod fcm;
 mod security;
 
 use crate::auth::{initialize_users, BasicAuth};
-use crate::security::{check_path_sandboxed};
 use crate::fcm::send_notification;
+use crate::security::check_path_sandboxed;
 
 // Per-user livestream start state
 #[derive(Clone)]
@@ -66,6 +71,30 @@ struct MotionPairs {
     group_names: Vec<MotionPair>,
 }
 
+// Pairing structures
+#[derive(Debug)]
+struct PairingEntry {
+    phone_connected: bool,
+    camera_connected: bool,
+    phone_notified: bool,
+    camera_notified: bool,
+    created_at: Instant,
+    notify: Arc<Notify>,
+    expired: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct PairingRequest {
+    pairing_token: String,
+    role: String,
+}
+
+#[derive(serde::Serialize)]
+struct PairingResponse {
+    status: String,
+}
+
+type SharedPairingState = Arc<Mutex<HashMap<String, Arc<Mutex<PairingEntry>>>>>;
 type AllLiveStreamStartState = Arc<DashMap<String, LivestreamStartState>>;
 
 // Simple rate limiters for the server
@@ -86,6 +115,157 @@ async fn get_num_files(path: &Path) -> io::Result<usize> {
 
     Ok(num_files)
 }
+
+#[post("/pair", data = "<data>")]
+async fn pair(
+    data: Json<PairingRequest>,
+    state: &rocket::State<SharedPairingState>,
+) -> Json<PairingResponse> {
+    debug!("[PAIR] Entered pair method with role: {}, token: {}", data.role, data.pairing_token);
+
+    let role = data.role.to_lowercase();
+    if role != "phone" && role != "camera" {
+        debug!("[PAIR] Invalid role: {}", role);
+        return Json(PairingResponse {
+            status: "invalid_role".into(),
+        });
+    }
+
+    let token = &data.pairing_token;
+    let entry_arc = {
+        let mut sessions = state.lock().unwrap();
+        debug!("[PAIR] Looking up or creating session for token: {}", token);
+        sessions
+            .entry(token.clone())
+            .or_insert_with(|| {
+                debug!("[PAIR] No existing session found. Creating new entry.");
+                Arc::new(Mutex::new(PairingEntry {
+                    phone_connected: false,
+                    camera_connected: false,
+                    phone_notified: false,
+                    camera_notified: false,
+                    created_at: Instant::now(),
+                    notify: Arc::new(Notify::new()),
+                    expired: false,
+                }))
+            })
+            .clone()
+    };
+
+    let token = &data.pairing_token;
+
+    // Check for disallowed quote characters in the token
+    if token.contains('"') {
+        debug!("[PAIR] Invalid token contains quote character: {}", token);
+        return Json(PairingResponse {
+            status: "invalid_token".into(),
+        });
+    }
+
+
+    let notify;
+    let expired_at;
+    {
+        let mut entry = entry_arc.lock().unwrap();
+
+        if entry.expired {
+            debug!("[PAIR] Session already expired for token: {}", token);
+            return Json(PairingResponse {
+                status: "expired".into(),
+            });
+        }
+
+        let elapsed = entry.created_at.elapsed();
+        debug!(
+            "[PAIR] Elapsed: {:?}, phone_notified: {}, camera_notified: {}",
+            elapsed, entry.phone_notified, entry.camera_notified
+        );
+
+        if elapsed > Duration::from_secs(45)
+            || entry.phone_notified
+            || entry.camera_notified
+        {
+            debug!("[PAIR] Expiring session due to timeout or notification flag");
+            entry.expired = true;
+            return Json(PairingResponse {
+                status: "expired".into(),
+            });
+        }
+
+        match role.as_str() {
+            "phone" => {
+                debug!("[PAIR] Phone connected");
+                entry.phone_connected = true;
+            }
+            "camera" => {
+                debug!("[PAIR] Camera connected");
+                entry.camera_connected = true;
+            }
+            _ => unreachable!(),
+        }
+
+        debug!(
+            "[PAIR] phone_connected: {}, camera_connected: {}",
+            entry.phone_connected, entry.camera_connected
+        );
+
+        if entry.phone_connected && entry.camera_connected {
+            debug!("[PAIR] Both parties connected, returning 'paired'");
+            entry.notify.notify_waiters();
+            match role.as_str() {
+                "phone" => entry.phone_notified = true,
+                "camera" => entry.camera_notified = true,
+                _ => {}
+            }
+            entry.expired = true;
+            return Json(PairingResponse {
+                status: "paired".into(),
+            });
+        }
+
+        notify = entry.notify.clone();
+        expired_at = entry.created_at + Duration::from_secs(45);
+        debug!(
+            "[PAIR] Only one side connected, waiting until {:?}",
+            expired_at
+        );
+    }
+
+    let wait_duration = expired_at.saturating_duration_since(Instant::now());
+    debug!(
+        "[PAIR] Awaiting notify or timeout for up to {:?}",
+        wait_duration
+    );
+    let _ = timeout(wait_duration, notify.notified()).await;
+
+    let mut entry = entry_arc.lock().unwrap();
+    let still_valid = entry.phone_connected && entry.camera_connected;
+
+    if still_valid {
+        debug!("[PAIR] Notify wait completed: still valid. Returning paired response");
+        match role.as_str() {
+            "phone" => entry.phone_notified = true,
+            "camera" => entry.camera_notified = true,
+            _ => {}
+        }
+        entry.expired = true;
+        Json(PairingResponse {
+            status: "paired".into(),
+        })
+    } else {
+        debug!("[PAIR] Notify wait completed: pairing expired.");
+        entry.expired = true;
+        match role.as_str() {
+            "phone" => entry.phone_notified = true,
+            "camera" => entry.camera_notified = true,
+            _ => {}
+        }
+        Json(PairingResponse {
+            status: "expired".into(),
+        })
+    }
+}
+
 
 #[post("/<camera>/<filename>", data = "<data>")]
 async fn upload(
@@ -120,12 +300,8 @@ async fn upload(
     Ok("ok".to_string())
 }
 
-
 #[post("/bulkCheck", format = "application/json", data = "<data>")]
-async fn bulk_group_check(
-    data: Json<MotionPairs>,
-    auth: BasicAuth,
-) -> RawText<String> {
+async fn bulk_group_check(data: Json<MotionPairs>, auth: BasicAuth) -> RawText<String> {
     let root = Path::new("data").join(&auth.username);
     let pairs_wrapper: MotionPairs = data.into_inner();
     let pair_list = pairs_wrapper.group_names;
@@ -148,15 +324,16 @@ async fn bulk_group_check(
         }
     }
 
-    RawText(valid_pairs.iter().map(|x| x.to_string() + ",").collect::<String>())
+    RawText(
+        valid_pairs
+            .iter()
+            .map(|x| x.to_string() + ",")
+            .collect::<String>(),
+    )
 }
 
 #[get("/<camera>/<filename>")]
-async fn retrieve(
-    camera: &str,
-    filename: &str,
-    auth: BasicAuth,
-) -> Option<RawText<File>> {
+async fn retrieve(camera: &str, filename: &str, auth: BasicAuth) -> Option<RawText<File>> {
     let root = Path::new("data").join(&auth.username);
     let camera_path = root.join(camera);
     let filepath = camera_path.join(filename);
@@ -169,11 +346,7 @@ async fn retrieve(
 }
 
 #[delete("/<camera>/<filename>")]
-async fn delete_file(
-    camera: &str,
-    filename: &str,
-    auth: BasicAuth,
-) -> Option<()> {
+async fn delete_file(camera: &str, filename: &str, auth: BasicAuth) -> Option<()> {
     let root = Path::new("data").join(&auth.username);
     let camera_path = root.join(camera);
     let filepath = camera_path.join(filename);
@@ -186,10 +359,7 @@ async fn delete_file(
 }
 
 #[delete("/<camera>")]
-async fn delete_camera(
-    camera: &str,
-    auth: BasicAuth,
-) -> io::Result<()> {
+async fn delete_camera(camera: &str, auth: BasicAuth) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
     let camera_path = root.join(camera);
 
@@ -199,10 +369,7 @@ async fn delete_camera(
 }
 
 #[post("/fcm_token", data = "<data>")]
-async fn upload_fcm_token(
-    data: Data<'_>,
-    auth: BasicAuth,
-) -> io::Result<String> {
+async fn upload_fcm_token(data: Data<'_>, auth: BasicAuth) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
     let token_path = root.join("fcm_token");
 
@@ -214,10 +381,7 @@ async fn upload_fcm_token(
 }
 
 #[post("/fcm_notification", data = "<data>")]
-async fn send_fcm_notification(
-    data: Data<'_>,
-    auth: BasicAuth,
-) -> io::Result<String> {
+async fn send_fcm_notification(data: Data<'_>, auth: BasicAuth) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
     let token_path = root.join("fcm_token");
     if !token_path.exists() {
@@ -245,10 +409,7 @@ async fn send_fcm_notification(
     Ok("ok".to_string())
 }
 
-fn get_user_state(
-    all_state: AllLiveStreamStartState,
-    username: &str,
-) -> LivestreamStartState {
+fn get_user_state(all_state: AllLiveStreamStartState, username: &str) -> LivestreamStartState {
     // retun the LivestreamStartState for the user. If it doesn't exist, add it and return it.
     match all_state.entry(username.to_string()) {
         Entry::Occupied(entry) => entry.get().clone(),
@@ -443,6 +604,7 @@ async fn livestream_end(camera: &str, auth: BasicAuth) -> io::Result<()> {
 #[launch]
 fn rocket() -> _ {
     let all_livestream_start_state: AllLiveStreamStartState = Arc::new(DashMap::new());
+    let pairing_state: SharedPairingState = Arc::new(Mutex::new(HashMap::new()));
 
     let config = rocket::Config {
         port: 8080,
@@ -453,9 +615,11 @@ fn rocket() -> _ {
     rocket::custom(config)
         .manage(all_livestream_start_state)
         .manage(initialize_users())
+        .manage(pairing_state)
         .mount(
             "/",
             routes![
+                pair,
                 upload,
                 bulk_group_check,
                 retrieve,

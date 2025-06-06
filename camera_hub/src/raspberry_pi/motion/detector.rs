@@ -94,11 +94,8 @@ impl MotionDetection {
         self.last_detection = Some(latest_time);
 
         // Preprocess the image.
-        let (blurred_image, w_b) = preprocessing::preprocess(
-            raw_frame.clone(),
-            self.total_width,
-            self.total_height,
-        )?;
+        let (blurred_image, w_b) =
+            preprocessing::preprocess(raw_frame.clone(), self.total_width, self.total_height)?;
 
         // Initialize the background subtractor on the first frame.
         if self.motion.is_none() {
@@ -109,7 +106,11 @@ impl MotionDetection {
         // Apply background subtraction.
         let bg_subtract = SystemTime::now();
         let mut bgs = self.motion.clone().unwrap();
-        let diff_result = bgs.apply(&blurred_image, ALPHA / self.motion_fps as f32, w_b >= WEIGHT_BLUE_THRESHOLD);
+        let diff_result = bgs.apply(
+            &blurred_image,
+            ALPHA / self.motion_fps as f32,
+            w_b >= WEIGHT_BLUE_THRESHOLD,
+        );
         self.motion = Some(bgs);
 
         debug!(

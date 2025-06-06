@@ -15,13 +15,13 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use privastead_client_lib::video_net_info::VideoNetInfo;
-use privastead_client_lib::http_client::HttpClient;
-use std::fs::File;
-use std::io;
-use std::io::{Write, BufReader, BufRead};
 use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
 use crate::Client;
+use privastead_client_lib::http_client::HttpClient;
+use privastead_client_lib::video_net_info::VideoNetInfo;
+use std::fs::File;
+use std::io;
+use std::io::{BufRead, BufReader, Write};
 
 fn append_to_file(mut file: &File, msg: Vec<u8>) {
     let msg_len: u32 = msg.len().try_into().unwrap();
@@ -112,11 +112,14 @@ pub fn prepare_motion_video(
             );
         }
 
-        let msg = client.user.encrypt(&buffer, &client.group_name).map_err(|e| {
-            error!("send_video() returned error:");
-            client.user.save_groups_state();
-            e
-        })?;
+        let msg = client
+            .user
+            .encrypt(&buffer, &client.group_name)
+            .map_err(|e| {
+                error!("send_video() returned error:");
+                client.user.save_groups_state();
+                e
+            })?;
         append_to_file(&enc_file, msg);
         reader.consume(length);
     }

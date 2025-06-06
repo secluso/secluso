@@ -1,4 +1,5 @@
 use crate::raspberry_pi;
+use crate::raspberry_pi::motion::detector;
 use crate::raspberry_pi::rpi_dual_stream::RawFrame;
 use fast_image_resize::images::Image;
 use fast_image_resize::{PixelType, ResizeAlg, ResizeOptions, Resizer};
@@ -11,7 +12,6 @@ use rayon::iter::ParallelIterator;
 use rayon::prelude::{ParallelSlice, ParallelSliceMut};
 use std::num::NonZero;
 use std::time::SystemTime;
-use crate::raspberry_pi::motion::detector;
 
 /// Preprocesses a raw frame through CLAHE
 pub fn preprocess(

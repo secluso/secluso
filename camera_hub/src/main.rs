@@ -27,21 +27,21 @@ use privastead_client_lib::http_client::HttpClient;
 use privastead_client_lib::user::User;
 use privastead_client_server_lib::auth::parse_user_credentials;
 use serde_yml::Value;
+use std::array;
 use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io;
+#[cfg(feature = "ip")]
+use std::io::Write;
 use std::ops::Add;
 use std::path::Path;
 use std::process::exit;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, Arc};
+use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::SystemTime;
 use std::{thread, time::Duration};
-use std::array;
-#[cfg(feature = "ip")]
-use std::io::Write;
 
 mod delivery_monitor;
 use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
@@ -52,7 +52,10 @@ use crate::livestream::livestream;
 mod traits;
 use crate::traits::Camera;
 mod pairing;
-use crate::pairing::{create_camera_groups, get_names, create_wifi_hotspot, get_input_camera_secret, read_user_credentials};
+use crate::pairing::{
+    create_camera_groups, create_wifi_hotspot, get_input_camera_secret, get_names,
+    read_user_credentials,
+};
 mod fmp4;
 mod mp4;
 
@@ -82,12 +85,7 @@ const VIDEO_DIR_GENERAL: &str = "pending_videos";
 static GLOBAL_THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 const NUM_CLIENTS: usize = 4;
-static CLIENT_TAGS: [&str; NUM_CLIENTS] = [
-    "motion",
-    "livestream",
-    "fcm",
-    "config",
-];
+static CLIENT_TAGS: [&str; NUM_CLIENTS] = ["motion", "livestream", "fcm", "config"];
 // indices for different clients
 const MOTION: usize = 0;
 const LIVESTREAM: usize = 1;
@@ -100,7 +98,6 @@ struct Client {
 }
 
 type Clients = [Client; NUM_CLIENTS];
-
 
 const USAGE: &str = "
 Privastead camera hub: connects to an IP camera and send videos to the privastead app end-to-end encrypted (through an untrusted server).
@@ -444,7 +441,8 @@ fn reset(camera: &dyn Camera, http_client: &HttpClient) -> io::Result<()> {
                 error!(
                     "Error: Deleting {} data from server failed: {e}.\
                     Sometimes, this error is okay since the app might have deleted the data already\
-                    or no data existed in the first place.", CLIENT_TAGS[i]
+                    or no data existed in the first place.",
+                    CLIENT_TAGS[i]
                 );
             }
         }
@@ -491,15 +489,13 @@ fn core(
             camera_name,
             first_time,
             state_dir.clone(),
-            CLIENT_TAGS[i].to_string()
-        ).expect("User::new() for returned error.");
+            CLIENT_TAGS[i].to_string(),
+        )
+        .expect("User::new() for returned error.");
 
         user.save_groups_state();
 
-        Client {
-            user,
-            group_name,
-        }
+        Client { user, group_name }
     });
 
     let camera_name = camera.get_name();
@@ -514,7 +510,7 @@ fn core(
             &mut clients,
             input_camera_secret,
             connect_to_wifi,
-            http_client
+            http_client,
         )?;
 
         File::create(camera.get_state_dir() + "/first_time_done").expect("Could not create file");
@@ -534,14 +530,15 @@ fn core(
     let group_livestream_name_clone = clients[LIVESTREAM].group_name.clone();
     let http_client_clone = http_client.clone();
 
-    thread::spawn(move || {
-        loop {
-            if http_client_clone.livestream_check(&group_livestream_name_clone).is_ok() {
-                let mut check = livestream_request_clone.lock().unwrap();
-                *check = true;
-            } else {
-                sleep(Duration::from_secs(1));
-            }
+    thread::spawn(move || loop {
+        if http_client_clone
+            .livestream_check(&group_livestream_name_clone)
+            .is_ok()
+        {
+            let mut check = livestream_request_clone.lock().unwrap();
+            *check = true;
+        } else {
+            sleep(Duration::from_secs(1));
         }
     });
 
@@ -579,22 +576,18 @@ fn core(
             }
 
             info!("Starting to record, prepare, and encrypt video.");
-            let duration = if test_mode {
-                1
-            } else {
-                20
-            };
+            let duration = if test_mode { 1 } else { 20 };
 
             camera.record_motion_video(&video_info, duration)?;
 
-            prepare_motion_video(
-                &mut clients[MOTION],
-                video_info,
-                &mut delivery_monitor,
-            )?;
+            prepare_motion_video(&mut clients[MOTION], video_info, &mut delivery_monitor)?;
 
             info!("Uploading the encrypted video.");
-            upload_pending_enc_videos(&clients[MOTION].group_name, &mut delivery_monitor, &http_client);
+            upload_pending_enc_videos(
+                &clients[MOTION].group_name,
+                &mut delivery_monitor,
+                &http_client,
+            );
 
             if !test_mode {
                 info!("Sending the FCM notification to start downloading.");
@@ -640,7 +633,11 @@ fn core(
         if locked_delivery_check_time.is_none()
             || locked_delivery_check_time.unwrap().le(&SystemTime::now())
         {
-            upload_pending_enc_videos(&clients[MOTION].group_name, &mut delivery_monitor, &http_client);
+            upload_pending_enc_videos(
+                &clients[MOTION].group_name,
+                &mut delivery_monitor,
+                &http_client,
+            );
             locked_delivery_check_time = Some(SystemTime::now().add(Duration::from_secs(60)));
         }
 
