@@ -365,7 +365,7 @@ pub fn decrypt_video(
 
     let file_dir = clients.as_mut().unwrap().users[MOTION].get_file_dir();
     info!("File dir: {}", file_dir);
-    let enc_pathname: String = encrypted_filename;
+    let enc_pathname: String = format!("{}/{}", file_dir, encrypted_filename);
 
     let mut enc_file = fs::File::open(enc_pathname).expect("Could not open encrypted file");
 

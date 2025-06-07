@@ -15,8 +15,8 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use privastead_android_app_native::{
-    add_camera, decrypt_video, deregister, get_livestream_group_name, get_motion_group_name,
+use privastead_app_native::{
+    add_camera, decrypt_video, deregister, get_group_name,
     initialize, livestream_decrypt, livestream_update, Clients,
 };
 use privastead_client_lib::http_client::HttpClient;
@@ -91,21 +91,26 @@ fn main() -> io::Result<()> {
             panic!("No state to reset!");
         }
 
-        initialize(clients.lock().unwrap(), DATA_DIR.to_string(), true)?;
+        initialize(&mut clients.lock().unwrap(), DATA_DIR.to_string(), true)?;
 
-        add_camera(
-            clients.lock().unwrap(),
+        if !add_camera(
+            &mut clients.lock().unwrap(),
             CAMERA_NAME.to_string(),
             CAMERA_ADDR.to_string(),
             secret_vec.to_vec(),
             false,
             "".to_string(),
             "".to_string(),
-        )?;
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Error: Failed to add camera."),
+            ));
+        }
 
         File::create(&first_time_path).expect("Could not create file");
     } else {
-        initialize(clients.lock().unwrap(), DATA_DIR.to_string(), false)?;
+        initialize(&mut clients.lock().unwrap(), DATA_DIR.to_string(), false)?;
 
         if reset {
             return deregister_all(clients, &http_client);
@@ -143,10 +148,10 @@ fn deregister_all(
     http_client: &HttpClient,
 ) -> io::Result<()> {
     let motion_group_name =
-        get_motion_group_name(clients.lock().unwrap(), CAMERA_NAME.to_string())?;
+        get_group_name(&mut clients.lock().unwrap(), "motion".to_string(), CAMERA_NAME.to_string())?;
     let livestream_group_name =
-        get_livestream_group_name(clients.lock().unwrap(), CAMERA_NAME.to_string())?;
-    deregister(clients.lock().unwrap(), None);
+        get_group_name(&mut clients.lock().unwrap(), "livestream".to_string(), CAMERA_NAME.to_string())?;
+    deregister(&mut clients.lock().unwrap());
     let _ = http_client.deregister(&motion_group_name);
     let _ = http_client.deregister(&livestream_group_name);
 
@@ -173,14 +178,14 @@ fn motion_loop(
         2
     };
     
-    let group_name = get_motion_group_name(clients.lock().unwrap(), CAMERA_NAME.to_string())?;
+    let group_name = get_group_name(&mut clients.lock().unwrap(), "motion".to_string(), CAMERA_NAME.to_string())?;
     let mut iter = 0;
     loop {
         let enc_filename = format!("{}", epoch);
         let enc_filepath = Path::new(DATA_DIR).join(&enc_filename);
         match http_client.fetch_enc_video(&group_name, &enc_filepath) {
             Ok(_) => {
-                let dec_filename = decrypt_video(clients.lock().unwrap(), enc_filename).unwrap();
+                let dec_filename = decrypt_video(&mut clients.lock().unwrap(), enc_filename).unwrap();
                 println!("Received and decrypted file: {}", dec_filename);
                 let _ = fs::remove_file(enc_filepath);
                 epoch += 1;
@@ -250,16 +255,16 @@ fn livestream(
     http_client: &HttpClient,
     num_chunks: u64,
 ) -> io::Result<()> {
-    let group_name = get_livestream_group_name(clients.lock().unwrap(), CAMERA_NAME.to_string())?;
+    let group_name = get_group_name(&mut clients.lock().unwrap(), "livestream".to_string(), CAMERA_NAME.to_string())?;
 
     http_client.livestream_start(&group_name)?;
 
     let commit_msg = fetch_livestream_chunk(http_client, &group_name, 0)?;
-    livestream_update(clients.lock().unwrap(), commit_msg)?;
+    livestream_update(&mut clients.lock().unwrap(), commit_msg)?;
 
     for i in 1..num_chunks {
         let enc_data = fetch_livestream_chunk(http_client, &group_name, i)?;
-        let dec_data = livestream_decrypt(clients.lock().unwrap(), enc_data, i as u64)?;
+        let dec_data = livestream_decrypt(&mut clients.lock().unwrap(), enc_data, i as u64)?;
         println!("Received {} of livestream data.", dec_data.len());
     }
 
