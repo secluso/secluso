@@ -37,7 +37,7 @@ Keep these files in mind and we will come back to using them in the following st
 
 ### Step 2: Generating FCM credentials
 
-Privastead uses FCM to send notifications to the android app.
+Privastead uses FCM to send notifications to the android/ios app.
 We need to set up an FCM project and then generate two credential files, one for the server to be able to send notifications via FCM and one for the app to be able to receive them.
 
 Go to: https://console.firebase.google.com/
@@ -52,11 +52,11 @@ Disable Google Analytics (unless you want it).
 
 The project is now created and you will be redirected to its dashboard.
 
-Click on "Add app" and then on the Android icon.
+Click on "Add app" and then on the Android or iOS icon.
 
 Now you need to register our app. For the package name, add: privastead.camera
 
-Then click on Register App. You will now be able to download the file: google-services.json. Download it and save it somewhere. You'll need in one of the steps below.
+Then click on Register App. 
 
 You don't need to continue with the rest of the steps (as we have already done those for the app).
 
@@ -217,43 +217,79 @@ Each camera then waits to be paired with the app.
 
 ### Step 6: Building and installing the app
 
-Fetch the app from our repo:
+
+Clone the Repository:
 
 ```
-git clone https://github.com/privastead/android_app.git
+git clone https://github.com/privastead/privastead.git  
+cd privastead
 ```
 
-Then copy the google-services.json generated in an earlier step into the app source code:
+---
+
+Open the Project in Visual Studio Code:
+
+- Launch Visual Studio Code
+- Open the privastead/ folder  
+- Install any recommended extensions (Flutter, Rust, Dart)
+
+---
+
+Install Flutter Packages:
 
 ```
-mv /path-to-json-file/google-services.json /path-to-app-source/android_app/app/
+flutter pub get
 ```
 
-The app uses a native JNI library implemented in Rust for OpenMLS and for communication with the server.
-You'll need to build this library and copy it to the app source tree.
+Firebase Setup (Push Notifications):
 
-First, let's build the library:
-
-```
-cd /path-to-privastead/android_app_native
-cargo ndk -t arm64-v8a build --release
-```
-
-Note that we're building it for the arm64-v8a architecture.
-This is the architecture used in most modern phones and the only one we have tested.
-
-Now, copy the library to the Android app source tree:
+1. Follow the [official Firebase guide](https://firebase.google.com/docs/flutter/setup?platform=ios)
+2. When asked which platforms to support, select **iOS** and **Android** only.
+3. After setup, move the generated file:
 
 ```
-mkdir -p /path-to-privastead-android-app/app/src/main/jniLibs/arm64-v8a
-cp /path-to-privastead/android_app_native/target/aarch64-linux-android/release/libprivastead_android_app_native.so \
-	    /path-to-privastead-android-app/app/src/main/jniLibs/arm64-v8a/libprivastead_android_app_native.so
-
+lib/firebase_options.dart → lib/notifications/firebase_options.dart
 ```
 
-Now you need to build the app and install it on the device.
-We recommend using the Android Studio.
-We don't provide more details on that here since there are plenty of resources online.
+---
+
+Compile Rust Code for Android (skip to run section for iOS):
+
+From the project root:
+
+```
+cd rust
+```
+
+Add Android build targets:
+
+```
+rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+```
+
+Build and export to the Android JNI directory:
+
+```
+cargo ndk -o ../android/app/src/main/jniLibs build
+```
+
+This will generate .so files for each architecture and place them in the appropriate folder.
+
+---
+
+Run on a Physical Android/iOS Device
+
+1. Plug in your Android/iOS device via USB
+2. Enable Developer Mode and USB Debugging
+3. Ensure the device is recognized in Visual Studio Code (bottom-right status bar)
+4. From the project root, run:
+
+```
+flutter run
+```
+
+This will build and launch the app on your connected device.
+
 
 ### Step 7: Pairing the app with the hub
 

@@ -54,17 +54,14 @@ So far, the following cameras have been tested:
 ## Supported mobile OSes
 
 * Android
-
-<p align="left">
-  <img src="https://github.com/privastead/images/blob/main/screenshot1.png" alt="screenshot" width="20%"/>
-  <img src="https://github.com/privastead/images/blob/main/screenshot2.png" alt="screenshot" width="20%"/>
-</p>
+* iOS (does not support livestream yet)
 
 ## Tested smartphones (OS version)
 
 * Google Pixel 8 Pro (Android 15)
 * Google Pixel 7 (Android 14)
 * Moto G 5G (2024) (Android 14)
+* iPhone 16 Pro (iOS 18.5)
 
 ## Tested execution environment for the hub
 
