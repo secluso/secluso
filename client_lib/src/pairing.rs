@@ -15,7 +15,7 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::user::KeyPackages;
+use crate::mls_client::KeyPackages;
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha3::Sha3_512;

@@ -21,6 +21,7 @@ use std::path::Path;
 use std::time::Duration;
 use reqwest::blocking::{Client, Body};
 use base64::{engine::general_purpose, Engine as _};
+use base64::engine::general_purpose::STANDARD as base64_engine;
 use serde_json::json;
 
 #[derive(Clone)]
@@ -29,6 +30,8 @@ pub struct HttpClient {
     server_username: String,
     server_password: String,
 }
+
+//TODO: There's a lot of repitition between the functions here.
 
 // Note: The server needs a unique name for each camera.
 // The name needs to be available to both the camera and the app.
@@ -286,8 +289,7 @@ impl HttpClient {
         Ok(())
     }
 
-    /// Checks to see if there's a livestream request. If so, returns the epoch is the client
-    /// is expecting the livestream to be on.
+    /// Checks to see if there's a livestream request.
     pub fn livestream_check(&self, group_name: &str) -> io::Result<()> {
         let server_url = format!("http://{}/livestream/{}", self.server_addr, group_name);
 
@@ -451,5 +453,147 @@ impl HttpClient {
         }
 
         Ok(())
+    }
+
+    /// Send a config command
+    pub fn config_command(
+        &self,
+        group_name: &str,
+        command: Vec<u8>,
+    ) -> io::Result<()> {
+        let server_url = format!("http://{}/config/{}", self.server_addr, group_name);
+
+        let auth_value = format!("{}:{}", self.server_username, self.server_password);
+        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
+        let auth_header = format!("Basic {}", auth_encoded);
+
+        let client = Client::new();
+        let response = client
+            .post(server_url)
+            .header("Content-Type", "application/octet-stream")
+            .header("Authorization", auth_header)
+            .body(command)
+            .send()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Server error: {}", response.status()),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Checks to see if there's a config command.
+    /// The server sends the command encoded in Base64.
+    /// This function converts the command to Vec<u8> to returns it.
+    pub fn config_check(&self, group_name: &str) -> io::Result<Vec<u8>> {
+        let server_url = format!("http://{}/config/{}", self.server_addr, group_name);
+
+        let auth_value = format!("{}:{}", self.server_username, self.server_password);
+        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
+        let auth_header = format!("Basic {}", auth_encoded);
+
+        let client = Client::builder()
+            .timeout(None) // Disable timeout to allow long-polling
+            .build()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        let response = client
+            .get(&server_url)
+            .header("Authorization", auth_header)
+            .send()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
+            .error_for_status()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        let reader = BufReader::new(response);
+
+        for line in reader.lines() {
+            let line = line?;
+            if line.starts_with("data:") {
+                let encoded_command = &line[5..];
+                let command = base64_engine.decode(encoded_command)
+                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                return Ok(command);
+            }
+        }
+
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Server error"),
+        ));
+    }
+
+    /// Send a config response
+    pub fn config_response(
+        &self,
+        group_name: &str,
+        response: Vec<u8>,
+    ) -> io::Result<()> {
+        let server_url = format!("http://{}/config_response/{}", self.server_addr, group_name);
+
+        let auth_value = format!("{}:{}", self.server_username, self.server_password);
+        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
+        let auth_header = format!("Basic {}", auth_encoded);
+
+        let client = Client::new();
+        let response = client
+            .post(server_url)
+            .header("Content-Type", "application/octet-stream")
+            .header("Authorization", auth_header)
+            .body(response)
+            .send()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Server error: {}", response.status()),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Checks and retrieve a config command response.
+    pub fn fetch_config_response(
+        &self,
+        group_name: &str,
+    ) -> io::Result<Vec<u8>> {
+        let server_url = format!("http://{}/config_response/{}", self.server_addr, group_name);
+
+        let auth_value = format!("{}:{}", self.server_username, self.server_password);
+        let auth_encoded = general_purpose::STANDARD.encode(auth_value);
+        let auth_header = format!("Basic {}", auth_encoded);
+
+        let client = Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        let response = client
+            .get(&server_url)
+            .header("Authorization", auth_header.clone())
+            .send()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?
+            .error_for_status()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Server error: {}", response.status()),
+            ));
+        }
+
+        let response_vec = response
+            .bytes()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?
+            .to_vec();
+
+        Ok(response_vec)
     }
 }

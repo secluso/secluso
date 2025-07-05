@@ -18,6 +18,7 @@
 use privastead_app_native::{
     add_camera, decrypt_video, deregister, get_group_name,
     initialize, livestream_decrypt, livestream_update, Clients,
+    generate_heartbeat_request_config_command, process_heartbeat_config_response,
 };
 use privastead_client_lib::http_client::HttpClient;
 use privastead_client_server_lib::auth::parse_user_credentials;
@@ -28,7 +29,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::env;
 
 // This is a simple app that pairs with the Privastead camera, receives motion videos,
@@ -101,6 +102,7 @@ fn main() -> io::Result<()> {
             false,
             "".to_string(),
             "".to_string(),
+            "".to_string(),
         ) {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -128,13 +130,22 @@ fn main() -> io::Result<()> {
     }
 
     let clients_clone = Arc::clone(&clients);
-    let http_client_clone = http_client.clone();    
+    let http_client_clone = http_client.clone(); 
+    let clients_clone_2 = Arc::clone(&clients);
+    let http_client_clone_2 = http_client.clone();  
 
     // This thread is used for receiving motion videos
     println!("Launching a thread to listen for motion videos.");
     thread::spawn(move || {
         let _ = motion_loop(clients_clone, &http_client_clone, false);
         println!("Motion loop exited!");
+    });
+
+    // This thread is used for sending heartbeats to the camera
+    println!("Launching a thread to periodically send heartbeats to the camera.");
+    thread::spawn(move || {
+        let _ = heartbeat_loop(clients_clone_2, &http_client_clone_2);
+        println!("Heartbeat loop exited!");
     });
 
     // The main thread is used for launching on-demand livestream sessions.
@@ -148,9 +159,9 @@ fn deregister_all(
     http_client: &HttpClient,
 ) -> io::Result<()> {
     let motion_group_name =
-        get_group_name(&mut clients.lock().unwrap(), "motion".to_string(), CAMERA_NAME.to_string())?;
+        get_group_name(&mut clients.lock().unwrap(), "motion")?;
     let livestream_group_name =
-        get_group_name(&mut clients.lock().unwrap(), "livestream".to_string(), CAMERA_NAME.to_string())?;
+        get_group_name(&mut clients.lock().unwrap(), "livestream")?;
     deregister(&mut clients.lock().unwrap());
     let _ = http_client.deregister(&motion_group_name);
     let _ = http_client.deregister(&livestream_group_name);
@@ -158,7 +169,81 @@ fn deregister_all(
     fs::remove_dir_all(DATA_DIR).unwrap();
 
     Ok(())
-} 
+}
+
+fn heartbeat_loop(
+    clients: Arc<Mutex<Option<Box<Clients>>>>,
+    http_client: &HttpClient,
+) -> io::Result<()> {
+    let mut ignored_heartbeats = 0;
+
+    loop {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Could not convert time")
+            .as_secs();
+
+        let config_msg_enc =
+            generate_heartbeat_request_config_command(&mut clients.lock().unwrap(), timestamp)?;
+        
+        let config_group_name =
+            get_group_name(&mut clients.lock().unwrap(), "config")?;
+
+        println!("Sending heartbeat request: {}", timestamp);
+        http_client.config_command(&config_group_name, config_msg_enc)?;
+
+        let mut config_response_opt: Option<Vec<u8>> = None;
+        for _i in 0..5 {
+            match http_client.fetch_config_response(&config_group_name) {
+                Ok(resp) => {
+                    config_response_opt = Some(resp);
+                    break;
+                },
+                Err(_) => {},
+            }
+            thread::sleep(Duration::from_secs(1));
+        }
+
+        // FIXME: if we received a motion video or started livestreaming in between sending and receiving heartbeat
+        // throw away the results
+
+        if config_response_opt.is_none() {
+            println!("Error: couldn't fetch the heartbeat response. Camera might be offline.");
+            thread::sleep(Duration::from_secs(20));
+            continue;
+        }
+        
+        let config_response = config_response_opt.unwrap();
+
+        match process_heartbeat_config_response(&mut clients.lock().unwrap(), config_response.clone(), timestamp) {
+            Ok(response) if response == "healthy".to_string() => {
+                println!("Healthy heartbeat");
+                ignored_heartbeats = 0;
+            },
+            Ok(response) if response == "invalid ciphertext".to_string() => {
+                println!("The connection to the camera is corrupted. Pair the app with the camera again.");
+            },
+            Ok(response) => { //invalid timestamp || invalid epoch
+                // FIXME: Before processing the heartbeat response, we should make sure all motion videos are fetched and processed.
+                // But we're not doing that here, therefore an "invalid epoch" might not mean a corrupted channel.
+                println!("{response}");
+                ignored_heartbeats += 1;
+                if ignored_heartbeats >= 4 {
+                    println!("The connection to the camera might have got corrupted. Consider pairing the app with the camera again.");
+                }
+            },
+            Err(e) => {
+                println!("Error processing heartbeat response {e}");
+                ignored_heartbeats += 1;
+                if ignored_heartbeats >= 4 {
+                    println!("The connection to the camera might have got corrupted. Consider pairing the app with the camera again.");
+                }
+            }
+        }
+
+        thread::sleep(Duration::from_secs(20));
+    }
+}
 
 fn motion_loop(
     clients: Arc<Mutex<Option<Box<Clients>>>>,
@@ -178,7 +263,7 @@ fn motion_loop(
         2
     };
     
-    let group_name = get_group_name(&mut clients.lock().unwrap(), "motion".to_string(), CAMERA_NAME.to_string())?;
+    let group_name = get_group_name(&mut clients.lock().unwrap(), "motion")?;
     let mut iter = 0;
     loop {
         let enc_filename = format!("{}", epoch);
@@ -195,6 +280,23 @@ fn motion_loop(
                 file.write_all(&epoch_data).unwrap();
                 file.flush().unwrap();
                 file.sync_all().unwrap();
+
+                // We first try to get the timestamp from the video filename (format: video_<timestamp>.mp4).
+                // This should always work.
+                // If it doesn't, we just get the system timestamp.
+                let video_timestamp = dec_filename
+                    .split('_')
+                    .nth(1)
+                    .and_then(|part| {
+                        part.split('.')
+                            .next()
+                            .and_then(|num_str| num_str.parse::<u64>().ok())
+                    })
+                    .unwrap_or(SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .expect("Could not convert time")
+                        .as_secs()
+                    );
 
                 if one_video_only {
                     return Ok(());
@@ -255,7 +357,7 @@ fn livestream(
     http_client: &HttpClient,
     num_chunks: u64,
 ) -> io::Result<()> {
-    let group_name = get_group_name(&mut clients.lock().unwrap(), "livestream".to_string(), CAMERA_NAME.to_string())?;
+    let group_name = get_group_name(&mut clients.lock().unwrap(), "livestream")?;
 
     http_client.livestream_start(&group_name)?;
 

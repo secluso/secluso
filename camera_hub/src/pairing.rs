@@ -16,14 +16,14 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::traits::Camera;
-use crate::{Client, Clients, CLIENT_TAGS, CONFIG};
 use image::Luma;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::random::OpenMlsRand;
 use openmls_traits::OpenMlsProvider;
 use privastead_client_lib::http_client::HttpClient;
 use privastead_client_lib::pairing;
-use privastead_client_lib::user::{KeyPackages, User};
+use privastead_client_lib::mls_client::{KeyPackages, MlsClient};
+use privastead_client_lib::mls_clients::{MlsClients, MLS_CLIENT_TAGS, CONFIG};
 use qrcode::QrCode;
 use rand::Rng;
 use serde_json::{Value};
@@ -158,26 +158,21 @@ fn pair_with_app(
     app_key_packages
 }
 
-fn create_group_and_invite(
+fn invite(
     stream: &mut TcpStream,
-    client: &mut Client,
+    mls_client: &mut MlsClient,
     app_key_packages: KeyPackages,
 ) -> io::Result<()> {
-    let app_contact = client.user.add_contact("app", app_key_packages)?;
+    let app_contact = MlsClient::create_contact("app", app_key_packages)?;
     debug!("Added contact.");
 
-    client.user.create_group(&client.group_name);
-    client.user.save_groups_state();
-    debug!("Created group.");
-
-    let welcome_msg_vec = client
-        .user
-        .invite(&app_contact, &client.group_name)
+    let welcome_msg_vec = mls_client
+        .invite(&app_contact)
         .map_err(|e| {
             error!("invite() returned error:");
             e
         })?;
-    client.user.save_groups_state();
+    mls_client.save_group_state();
     debug!("App invited to the group.");
 
     write_varying_len(stream, &welcome_msg_vec)?;
@@ -185,20 +180,20 @@ fn create_group_and_invite(
     Ok(())
 }
 
-fn decrypt_msg(client: &mut User, msg: Vec<u8>) -> io::Result<Vec<u8>> {
-    let decrypted_msg = client.decrypt(msg, true)?;
-    client.save_groups_state();
+fn decrypt_msg(mls_client: &mut MlsClient, msg: Vec<u8>) -> io::Result<Vec<u8>> {
+    let decrypted_msg = mls_client.decrypt(msg, true)?;
+    mls_client.save_group_state();
 
     Ok(decrypted_msg)
 }
 
 fn request_wifi_info(
     stream: &mut TcpStream,
-    client: &mut User,
+    mls_client: &mut MlsClient,
 ) -> io::Result<(String, String, String)> {
     // Combine into one message to reduce risk of non-blocking errors
     let wifi_msg = read_varying_len(stream)?;
-    let wifi_bytes = decrypt_msg(client, wifi_msg)?;
+    let wifi_bytes = decrypt_msg(mls_client, wifi_msg)?;
 
     let payload_msg = String::from_utf8(wifi_bytes).expect("Invalid UTF-8 for WiFi message");
     debug!("Recieved Wifi Payload: {payload_msg}");
@@ -334,9 +329,9 @@ pub fn create_wifi_hotspot() {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn create_camera_groups(
+pub fn pair_all(
     camera: &dyn Camera,
-    clients: &mut Clients,
+    mls_clients: &mut MlsClients,
     input_camera_secret: Option<Vec<u8>>,
     connect_to_wifi: bool,
     http_client: &HttpClient,
@@ -376,16 +371,16 @@ pub fn create_camera_groups(
                     debug!("[Pairing] Failed to set write timeout: {e}");
                 }
                 let result = {
-                    let clients_ref = &mut *clients;
+                    let mls_clients_ref = &mut *mls_clients;
                     let mut success = true;
 
                     debug!("[Pairing] Before pairing");
-                    for client in clients_ref.iter_mut() {
-                        match pair_with_app(&mut stream, client.user.key_packages(), secret.clone())
+                    for mls_client in mls_clients_ref.iter_mut() {
+                        match pair_with_app(&mut stream, mls_client.key_packages(), secret.clone())
                         {
                             Ok(app_key_packages) => {
                                 if let Err(e) =
-                                    create_group_and_invite(&mut stream, client, app_key_packages)
+                                    invite(&mut stream, mls_client, app_key_packages)
                                 {
                                     debug!("[Pairing] Failed to create group: {e}");
                                     success = false;
@@ -404,7 +399,7 @@ pub fn create_camera_groups(
 
                     if connect_to_wifi && success {
                         debug!("[Pairing] Before request wifi info");
-                        match request_wifi_info(&mut stream, &mut clients[CONFIG].user) {
+                        match request_wifi_info(&mut stream, &mut mls_clients[CONFIG]) {
                             Ok((ssid, password, pairing_token)) => {
                                 if connect_to_wifi {
                                     match attempt_wifi_connection(ssid, password) {
@@ -467,32 +462,34 @@ pub fn create_camera_groups(
                     break;
                 } else {
                     // Get rid of any potential failed pairs beforehand.
-                    for client in clients.iter_mut() {
-                        client.user.clean().unwrap();
+                    for mls_client in mls_clients.iter_mut() {
+                        mls_client.clean().unwrap();
                     }
 
                     // We cannot use the old user objects, so create new clients.
-                    *clients = array::from_fn(|i| {
+                    *mls_clients = array::from_fn(|i| {
                         let (camera_name, group_name) = get_names(
                             camera,
                             true,
-                            format!("camera_{}_name", CLIENT_TAGS[i]),
-                            format!("group_{}_name", CLIENT_TAGS[i]),
+                            format!("camera_{}_name", MLS_CLIENT_TAGS[i]),
+                            format!("group_{}_name", MLS_CLIENT_TAGS[i]),
                         );
-                        debug!("{} camera_name = {}", CLIENT_TAGS[i], camera_name);
-                        debug!("{} group_name = {}", CLIENT_TAGS[i], group_name);
+                        debug!("{} camera_name = {}", MLS_CLIENT_TAGS[i], camera_name);
+                        debug!("{} group_name = {}", MLS_CLIENT_TAGS[i], group_name);
 
-                        let mut user = User::new(
+                        let mut mls_client = MlsClient::new(
                             camera_name,
                             true,
                             camera.get_state_dir().clone(),
-                            CLIENT_TAGS[i].to_string(),
-                        )
-                            .expect("User::new() for returned error.");
+                            MLS_CLIENT_TAGS[i].to_string(),
+                        ).expect("MlsClient::new() for returned error.");
 
-                        user.save_groups_state();
+                        mls_client.create_group(&group_name).unwrap();
+                        debug!("Created group.");
 
-                        Client { user, group_name }
+                        mls_client.save_group_state();
+
+                        mls_client
                     });
 
                     debug!("[Pairing] Error — resetting for next connection");

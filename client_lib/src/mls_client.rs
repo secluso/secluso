@@ -27,7 +27,6 @@ use std::fs;
 use std::io;
 use std::io::{BufRead, BufReader, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::collections::HashMap;
 use tls_codec::{Serialize as TlsSerialize, Deserialize as TlsDeserialize};
 
 // Post-quantum secure ciphersuite: https://cryspen.com/post/pq-openmls/
@@ -57,16 +56,16 @@ pub struct Group {
     only_contact: Option<Contact>,
 }
 
-pub struct User {
+pub struct MlsClient {
     pub(crate) username: String,
-    pub(crate) groups: HashMap<Vec<u8>, Group>,
+    pub(crate) group: Option<Group>,
     pub(crate) identity: Identity,
     provider: OpenMlsRustPersistentCrypto,
     file_dir: String,
     tag: String,
 }
 
-impl User {
+impl MlsClient {
     /// if first_time, create a new user with the given name and a fresh set of credentials.
     /// else, restore existing client.
     /// user_credentials: the user credentials needed to authenticate with the server. Different from OpenMLS credentials.
@@ -78,10 +77,10 @@ impl User {
         tag: String,
     ) -> io::Result<Self> {
         let mut crypto = OpenMlsRustPersistentCrypto::default();
-        let groups = if first_time {
-            HashMap::new()
+        let group = if first_time {
+            None
         } else {
-            Self::restore_groups_state(file_dir.clone(), tag.clone())
+            Self::restore_group_state(file_dir.clone(), tag.clone())
         };
         if !first_time {
             let ks_files = Self::get_state_files_sorted(
@@ -107,7 +106,7 @@ impl User {
 
         let out = Self {
             username: username.clone(),
-            groups,
+            group,
             identity: Identity::new(
                 CIPHERSUITE,
                 &crypto,
@@ -132,7 +131,7 @@ impl User {
 
         let g_files = Self::get_state_files_sorted(
             &self.file_dir,
-            &("groups_state_".to_string() + &self.tag.clone() + "_"),
+            &("group_state_".to_string() + &self.tag.clone() + "_"),
         )
         .unwrap();
         for f in &g_files[..] {
@@ -170,7 +169,14 @@ impl User {
     }
 
     /// Create a group with the given name.
-    pub fn create_group(&mut self, name: &str) {
+    pub fn create_group(&mut self, name: &str) -> io::Result<()> {
+        if self.group.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Group previously created.",
+            ))
+        }
+
         log::debug!("{} creates group {}", self.username, name);
         let group_id = name.as_bytes();
         let mut group_aad = group_id.to_vec();
@@ -200,31 +206,20 @@ impl User {
             only_contact: None,
         };
 
-        if self
-            .groups
-            .insert(group_id.to_vec(), group)
-            .is_some()
-        {
-            panic!("Group '{}' existed already", name);
-        }
+        self.group = Some(group);
+        Ok(())
     }
 
     /// Invite a contact to a group.
-    pub fn invite(&mut self, contact: &Contact, group_name: &str) -> io::Result<Vec<u8>> {
-        let joiner_key_package = contact.key_packages[0].1.clone();
+    pub fn invite(&mut self, contact: &Contact) -> io::Result<Vec<u8>> {
+        if self.group.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Group not created yet".to_string(),
+            ))
+        }
 
-        // Build a proposal with this key package and do the MLS bits.
-        let group_id = group_name.as_bytes();
-        let groups = &mut self.groups;
-        let group = match groups.get_mut(group_id) {
-            Some(g) => g,
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "No group with name {group_name} known.",
-                ))
-            }
-        };
+        let group = self.group.as_mut().unwrap();
 
         if group.only_contact.is_some() {
             return Err(io::Error::new(
@@ -232,6 +227,10 @@ impl User {
                 "Cannot invite more than one member to the group.",
             ));
         }
+
+        let joiner_key_package = contact.key_packages[0].1.clone();
+
+        // Build a proposal with this key package and do the MLS bits.
 
         // Note: out_messages is needed for other group members.
         // Currently, we don't need/use it since our groups only have
@@ -251,7 +250,7 @@ impl User {
             })?;
 
         // First, process the invitation on our end.
-        group
+       group
             .mls_group
             .merge_pending_commit(&self.provider)
             .expect("error merging pending commit");
@@ -272,6 +271,13 @@ impl User {
 
     /// Join a group with the provided welcome message.
     fn join_group(&mut self, welcome: Welcome, expected_inviter: Contact) -> io::Result<()> {
+        if self.group.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Joined a group already.",
+            ))
+        }
+
         log::debug!("{} joining group ...", self.username);
 
         // NOTE: Since the DS currently doesn't distribute copies of the group's ratchet
@@ -338,10 +344,8 @@ impl User {
 
         log::trace!("   {}", group_name);
 
-        match self.groups.insert(group_id, group) {
-            Some(_old) => panic!("Error: duplicate group"),
-            None => Ok(()),
-        }
+        self.group = Some(group);
+        Ok(())
     }
 
     /// Process a welcome message
@@ -372,7 +376,7 @@ impl User {
     /// When using these files at initialization time, we use the one with the
     /// largest timestamp (we could end up with multiple files at initialization
     /// time if this function is not fully executed).
-    pub fn save_groups_state(&mut self) {
+    pub fn save_group_state(&mut self) {
         // Use nanos in order to ensure that each time this function is called, we will use a new file name.
         // This does make some assumptions about the execution speed, but those assumptions are reasonable (for now).
         let current_timestamp: u128 = SystemTime::now()
@@ -380,9 +384,9 @@ impl User {
             .expect("Could not convert time")
             .as_nanos();
 
-        let data = bincode::serialize(&self.groups).unwrap();
+        let data = bincode::serialize(&self.group).unwrap();
         let pathname = self.file_dir.clone()
-            + "/groups_state_"
+            + "/group_state_"
             + &self.tag.clone()
             + "_"
             + &current_timestamp.to_string();
@@ -404,12 +408,12 @@ impl User {
         //delete old groups state files
         let g_files = Self::get_state_files_sorted(
             &self.file_dir,
-            &("groups_state_".to_string() + &self.tag.clone() + "_"),
+            &("group_state_".to_string() + &self.tag.clone() + "_"),
         )
         .unwrap();
         assert!(
             g_files[0]
-                == "groups_state_".to_owned()
+                == "group_state_".to_owned()
                     + &self.tag.clone()
                     + "_"
                     + &current_timestamp.to_string()
@@ -435,9 +439,9 @@ impl User {
         }
     }
 
-    pub fn restore_groups_state(file_dir: String, tag: String) -> HashMap<Vec<u8>, Group> {
+    pub fn restore_group_state(file_dir: String, tag: String) -> Option<Group> {
         let g_files =
-            Self::get_state_files_sorted(&file_dir, &("groups_state_".to_string() + &tag + "_"))
+            Self::get_state_files_sorted(&file_dir, &("group_state_".to_string() + &tag + "_"))
                 .unwrap();
         for f in &g_files {
             let pathname = file_dir.clone() + "/" + f;
@@ -451,7 +455,7 @@ impl User {
             }
         }
 
-        panic!("Could not successfully load the groups state from file.");
+        panic!("Could not successfully load the group state from file.");
     }
 
     pub fn get_state_files_sorted(dir_path: &str, pattern: &str) -> std::io::Result<Vec<String>> {
@@ -485,7 +489,7 @@ impl User {
             .ok()
     }
 
-    pub fn add_contact(&mut self, name: &str, key_packages: KeyPackages) -> io::Result<Contact> {
+    pub fn create_contact(name: &str, key_packages: KeyPackages) -> io::Result<Contact> {
         // FIXME: The identity of a client is defined as the identity of the first key
         // package right now.
         // Note: we only use one key package anyway.
@@ -501,47 +505,35 @@ impl User {
             id: id.clone(),
         };
 
-        let contact_comp = Some(contact.clone());
-        for (_group_id, group) in self.groups.iter() {
-            if group.only_contact == contact_comp {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Contact already exists".to_string(),
-                ));
-            }
-        }
-
         Ok(contact)
     }
 
-    pub fn get_group_name(&self, only_contact_name: &str) -> io::Result<String> {
-        for (_, group) in self.groups.iter() {
-            if group.only_contact.is_some()
-                && group.only_contact.as_ref().unwrap().username == only_contact_name
-            {
-                return Ok(group.group_name.clone());
-            }
-        }
+    pub fn get_group_name(&self) -> io::Result<String> {
+        match &self.group {
+            Some(g) => {        
+                return Ok(g.group_name.clone());
+            },
 
-        Err(io::Error::new(
-            io::ErrorKind::Other,
-            "Unknown group".to_string(),
-        ))
+            None => {
+                Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Group not created yet".to_string(),
+                ))
+            },
+        }
     }
 
     /// Generate a commit to update self leaf node in the ratchet tree, merge the commit, and return the message
     /// to be sent to other group members.
-    pub fn update(&mut self, group_name: &str) -> io::Result<(Vec<u8>, u64)> {
-        let groups = &mut self.groups;
-        let group: &mut Group = match groups.get_mut(group_name.as_bytes()) {
-            Some(g) => g,
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Unknown group".to_string(),
-                ))
-            }
-        };
+    pub fn update(&mut self) -> io::Result<(Vec<u8>, u64)> {
+        if self.group.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Group not created yet".to_string(),
+            ))
+        }
+
+        let group = self.group.as_mut().unwrap();
 
         // FIXME: _welcome should be none, group_info should be some.
         // See openmls/src/group/mls_group/updates.rs.
@@ -557,7 +549,7 @@ impl User {
             })?;
 
         log::trace!("Generating update message");
-        let group_recipients = Self::recipients(group);
+        let group_recipients = Self::recipients(&group);
         // Generate the message to the group.
         let msg = GroupMessage::new(out_message.into(), &group_recipients);
 
@@ -583,25 +575,42 @@ impl User {
         Ok((msg_vec, epoch))
     }
 
+    /// Get the current group epoch
+    pub fn get_epoch(&self) -> io::Result<u64> {
+        if self.group.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Group not created yet".to_string(),
+            ))
+        }
+
+        let group = self.group.as_ref().unwrap();
+
+        let epoch = group
+            .mls_group
+            .epoch()
+            .as_u64();
+
+        Ok(epoch)
+    }
+
     /// Encrypts a message and returns the ciphertext
-    pub fn encrypt(&mut self, bytes: &[u8], group_name: &str) -> io::Result<Vec<u8>> {
-        let groups = &mut self.groups;
-        let group: &mut Group = match groups.get_mut(group_name.as_bytes()) {
-            Some(g) => g,
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Unknown group".to_string(),
-                ))
-            }
-        };
+    pub fn encrypt(&mut self, bytes: &[u8]) -> io::Result<Vec<u8>> {
+        if self.group.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Group not created yet".to_string(),
+            ))
+        }
+
+        let group = self.group.as_mut().unwrap();
 
         let message_out = group
             .mls_group
             .create_message(&self.provider, &self.identity.signer, bytes)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{e}")))?;
 
-        let msg = GroupMessage::new(message_out.into(), &Self::recipients(group));
+        let msg = GroupMessage::new(message_out.into(), &Self::recipients(&group));
         
         let mut msg_vec = Vec::new();
         msg.tls_serialize(&mut msg_vec).map_err(|e| {
@@ -619,20 +628,13 @@ impl User {
         message: ProtocolMessage,
         app_msg: bool,
     ) -> io::Result<Vec<u8>> {
-        let groups = &mut self.groups;
-
-        let group = match groups.get_mut(message.group_id().as_slice()) {
-            Some(g) => g,
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!(
-                        "Error getting group {:?} for a message. Dropping message.",
-                        message.group_id()
-                    ),
-                ));
-            }
-        };
+        if self.group.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Group not created yet".to_string(),
+            ))
+        }
+        let group = self.group.as_mut().unwrap();
         let mls_group = &mut group.mls_group;
 
         // This works since none of the other members of the group, other than the camera,

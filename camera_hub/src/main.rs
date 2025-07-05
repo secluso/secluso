@@ -24,7 +24,8 @@ extern crate serde_derive;
 use cfg_if::cfg_if;
 use docopt::Docopt;
 use privastead_client_lib::http_client::HttpClient;
-use privastead_client_lib::user::User;
+use privastead_client_lib::mls_client::MlsClient;
+use privastead_client_lib::mls_clients::{NUM_MLS_CLIENTS, MLS_CLIENT_TAGS, MOTION, LIVESTREAM, FCM, CONFIG, MlsClients};
 use privastead_client_server_lib::auth::parse_user_credentials;
 use serde_yml::Value;
 use std::array;
@@ -42,6 +43,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::SystemTime;
 use std::{thread, time::Duration};
+use regex::Regex;
 
 mod delivery_monitor;
 use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
@@ -53,9 +55,11 @@ mod traits;
 use crate::traits::Camera;
 mod pairing;
 use crate::pairing::{
-    create_camera_groups, create_wifi_hotspot, get_input_camera_secret, get_names,
+    pair_all, create_wifi_hotspot, get_input_camera_secret, get_names,
     read_user_credentials,
 };
+mod config;
+use crate::config::process_config_command;
 mod fmp4;
 mod mp4;
 
@@ -84,34 +88,21 @@ const VIDEO_DIR_GENERAL: &str = "pending_videos";
 // A counter representing the amount of active camera threads
 static GLOBAL_THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-const NUM_CLIENTS: usize = 4;
-static CLIENT_TAGS: [&str; NUM_CLIENTS] = ["motion", "livestream", "fcm", "config"];
-// indices for different clients
-const MOTION: usize = 0;
-const LIVESTREAM: usize = 1;
-const FCM: usize = 2;
-const CONFIG: usize = 3;
-
-struct Client {
-    user: User,
-    group_name: String,
-}
-
-type Clients = [Client; NUM_CLIENTS];
-
 const USAGE: &str = "
 Privastead camera hub: connects to an IP camera and send videos to the privastead app end-to-end encrypted (through an untrusted server).
 
 Usage:
   privastead-camera-hub
   privastead-camera-hub --reset
+  privastead-camera-hub --reset-full
   privastead-camera-hub --test-motion
   privastead-camera-hub --test-livestream
   privastead-camera-hub (--version | -v)
   privastead-camera-hub (--help | -h)
 
 Options:
-    --reset             Wipe all the state
+    --reset             Wipe all the state, but not pending videos
+    --reset-full        Wipe all the state and pending videos
     --test-motion       Used for testing motion videos
     --test-livestream   Used for testing video livestreaming
     --version, -v       Show version
@@ -121,6 +112,7 @@ Options:
 #[derive(Debug, Clone, Deserialize)]
 struct Args {
     flag_reset: bool,
+    flag_reset_full: bool,
     flag_test_motion: bool,
     #[cfg(feature = "ip")]
     flag_test_livestream: bool,
@@ -328,8 +320,8 @@ fn main() -> io::Result<()> {
         GLOBAL_THREAD_COUNT.fetch_add(1, Ordering::SeqCst);
         thread::spawn(move || {
             loop {
-                if args.flag_reset {
-                    match reset(camera.as_ref(), &http_client_clone) {
+                if args.flag_reset || args.flag_reset_full {
+                    match reset(camera.as_ref(), &http_client_clone, args.flag_reset_full) {
                         Ok(_) => {}
                         Err(e) => {
                             panic!("reset() returned with: {e}");
@@ -391,7 +383,11 @@ fn ask_user_password(prompt: String) -> io::Result<String> {
     Ok(password.trim().to_string())
 }
 
-fn reset(camera: &dyn Camera, http_client: &HttpClient) -> io::Result<()> {
+fn reset(
+    camera: &dyn Camera,
+    http_client: &HttpClient,
+    reset_full: bool,
+) -> io::Result<()> {
     // FIXME: has some code copy/pasted from core()
     let state_dir = camera.get_state_dir();
     let state_dir_path = Path::new(&state_dir);
@@ -404,45 +400,45 @@ fn reset(camera: &dyn Camera, http_client: &HttpClient) -> io::Result<()> {
         return Ok(());
     }
 
-    for i in 0..NUM_CLIENTS {
+    for i in 0..NUM_MLS_CLIENTS {
         let (camera_name, group_name) = get_names(
             camera,
             first_time,
-            format!("camera_{}_name", CLIENT_TAGS[i]),
-            format!("group_{}_name", CLIENT_TAGS[i]),
+            format!("camera_{}_name", MLS_CLIENT_TAGS[i]),
+            format!("group_{}_name", MLS_CLIENT_TAGS[i]),
         );
 
         // First, clean up MLS users
-        match User::new(
+        match MlsClient::new(
             camera_name,
             first_time,
             state_dir.clone(),
-            CLIENT_TAGS[i].to_string(),
+            MLS_CLIENT_TAGS[i].to_string(),
         ) {
             Ok(mut client) => match client.clean() {
                 Ok(_) => {
-                    info!("{} client cleaned successfully.", CLIENT_TAGS[i])
+                    info!("{} client cleaned successfully.", MLS_CLIENT_TAGS[i])
                 }
                 Err(e) => {
-                    error!("Error: Cleaning client_{} failed: {e}", CLIENT_TAGS[i]);
+                    error!("Error: Cleaning client_{} failed: {e}", MLS_CLIENT_TAGS[i]);
                 }
             },
             Err(e) => {
-                error!("Error: Creating client_{} failed: {e}", CLIENT_TAGS[i]);
+                error!("Error: Creating client_{} failed: {e}", MLS_CLIENT_TAGS[i]);
             }
         };
 
         //Second, delete data in the server
         match http_client.deregister(&group_name) {
             Ok(_) => {
-                info!("{} data on server deleted successfully.", CLIENT_TAGS[i])
+                info!("{} data on server deleted successfully.", MLS_CLIENT_TAGS[i])
             }
             Err(e) => {
                 error!(
                     "Error: Deleting {} data from server failed: {e}.\
                     Sometimes, this error is okay since the app might have deleted the data already\
                     or no data existed in the first place.",
-                    CLIENT_TAGS[i]
+                    MLS_CLIENT_TAGS[i]
                 );
             }
         }
@@ -451,12 +447,63 @@ fn reset(camera: &dyn Camera, http_client: &HttpClient) -> io::Result<()> {
     //Third, delete all the local state files.
     let _ = fs::remove_dir_all(state_dir_path);
 
-    //Fourth, delete all the pending videos (those that were never successfully delivered)
-    let video_dir = camera.get_video_dir();
-    let video_dir_path = Path::new(&video_dir);
-    let _ = fs::remove_dir_all(video_dir_path);
+    //Fourth, (in the case of full reset) delete all the pending videos (those that were never successfully delivered)
+    if reset_full {
+        let video_dir = camera.get_video_dir();
+        let video_dir_path = Path::new(&video_dir);
+        let _ = fs::remove_dir_all(video_dir_path);
+    }
 
     println!("Reset finished.");
+    Ok(())
+}
+
+fn send_pending_motion_videos(
+    camera: &mut dyn Camera,
+    clients: &mut MlsClients,
+    delivery_monitor: &mut DeliveryMonitor,
+    http_client: &HttpClient,
+) -> io::Result<()> {
+    let mut pending_timestamps = Vec::new();
+    let video_dir = camera.get_video_dir();
+
+    let re = Regex::new(r"^video_(\d+)\.mp4$").unwrap();
+
+    for entry in fs::read_dir(video_dir)? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+
+        if let Some(caps) = re.captures(&file_name) {
+            if let Some(matched) = caps.get(1) {
+                if let Ok(ts) = matched.as_str().parse::<u64>() {
+                    pending_timestamps.push(ts);
+                }
+            }
+        }
+    }
+
+    for timestamp in &pending_timestamps {
+        println!("Recovered pending video {:?}", *timestamp);
+        let video_info = VideoInfo::from(*timestamp);
+        prepare_motion_video(&mut clients[MOTION], video_info, delivery_monitor)?;
+
+        upload_pending_enc_videos(
+            &clients[MOTION].get_group_name().unwrap(),
+            delivery_monitor,
+            http_client,
+        );
+    }
+
+    if pending_timestamps.len() > 0 {
+        //Timestamp of 0 tells the app it's time to start downloading.
+        let dummy_timestamp: u64 = 0;
+        let notification_msg = clients[FCM].encrypt(
+            &bincode::serialize(&dummy_timestamp).unwrap())?;
+        clients[FCM].save_group_state();
+        http_client.send_fcm_notification(notification_msg)?;
+    }
+
     Ok(())
 }
 
@@ -475,27 +522,32 @@ fn core(
         create_wifi_hotspot();
     }
 
-    let mut clients: Clients = array::from_fn(|i| {
+    let mut clients: MlsClients = array::from_fn(|i| {
         let (camera_name, group_name) = get_names(
             camera,
             first_time,
-            format!("camera_{}_name", CLIENT_TAGS[i]),
-            format!("group_{}_name", CLIENT_TAGS[i]),
+            format!("camera_{}_name", MLS_CLIENT_TAGS[i]),
+            format!("group_{}_name", MLS_CLIENT_TAGS[i]),
         );
-        debug!("{} camera_name = {}", CLIENT_TAGS[i], camera_name);
-        debug!("{} group_name = {}", CLIENT_TAGS[i], group_name);
+        debug!("{} camera_name = {}", MLS_CLIENT_TAGS[i], camera_name);
+        debug!("{} group_name = {}", MLS_CLIENT_TAGS[i], group_name);
 
-        let mut user = User::new(
+        let mut mls_client = MlsClient::new(
             camera_name,
             first_time,
             state_dir.clone(),
-            CLIENT_TAGS[i].to_string(),
+            MLS_CLIENT_TAGS[i].to_string(),
         )
-        .expect("User::new() for returned error.");
+        .expect("MlsClient::new() for returned error.");
 
-        user.save_groups_state();
+        if first_time {
+            mls_client.create_group(&group_name).unwrap();
+            debug!("Created group.");
+        }
 
-        Client { user, group_name }
+        mls_client.save_group_state();
+
+        mls_client
     });
 
     let camera_name = camera.get_name();
@@ -505,7 +557,7 @@ fn core(
             "[{}] Waiting to be paired with the mobile app.",
             camera_name
         );
-        create_camera_groups(
+        pair_all(
             camera,
             &mut clients,
             input_camera_secret,
@@ -523,12 +575,17 @@ fn core(
     let mut locked_motion_check_time: Option<SystemTime> = None;
     let mut locked_delivery_check_time: Option<SystemTime> = None;
     let mut locked_livestream_check_time: Option<SystemTime> = None;
+    let mut locked_config_check_time: Option<SystemTime> = None;
     let video_dir = camera.get_video_dir();
     let mut delivery_monitor = DeliveryMonitor::from_file_or_new(video_dir, state_dir);
     let livestream_request = Arc::new(Mutex::new(false));
     let livestream_request_clone = Arc::clone(&livestream_request);
-    let group_livestream_name_clone = clients[LIVESTREAM].group_name.clone();
+    let group_livestream_name_clone = clients[LIVESTREAM].get_group_name().unwrap();
     let http_client_clone = http_client.clone();
+    let group_config_name_clone = clients[CONFIG].get_group_name().unwrap();
+    let http_client_clone_2 = http_client.clone();
+    let config_enc_commands: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(vec![]));
+    let config_enc_commands_clone = Arc::clone(&config_enc_commands);
 
     thread::spawn(move || loop {
         if http_client_clone
@@ -541,6 +598,25 @@ fn core(
             sleep(Duration::from_secs(1));
         }
     });
+
+    thread::spawn(move || loop {
+        if let Ok(enc_command) = http_client_clone_2
+            .config_check(&group_config_name_clone) {
+            let mut config_enc_commands = config_enc_commands_clone.lock().unwrap();
+            config_enc_commands.push(enc_command);
+        } else {
+            error!("Error in receiving config command");
+            sleep(Duration::from_secs(1));
+        }
+    });
+
+    if first_time {
+        // Send pending videos before entering the loop
+        // This is needed after re-pairing.
+        // For now, re-pairing is done manually and needs physical proximity.
+        // Hence, it is safe to send pending videos to the app that is paired with the camera.
+        let _ = send_pending_motion_videos(camera, &mut clients, &mut delivery_monitor, http_client);
+    }
 
     // Used for anti-dither for motion detection
     loop {
@@ -562,11 +638,9 @@ fn core(
             info!("Detected motion.");
             if !test_mode {
                 info!("Sending the FCM notification with timestamp.");
-                let notification_msg = clients[FCM].user.encrypt(
-                    &bincode::serialize(&video_info.timestamp).unwrap(),
-                    &clients[FCM].group_name,
-                )?;
-                clients[FCM].user.save_groups_state();
+                let notification_msg = clients[FCM].encrypt(
+                    &bincode::serialize(&video_info.timestamp).unwrap())?;
+                clients[FCM].save_group_state();
                 match http_client.send_fcm_notification(notification_msg) {
                     Ok(_) => {}
                     Err(e) => {
@@ -584,7 +658,7 @@ fn core(
 
             info!("Uploading the encrypted video.");
             upload_pending_enc_videos(
-                &clients[MOTION].group_name,
+                &clients[MOTION].get_group_name().unwrap(),
                 &mut delivery_monitor,
                 &http_client,
             );
@@ -593,11 +667,9 @@ fn core(
                 info!("Sending the FCM notification to start downloading.");
                 //Timestamp of 0 tells the app it's time to start downloading.
                 let dummy_timestamp: u64 = 0;
-                let notification_msg = clients[FCM].user.encrypt(
-                    &bincode::serialize(&dummy_timestamp).unwrap(),
-                    &clients[FCM].group_name,
-                )?;
-                clients[FCM].user.save_groups_state();
+                let notification_msg = clients[FCM].encrypt(
+                    &bincode::serialize(&dummy_timestamp).unwrap())?;
+                clients[FCM].save_group_state();
                 match http_client.send_fcm_notification(notification_msg) {
                     Ok(_) => {}
                     Err(e) => {
@@ -634,11 +706,23 @@ fn core(
             || locked_delivery_check_time.unwrap().le(&SystemTime::now())
         {
             upload_pending_enc_videos(
-                &clients[MOTION].group_name,
+                &clients[MOTION].get_group_name().unwrap(),
                 &mut delivery_monitor,
                 &http_client,
             );
             locked_delivery_check_time = Some(SystemTime::now().add(Duration::from_secs(60)));
+        }
+
+        // Check for config commands every second
+        if locked_config_check_time.is_none()
+                    || locked_config_check_time.unwrap().le(&SystemTime::now())
+        {
+            let mut enc_commands = config_enc_commands.lock().unwrap();
+            for enc_command in &*enc_commands {
+                let _ = process_config_command(&mut clients, enc_command, &http_client, &mut delivery_monitor);
+            }
+            enc_commands.clear();
+            locked_config_check_time = Some(SystemTime::now().add(Duration::from_secs(1)));
         }
 
         // Introduce a small delay since we don't need this constantly checked

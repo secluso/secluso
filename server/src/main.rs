@@ -42,6 +42,8 @@ use rocket::Shutdown;
 use serde_json::Number;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use base64::engine::general_purpose::STANDARD as base64_engine;
+use base64::Engine;
 
 mod auth;
 mod fcm;
@@ -53,9 +55,9 @@ use crate::security::check_path_sandboxed;
 
 // Per-user livestream start state
 #[derive(Clone)]
-struct LivestreamStartState {
+struct EventState {
     sender: Sender<()>,
-    cameras_started: Arc<DashMap<String, String>>,
+    events: Arc<DashMap<String, String>>, // <Camera, Event Msg>
 }
 
 // Bulk check JSON structures
@@ -95,13 +97,14 @@ struct PairingResponse {
 }
 
 type SharedPairingState = Arc<Mutex<HashMap<String, Arc<Mutex<PairingEntry>>>>>;
-type AllLiveStreamStartState = Arc<DashMap<String, LivestreamStartState>>;
+type AllEventState = Arc<DashMap<String, EventState>>;
 
 // Simple rate limiters for the server
 const MAX_MOTION_FILE_SIZE: usize = 50; // in mebibytes
 const MAX_NUM_PENDING_MOTION_FILES: usize = 100;
 const MAX_LIVESTREAM_FILE_SIZE: usize = 20; // in mebibytes
 const MAX_NUM_PENDING_LIVESTREAM_FILES: usize = 50;
+const MAX_COMMAND_FILE_SIZE: usize = 10; // in kibibytes
 
 async fn get_num_files(path: &Path) -> io::Result<usize> {
     let mut entries = fs::read_dir(path).await?;
@@ -276,6 +279,8 @@ async fn upload(
 ) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
     let camera_path = root.join(camera);
+    check_path_sandboxed(&root, &camera_path)?;
+
     if !camera_path.exists() {
         fs::create_dir_all(&camera_path).await?;
     }
@@ -289,7 +294,10 @@ async fn upload(
     }
 
     let filepath = Path::new(&camera_path).join(filename);
+    check_path_sandboxed(&root, &filepath)?;
+
     let filepath_tmp = Path::new(&camera_path).join(format!("{}_tmp", filename));
+    check_path_sandboxed(&root, &filepath_tmp)?;
 
     data.open(MAX_MOTION_FILE_SIZE.mebibytes())
         .into_file(&filepath_tmp)
@@ -313,8 +321,11 @@ async fn bulk_group_check(data: Json<MotionPairs>, auth: BasicAuth) -> RawText<S
         let epoch_to_check = pair.epoch_to_check;
 
         let camera_path = root.join(&group_name);
-        let filepath = camera_path.join(epoch_to_check.to_string());
+        if check_path_sandboxed(&root, &camera_path).is_err() {
+            continue;
+        }
 
+        let filepath = camera_path.join(epoch_to_check.to_string());
         if check_path_sandboxed(&root, &filepath).is_err() {
             continue;
         }
@@ -336,8 +347,11 @@ async fn bulk_group_check(data: Json<MotionPairs>, auth: BasicAuth) -> RawText<S
 async fn retrieve(camera: &str, filename: &str, auth: BasicAuth) -> Option<RawText<File>> {
     let root = Path::new("data").join(&auth.username);
     let camera_path = root.join(camera);
-    let filepath = camera_path.join(filename);
+    if check_path_sandboxed(&root, &camera_path).is_err() {
+        return None;
+    }
 
+    let filepath = camera_path.join(filename);
     if check_path_sandboxed(&root, &filepath).is_err() {
         return None;
     }
@@ -349,8 +363,11 @@ async fn retrieve(camera: &str, filename: &str, auth: BasicAuth) -> Option<RawTe
 async fn delete_file(camera: &str, filename: &str, auth: BasicAuth) -> Option<()> {
     let root = Path::new("data").join(&auth.username);
     let camera_path = root.join(camera);
-    let filepath = camera_path.join(filename);
+    if check_path_sandboxed(&root, &camera_path).is_err() {
+        return None;
+    }
 
+    let filepath = camera_path.join(filename);
     if check_path_sandboxed(&root, &filepath).is_err() {
         return None;
     }
@@ -362,7 +379,6 @@ async fn delete_file(camera: &str, filename: &str, auth: BasicAuth) -> Option<()
 async fn delete_camera(camera: &str, auth: BasicAuth) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
     let camera_path = root.join(camera);
-
     check_path_sandboxed(&root, &camera_path)?;
 
     fs::remove_dir_all(camera_path).await
@@ -372,7 +388,6 @@ async fn delete_camera(camera: &str, auth: BasicAuth) -> io::Result<()> {
 async fn upload_fcm_token(data: Data<'_>, auth: BasicAuth) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
     let token_path = root.join("fcm_token");
-
     check_path_sandboxed(&Path::new("data"), &token_path)?;
 
     // FIXME: hardcoded max size
@@ -384,6 +399,8 @@ async fn upload_fcm_token(data: Data<'_>, auth: BasicAuth) -> io::Result<String>
 async fn send_fcm_notification(data: Data<'_>, auth: BasicAuth) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
     let token_path = root.join("fcm_token");
+    check_path_sandboxed(&root, &token_path)?;
+
     if !token_path.exists() {
         return Err(io::Error::new(
             io::ErrorKind::Other,
@@ -409,14 +426,14 @@ async fn send_fcm_notification(data: Data<'_>, auth: BasicAuth) -> io::Result<St
     Ok("ok".to_string())
 }
 
-fn get_user_state(all_state: AllLiveStreamStartState, username: &str) -> LivestreamStartState {
-    // retun the LivestreamStartState for the user. If it doesn't exist, add it and return it.
+fn get_user_state(all_state: AllEventState, username: &str) -> EventState {
+    // retun the EventState for the user. If it doesn't exist, add it and return it.
     match all_state.entry(username.to_string()) {
         Entry::Occupied(entry) => entry.get().clone(),
         Entry::Vacant(entry) => {
             let (tx, _) = channel(1024);
-            let user_state = LivestreamStartState {
-                cameras_started: Arc::new(DashMap::new()),
+            let user_state = EventState {
+                events: Arc::new(DashMap::new()),
                 sender: tx,
             };
             entry.insert(user_state.clone());
@@ -429,18 +446,19 @@ fn get_user_state(all_state: AllLiveStreamStartState, username: &str) -> Livestr
 async fn livestream_start(
     camera: &str,
     auth: BasicAuth,
-    all_state: &rocket::State<AllLiveStreamStartState>,
+    all_state: &rocket::State<AllEventState>,
 ) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
     let camera_path = root.join(camera);
-
     check_path_sandboxed(&root, &camera_path)?;
 
-    let update_path = Path::new(&camera_path).join("0");
-    let livestream_end_path = Path::new(&camera_path).join("livestream_end");
+    if !camera_path.exists() {
+        fs::create_dir_all(&camera_path).await?;
+    }
 
+    let update_path = Path::new(&camera_path).join("0");
     check_path_sandboxed(&root, &update_path)?;
-    check_path_sandboxed(&root, &livestream_end_path)?;
+
     if update_path.exists() {
         return Err(io::Error::new(
             io::ErrorKind::Other,
@@ -448,16 +466,17 @@ async fn livestream_start(
         ));
     }
 
+    let livestream_end_path = Path::new(&camera_path).join("livestream_end");
+    check_path_sandboxed(&root, &livestream_end_path)?;
+
     if livestream_end_path.exists() {
         fs::remove_file(livestream_end_path).await.ok();
     }
 
-    fs::create_dir_all(&camera_path).await?;
-
     let user_state = get_user_state(all_state.inner().clone(), &auth.username);
 
     let epoch = format!("placeholder");
-    user_state.cameras_started.insert(camera.to_string(), epoch);
+    user_state.events.insert(camera.to_string(), epoch);
     let _ = user_state.sender.send(());
 
     Ok(())
@@ -467,7 +486,7 @@ async fn livestream_start(
 async fn livestream_check(
     camera: &str,
     auth: BasicAuth,
-    all_state: &rocket::State<AllLiveStreamStartState>,
+    all_state: &rocket::State<AllEventState>,
     mut end: Shutdown,
 ) -> EventStream![] {
     let camera = camera.to_string();
@@ -485,13 +504,13 @@ async fn livestream_check(
         }
 
         loop {
-            if let Some((_key, epoch)) = user_state.cameras_started.remove(&camera) {
+            if let Some((_key, epoch)) = user_state.events.remove(&camera) {
                 // wipe all the data from the previous stream (if any)
                 // FIXME: error is ignored here and other uses of ok()
                 fs::remove_dir_all(&camera_path).await.ok();
                 fs::create_dir_all(&camera_path).await.ok();
                 yield Event::data(epoch.to_string());
-                break;
+                return;
             }
 
             select! {
@@ -511,10 +530,11 @@ async fn livestream_upload(
     filename: &str,
     data: Data<'_>,
     auth: BasicAuth,
-    all_state: &rocket::State<AllLiveStreamStartState>,
+    all_state: &rocket::State<AllEventState>,
 ) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
     let camera_path = root.join(camera);
+    check_path_sandboxed(&root, &camera_path)?;
 
     if !camera_path.exists() {
         return Err(io::Error::new(
@@ -524,6 +544,8 @@ async fn livestream_upload(
     }
 
     let livestream_end_path = camera_path.join("livestream_end");
+    check_path_sandboxed(&root, &livestream_end_path)?;
+
     if livestream_end_path.exists() {
         fs::remove_file(livestream_end_path).await.ok();
         return Ok(0.to_string());
@@ -538,9 +560,9 @@ async fn livestream_upload(
     }
 
     let filepath = Path::new(&camera_path).join(filename);
-    let filepath_tmp = Path::new(&camera_path).join(format!("{}_tmp", filename));
-
     check_path_sandboxed(&root, &filepath)?;
+
+    let filepath_tmp = Path::new(&camera_path).join(format!("{}_tmp", filename));
     check_path_sandboxed(&root, &filepath_tmp)?;
 
     data.open(MAX_LIVESTREAM_FILE_SIZE.mebibytes())
@@ -561,12 +583,15 @@ async fn livestream_retrieve(
     camera: &str,
     filename: &str,
     auth: BasicAuth,
-    all_state: &rocket::State<AllLiveStreamStartState>,
+    all_state: &rocket::State<AllEventState>,
 ) -> Option<RawText<File>> {
     let root = Path::new("data").join(&auth.username);
     let camera_path = root.join(camera);
-    let filepath = camera_path.join(filename);
+    if check_path_sandboxed(&root, &camera_path).is_err() {
+        return None;
+    }
 
+    let filepath = camera_path.join(filename);
     if check_path_sandboxed(&root, &filepath).is_err() {
         return None;
     }
@@ -588,22 +613,168 @@ async fn livestream_retrieve(
 async fn livestream_end(camera: &str, auth: BasicAuth) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
     let camera_path = root.join(camera);
-    let livestream_end_path = camera_path.join("livestream_end");
-
-    check_path_sandboxed(&root, &livestream_end_path)?;
+    check_path_sandboxed(&root, &camera_path)?;
 
     if !camera_path.exists() {
-        rocket::tokio::fs::create_dir_all(&camera_path).await?;
+        fs::create_dir_all(&camera_path).await?;
     }
+
+    let livestream_end_path = camera_path.join("livestream_end");
+    check_path_sandboxed(&root, &livestream_end_path)?;
 
     let _ = File::create(livestream_end_path).await?;
 
     Ok(())
 }
 
+#[post("/config/<camera>", data = "<data>")]
+async fn config_command(
+    camera: &str,
+    data: Data<'_>,
+    auth: BasicAuth,
+    all_state: &rocket::State<AllEventState>,
+) -> io::Result<()> {
+    let root = Path::new("data").join(&auth.username);
+    let camera_path = root.join(camera);
+    check_path_sandboxed(&root, &camera_path)?;
+
+    if !camera_path.exists() {
+        fs::create_dir_all(&camera_path).await?;
+    }
+
+    //FIXME: if we receive two commands back to back, one could overwrite the other.
+    let command_file_name = "command".to_string();
+    let command_path = Path::new(&camera_path).join(&command_file_name);    
+    check_path_sandboxed(&root, &command_path)?;
+
+    data.open(MAX_COMMAND_FILE_SIZE.kibibytes())
+        .into_file(&command_path)
+        .await?;
+
+    let user_state = get_user_state(all_state.inner().clone(), &auth.username);
+
+    user_state.events.insert(camera.to_string(), command_file_name);
+    let _ = user_state.sender.send(());
+
+    Ok(())
+}
+
+#[get("/config/<camera>")]
+async fn config_check(
+    camera: &str,
+    auth: BasicAuth,
+    all_state: &rocket::State<AllEventState>,
+    mut end: Shutdown,
+) -> EventStream![] {
+    let camera = camera.to_string();
+
+    let root = Path::new("data").join(&auth.username);
+    let camera_path = root.join(&camera);
+
+    let user_state = get_user_state(all_state.inner().clone(), &auth.username);
+    let mut rx = user_state.sender.subscribe();
+
+    EventStream! {
+        if check_path_sandboxed(&root, &camera_path).is_err() {
+            yield Event::data("invalid");
+            return;
+        }
+
+        loop {
+            if let Some((_key, command_file_name)) = user_state.events.remove(&camera) {
+                let command_path = Path::new(&camera_path).join(&command_file_name);    
+                if check_path_sandboxed(&root, &command_path).is_err() {
+                    yield Event::data("invalid");
+                    return;
+                }
+
+                let content = match fs::read(&command_path).await {
+                    Ok(data) => data,
+                    Err(_) => {
+                        yield Event::data("error reading file");
+                        return;
+                    }
+                };
+
+                fs::remove_file(&camera_path).await.ok();
+                
+                // Encode binary data as base64 and return
+                let encoded = base64_engine.encode(&content);
+                yield Event::data(encoded);
+                return;
+            }
+
+            select! {
+                msg = rx.recv() => match msg {
+                    Ok(()) => {},
+                    Err(_) => break,
+                },
+                _ = &mut end => break,
+            };
+        }
+    }
+}
+
+#[post("/config_response/<camera>", data = "<data>")]
+async fn config_response(
+    camera: &str,
+    data: Data<'_>,
+    auth: BasicAuth,
+) -> io::Result<()> {
+    let root = Path::new("data").join(&auth.username);
+    let camera_path = root.join(camera);
+    check_path_sandboxed(&root, &camera_path)?;
+
+    if !camera_path.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Error: config camera doesn't exist.",
+        ));
+    }
+
+    let filepath = camera_path.join("config_response");
+    check_path_sandboxed(&root, &filepath)?;
+
+    let filepath_tmp = camera_path.join("config_response_tmp");
+    check_path_sandboxed(&root, &filepath_tmp)?;
+
+    data.open(MAX_COMMAND_FILE_SIZE.kibibytes())
+        .into_file(&filepath_tmp)
+        .await?;
+    // We write to a temp file first and then rename to avoid a race with the retrieve operation.
+    fs::rename(filepath_tmp, filepath).await?;
+
+    Ok(())
+}
+
+#[get("/config_response/<camera>")]
+async fn retrieve_config_response(
+    camera: &str,
+    auth: BasicAuth,
+) -> Option<RawText<File>> {
+    let root = Path::new("data").join(&auth.username);
+    let camera_path = root.join(camera);
+    if check_path_sandboxed(&root, &camera_path).is_err() {
+        return None;
+    }
+
+    let filepath = camera_path.join("config_response");
+    if check_path_sandboxed(&root, &filepath).is_err() {
+        return None;
+    }
+
+    if camera_path.exists() {
+        let response = File::open(&filepath).await.map(RawText).ok();
+        fs::remove_file(filepath).await.ok();
+        return response;
+    }
+
+    None
+}
+
 #[launch]
 fn rocket() -> _ {
-    let all_livestream_start_state: AllLiveStreamStartState = Arc::new(DashMap::new());
+    let all_event_state: AllEventState = Arc::new(DashMap::new());
     let pairing_state: SharedPairingState = Arc::new(Mutex::new(HashMap::new()));
 
     let config = rocket::Config {
@@ -613,7 +784,7 @@ fn rocket() -> _ {
     };
 
     rocket::custom(config)
-        .manage(all_livestream_start_state)
+        .manage(all_event_state)
         .manage(initialize_users())
         .manage(pairing_state)
         .mount(
@@ -632,6 +803,10 @@ fn rocket() -> _ {
                 livestream_upload,
                 livestream_retrieve,
                 livestream_end,
+                config_command,
+                config_check,
+                config_response,
+                retrieve_config_response,
             ],
         )
 }

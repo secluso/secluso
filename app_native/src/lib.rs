@@ -8,15 +8,16 @@ use std::net::TcpStream;
 use std::str::FromStr;
 use std::str;
 use std::array;
-
-use log::info;
-use log::debug;
-
+use std::path::Path;
+use log::{info, debug, error};
 use anyhow::Context;
 use anyhow::anyhow;
 use privastead_client_lib::pairing;
-use privastead_client_lib::user::{Contact, KeyPackages, User};
+use privastead_client_lib::mls_client::{Contact, KeyPackages, MlsClient};
+use privastead_client_lib::mls_clients::MlsClients;
 use privastead_client_lib::video_net_info::{VideoNetInfo, VIDEONETINFO_SANITY};
+use privastead_client_lib::mls_clients::{NUM_MLS_CLIENTS, MLS_CLIENT_TAGS, MOTION, LIVESTREAM, FCM, CONFIG};
+use privastead_client_lib::config::{HeartbeatResult, Heartbeat, HeartbeatRequest, OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE};
 use serde_json::json;
 
 // Used to generate random names.
@@ -25,23 +26,9 @@ use serde_json::json;
 // our security guarantees. Will only cause availability issues.
 const NUM_RANDOM_CHARS: u8 = 16;
 
-// FIXME: copied from camera_hub/main.rs
-const NUM_CLIENTS: usize = 4;
-static CLIENT_TAGS: [&str; NUM_CLIENTS] = [
-    "motion",
-    "livestream",
-    "fcm",
-    "config",
-];
-// indices for different clients
-const MOTION: usize = 0;
-const LIVESTREAM: usize = 1;
-const FCM: usize = 2;
-const CONFIG: usize = 3;
-
 #[flutter_rust_bridge::frb]
 pub struct Clients {
-    users: [User; NUM_CLIENTS],
+    mls_clients: MlsClients,
 }
 
 #[flutter_rust_bridge::frb]
@@ -50,24 +37,24 @@ impl Clients {
         first_time: bool,
         file_dir: String,
     ) -> io::Result<Self> {
-        let users: [User; NUM_CLIENTS] = array::from_fn(|i| {
-            let app_name = get_app_name(first_time, file_dir.clone(), format!("app_{}_name", CLIENT_TAGS[i]));
+        let mls_clients: MlsClients = array::from_fn(|i| {
+            let app_name = get_app_name(first_time, file_dir.clone(), format!("app_{}_name", MLS_CLIENT_TAGS[i]));
 
-            let mut user = User::new(
+            let mut mls_client = MlsClient::new(
                 app_name,
                 first_time,
                 file_dir.clone(),
-                CLIENT_TAGS[i].to_string(),
-            ).expect("User::new() for returned error.");
+                MLS_CLIENT_TAGS[i].to_string(),
+            ).expect("MlsClient::new() for returned error.");
 
             // Make sure the groups_state files are created in case we initialize again soon.
-            user.save_groups_state();
+            mls_client.save_group_state();
 
-            user
+            mls_client
         });
 
         Ok(Self {
-            users,
+            mls_clients,
         })
     }
 }
@@ -138,8 +125,7 @@ fn perform_pairing_handshake(
 
 fn send_wifi_and_pairing_info(
     stream: &mut TcpStream,
-    client: &mut User,
-    group_name: String,
+    mls_client: &mut MlsClient,
     wifi_ssid: String,
     wifi_password: String,
     pairing_token: String,
@@ -150,7 +136,7 @@ fn send_wifi_and_pairing_info(
         "pairing_token": pairing_token
     });
     info!("Sending wifi info {}", wifi_msg);
-    let wifi_info_msg = match client.encrypt(&serde_json::to_vec(&wifi_msg)?, &group_name) {
+    let wifi_info_msg = match mls_client.encrypt(&serde_json::to_vec(&wifi_msg)?) {
         Ok(msg) => msg,
         Err(e) => {
             info!("Failed to encrypt SSID: {e}");
@@ -161,7 +147,7 @@ fn send_wifi_and_pairing_info(
     write_varying_len(stream, &wifi_info_msg)?;
     info!("After Wifi Msg Sent");
 
-    client.save_groups_state();
+    mls_client.save_group_state();
 
     Ok(())
 }
@@ -170,22 +156,21 @@ fn send_wifi_and_pairing_info(
 fn pair_with_camera(
     stream: &mut TcpStream,
     camera_name: &str,
-    users: &mut [User; NUM_CLIENTS],
+    mls_clients: &mut MlsClients,
     secret: [u8; pairing::NUM_SECRET_BYTES],
 ) -> anyhow::Result<()> {
-    for mut user in users {
-        let app_key_packages = user.key_packages();
+    for mut mls_client in mls_clients {
+        let app_key_packages = mls_client.key_packages();
 
         let camera_key_packages =
             perform_pairing_handshake(stream, app_key_packages, secret)?;
 
         let camera_welcome_msg = read_varying_len(stream)?;
 
-        let contact = user
-            .add_contact(camera_name, camera_key_packages)?;
+        let contact = MlsClient::create_contact(camera_name, camera_key_packages)?;
 
         process_welcome_message(
-            &mut user,
+            &mut mls_client,
             contact,
             camera_welcome_msg,
         )?;
@@ -195,19 +180,18 @@ fn pair_with_camera(
 }
 
 fn process_welcome_message(
-    client: &mut User,
+    mls_client: &mut MlsClient,
     contact: Contact,
     welcome_msg: Vec<u8>,
 ) -> io::Result<()> {
-    client.process_welcome(contact, welcome_msg)?;
-    client.save_groups_state();
+    mls_client.process_welcome(contact, welcome_msg)?;
+    mls_client.save_group_state();
 
     Ok(())
 }
 
 pub fn encrypt_settings_message(
     clients_reg: &mut Option<Box<Clients>>,
-    camera_name: String,
     message: Vec<u8>,
 ) -> anyhow::Result<Vec<u8>> {
     if clients_reg.is_none() {
@@ -215,15 +199,11 @@ pub fn encrypt_settings_message(
     }
 
     let clients = clients_reg.as_mut().unwrap();
-    let config_user = &mut clients.users[CONFIG];
-
-    let group_name = config_user
-        .get_group_name(&camera_name)
-        .unwrap();
+    let config_mls_client = &mut clients.mls_clients[CONFIG];
 
     debug!("Encrypting message");
-    let settings_msg = config_user.encrypt(&message, &group_name).context("Failed to encrypt SSID")?;
-    config_user.save_groups_state();
+    let settings_msg = config_mls_client.encrypt(&message,).context("Failed to encrypt SSID")?;
+    config_mls_client.save_group_state();
 
     Ok(settings_msg)
 }
@@ -248,8 +228,8 @@ pub fn add_camera(
     let clients = clients_reg.as_mut().unwrap();
 
     //Make sure the camera_name is not used before for another camera.
-    for user in &clients.as_mut().users {
-        if user.get_group_name(&camera_name).is_ok() {
+    for mls_client in &clients.as_mut().mls_clients {
+        if mls_client.get_group_name().is_ok() {
             info!("Error: camera_name used before!");
             return false;
         }
@@ -285,7 +265,7 @@ pub fn add_camera(
     if let Err(e) = pair_with_camera(
         &mut stream,
         &camera_name,
-        &mut clients.as_mut().users,
+        &mut clients.as_mut().mls_clients,
         camera_secret,
     ) {
         info!("Error: {e}");
@@ -294,14 +274,9 @@ pub fn add_camera(
 
     // Send Wi-Fi info
     if standalone_camera {
-        let group_name = clients
-            .users[CONFIG]
-            .get_group_name(&camera_name)
-            .unwrap();
         if let Err(e) = send_wifi_and_pairing_info(
             &mut stream,
-            &mut clients.users[CONFIG],
-            group_name,
+            &mut clients.mls_clients[CONFIG],
             wifi_ssid,
             wifi_password,
             pairing_token,
@@ -363,7 +338,7 @@ pub fn decrypt_video(
         ));
     }
 
-    let file_dir = clients.as_mut().unwrap().users[MOTION].get_file_dir();
+    let file_dir = clients.as_mut().unwrap().mls_clients[MOTION].get_file_dir();
     info!("File dir: {}", file_dir);
     let enc_pathname: String = format!("{}/{}", file_dir, encrypted_filename);
 
@@ -374,15 +349,16 @@ pub fn decrypt_video(
     clients
         .as_mut()
         .unwrap()
-        .users[MOTION]
+        .mls_clients[MOTION]
         .decrypt(enc_msg, false)?;
+    clients.as_mut().unwrap().mls_clients[MOTION].save_group_state();
 
     let enc_msg = read_next_msg_from_file(&mut enc_file)?;
     // The second message is the video info
     let dec_msg = clients
         .as_mut()
         .unwrap()
-        .users[MOTION]
+        .mls_clients[MOTION]
         .decrypt(enc_msg, true)?;
 
     let info: VideoNetInfo = bincode::deserialize(&dec_msg)
@@ -405,6 +381,10 @@ pub fn decrypt_video(
     let dec_filename = format!("video_{}.mp4", info.timestamp);
     let dec_pathname: String = file_dir.to_owned() + "/" + &dec_filename;
 
+    if Path::new(&dec_pathname).exists() {
+        return Ok("Duplicate".to_string());
+    }
+
     let mut dec_file = fs::File::create(&dec_pathname).expect("Could not create decrypted file");
 
     for expected_chunk_number in 0..info.num_msg {
@@ -412,7 +392,7 @@ pub fn decrypt_video(
         let dec_msg = clients
             .as_mut()
             .unwrap()
-            .users[MOTION]
+            .mls_clients[MOTION]
             .decrypt(enc_msg, true)?;
 
         // check the chunk number
@@ -425,8 +405,6 @@ pub fn decrypt_video(
 
         let chunk_number = u64::from_be_bytes(dec_msg[..8].try_into().unwrap());
         if chunk_number != expected_chunk_number {
-            // Need to save groups state since we might have committed an update.
-            clients.as_mut().unwrap().users[MOTION].save_groups_state();
             let _ = fs::remove_file(&dec_pathname);
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -441,14 +419,14 @@ pub fn decrypt_video(
     // Then, we save groups state, which persists the update.
     dec_file.flush().unwrap();
     dec_file.sync_all().unwrap();
-    clients.as_mut().unwrap().users[MOTION].save_groups_state();
+    clients.as_mut().unwrap().mls_clients[MOTION].save_group_state();
 
     Ok(dec_filename)
 }
 
 pub fn decrypt_message(
     clients: &mut Option<Box<Clients>>,
-    client_tag: String,
+    client_tag: &str,
     message: Vec<u8>,
 ) -> io::Result<String> {
     if clients.is_none() {
@@ -458,8 +436,8 @@ pub fn decrypt_message(
         ));
     }
 
-    let user = client_tag_to_index(&client_tag);
-    if user.is_none() {
+    let mls_client_index = client_tag_to_index(client_tag);
+    if mls_client_index.is_none() {
         return Err(io::Error::new(
             io::ErrorKind::Other,
             format!("Error: No matching client!"),
@@ -469,9 +447,9 @@ pub fn decrypt_message(
     let dec_msg_bytes = clients
         .as_mut()
         .unwrap()
-        .users[user.unwrap()]
+        .mls_clients[mls_client_index.unwrap()]
         .decrypt(message, true)?;
-    clients.as_mut().unwrap().users[user.unwrap()].save_groups_state();
+    clients.as_mut().unwrap().mls_clients[mls_client_index.unwrap()].save_group_state();
 
     // New JSON structure. Ensure valid JSON string
     if let Ok(message) = str::from_utf8(&dec_msg_bytes) {
@@ -504,8 +482,7 @@ pub fn decrypt_message(
 
 pub fn get_group_name(
     clients: &mut Option<Box<Clients>>,
-    client_tag: String,
-    camera_name: String,
+    client_tag: &str,
 ) -> io::Result<String> {
     if clients.is_none() {
         return Err(io::Error::new(
@@ -514,8 +491,8 @@ pub fn get_group_name(
         ));
     }
 
-    let user = client_tag_to_index(&client_tag);
-    if user.is_none() {
+    let mls_client_index = client_tag_to_index(client_tag);
+    if mls_client_index.is_none() {
         return Err(io::Error::new(
             io::ErrorKind::Other,
             format!("Error: No matching client!"),
@@ -525,8 +502,8 @@ pub fn get_group_name(
     clients
         .as_mut()
         .unwrap()
-        .users[user.unwrap()]
-        .get_group_name(&camera_name)
+        .mls_clients[mls_client_index.unwrap()]
+        .get_group_name()
 }
 
 fn client_tag_to_index(tag: &str) -> Option<usize> {
@@ -554,13 +531,13 @@ pub fn livestream_decrypt(
     let dec_data = clients
         .as_mut()
         .unwrap()
-        .users[LIVESTREAM]
+        .mls_clients[LIVESTREAM]
         .decrypt(enc_data, true)?;
     clients
         .as_mut()
         .unwrap()
-        .users[LIVESTREAM]
-        .save_groups_state();
+        .mls_clients[LIVESTREAM]
+        .save_group_state();
 
     // check the chunk number
     if dec_data.len() < 8 {
@@ -604,15 +581,15 @@ pub fn livestream_update(
         let _ = clients
             .as_mut()
             .unwrap()
-            .users[LIVESTREAM]
+            .mls_clients[LIVESTREAM]
             .decrypt(commit_msg, false)?;
     }
 
     clients
         .as_mut()
         .unwrap()
-        .users[LIVESTREAM]
-        .save_groups_state();
+        .mls_clients[LIVESTREAM]
+        .save_group_state();
 
     Ok(())
 }
@@ -623,18 +600,113 @@ pub fn deregister(clients: &mut Option<Box<Clients>>) {
         return;
     }
 
-    let users = &mut clients.as_mut().unwrap().users;
+    let mls_clients = &mut clients.as_mut().unwrap().mls_clients;
 
-    for i in 0..NUM_CLIENTS {
-        let file_dir = users[i].get_file_dir();
+    for i in 0..NUM_MLS_CLIENTS {
+        let file_dir = mls_clients[i].get_file_dir();
 
-        if let Err(e) = users[i].clean() {
-            info!("Error: Cleaning client_{} failed: {e}", CLIENT_TAGS[i]);
+        if let Err(e) = mls_clients[i].clean() {
+            info!("Error: Cleaning client_{} failed: {e}", MLS_CLIENT_TAGS[i]);
         }
 
-        let _ = fs::remove_file(format!("{}/app_{}_name", file_dir, CLIENT_TAGS[i]));
+        let _ = fs::remove_file(format!("{}/app_{}_name", file_dir, MLS_CLIENT_TAGS[i]));
     }
 
 
     *clients = None;
+}
+
+pub fn generate_heartbeat_request_config_command(
+    clients: &mut Option<Box<Clients>>,
+    timestamp: u64,
+) -> io::Result<Vec<u8>> {
+    if clients.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Error: clients not initialized!"),
+        ));
+    }
+
+    let heartbeat_request = HeartbeatRequest {
+        timestamp,
+    };
+
+    let mut config_msg = vec![OPCODE_HEARTBEAT_REQUEST];
+    config_msg
+        .extend(bincode::serialize(&heartbeat_request).unwrap());
+
+    let config_msg_enc = clients
+        .as_mut()
+        .unwrap()
+        .mls_clients[CONFIG]
+        .encrypt(&config_msg)?;
+
+    clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state();
+
+    Ok(config_msg_enc)
+}
+
+pub fn process_heartbeat_config_response(
+    clients: &mut Option<Box<Clients>>,
+    config_response: Vec<u8>,
+    expected_timestamp: u64,
+) -> io::Result<String> {
+    if clients.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Error: clients not initialized!"),
+        ));
+    }
+
+    match clients.as_mut().unwrap().mls_clients[CONFIG]
+        .decrypt(config_response, true) {            
+        Ok(command) => {
+            clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state();
+            info!("Decrypted command: {}", command.len());
+            match command[0] {
+                OPCODE_HEARTBEAT_RESPONSE => {
+                    let heartbeat: Heartbeat = bincode::deserialize(&command[1..])
+                        .map_err(|e| {
+                            io::Error::new(
+                                io::ErrorKind::Other,
+                                format!("Failed to deserialize heartbeat msg - {e}"),
+                            )
+                        })?;
+
+                    let heartbeat_result = 
+                        heartbeat.process(&mut clients.as_mut().unwrap().mls_clients, expected_timestamp)?;
+
+                    match heartbeat_result {
+                        HeartbeatResult::HealthyHeartbeat(_timestamp) => {
+                            return Ok("healthy".to_string());
+                        },
+                        HeartbeatResult::InvalidTimestamp => {
+                            return Ok("invalid timestamp".to_string());
+                        },
+                        HeartbeatResult::InvalidCiphertext => {
+                            return Ok("invalid ciphertext".to_string());
+                        },
+                        HeartbeatResult::InvalidEpoch => {
+                            return Ok("invalid epoch".to_string());
+                        },
+                    }
+                },
+                _ => {
+                    error!("Error: Unknown config command response opcode!");
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("Error: Unknown config response opcode!"),
+                    ));
+                }
+            }
+        },
+        Err(e) => {
+            error!("Failed to decrypt command message: {e}");
+            clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state();
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Failed to decrypt command message: {e}"),
+            ));
+        }
+    }
 }

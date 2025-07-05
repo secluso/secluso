@@ -16,7 +16,7 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use privastead_client_lib::user::User;
+use privastead_client_lib::mls_client::MlsClient;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -42,6 +42,14 @@ impl VideoInfo {
         }
     }
 
+    pub fn from(timestamp: u64) -> Self {
+        Self {
+            timestamp,
+            filename: Self::get_filename_from_timestamp(timestamp),
+            epoch: 0
+        }
+    }
+
     pub fn get_filename_from_timestamp(timestamp: u64) -> String {
         "video_".to_owned() + &timestamp.to_string() + ".mp4"
     }
@@ -49,7 +57,15 @@ impl VideoInfo {
 
 #[derive(Serialize, Deserialize)]
 pub struct DeliveryMonitor {
+    // We use the watch_list to keep track of video files that are yet to be
+    // uploaded to the server.
+    // A video will be removed from this list as soon as it is uploaded to the server.
+    // If the video is lost in the server, this list won't know.
     watch_list: HashMap<u64, VideoInfo>, //<video timestamp, video info>
+    // We use the pending_list to keep track of videos that are not delivered to the app.
+    // A video is only removed from this list if a heartbeat signal with a larger timestamp
+    // is received.
+    pending_list: HashMap<u64, VideoInfo>, //<video timestamp, video info>
     video_dir: String,
     state_dir: String,
     pending_livestream_updates: Vec<Vec<u8>>,
@@ -57,7 +73,7 @@ pub struct DeliveryMonitor {
 
 impl DeliveryMonitor {
     pub fn from_file_or_new(video_dir: String, state_dir: String) -> Self {
-        let d_files = User::get_state_files_sorted(&state_dir, "delivery_monitor_").unwrap();
+        let d_files = MlsClient::get_state_files_sorted(&state_dir, "delivery_monitor_").unwrap();
         for f in &d_files {
             let pathname = state_dir.clone() + "/" + f;
             let file = fs::File::open(pathname).expect("Could not open file");
@@ -72,6 +88,8 @@ impl DeliveryMonitor {
 
         Self {
             watch_list: HashMap::new(),
+            // TODO: search the file system and add pending videos to this list
+            pending_list: HashMap::new(),
             video_dir,
             state_dir,
             pending_livestream_updates: vec![],
@@ -92,7 +110,7 @@ impl DeliveryMonitor {
         file.sync_all().unwrap();
 
         //delete old state files
-        let d_files = User::get_state_files_sorted(&self.state_dir, "delivery_monitor_").unwrap();
+        let d_files = MlsClient::get_state_files_sorted(&self.state_dir, "delivery_monitor_").unwrap();
         assert!(d_files[0] == "delivery_monitor_".to_owned() + &current_timestamp.to_string());
         for f in &d_files[1..] {
             let _ = fs::remove_file(self.state_dir.clone() + "/" + f);
@@ -101,7 +119,8 @@ impl DeliveryMonitor {
 
     pub fn enqueue_video(&mut self, video_info: VideoInfo) {
         info!("enqueue_event: {}", video_info.timestamp);
-        let _ = self.watch_list.insert(video_info.timestamp, video_info);
+        let _ = self.watch_list.insert(video_info.timestamp, video_info.clone());
+        let _ = self.pending_list.insert(video_info.timestamp, video_info);
 
         self.save_state();
     }
@@ -110,8 +129,32 @@ impl DeliveryMonitor {
         info!("dequeue_event: {}", video_info.timestamp);
 
         let _ = self.watch_list.remove(&video_info.timestamp);
-        let _ = fs::remove_file(self.get_video_file_path(video_info));
         let _ = fs::remove_file(self.get_enc_video_file_path(video_info));
+
+        self.save_state();
+    }
+
+    pub fn process_heartbeat(&mut self, heartbeat_timestamp: u64) {
+        info!("process_heartbeat: {}", heartbeat_timestamp);
+
+        let mut removed_list = vec![];
+
+        // FIXME: the heartbeat_timestamp comes from the app.
+        // The video timestamp is from the camera.
+        // If the wall clock times on these two are not synchronized,
+        // we could end up with incorrect result here.
+        self.pending_list.retain(|&timestamp, video_info| {
+            if timestamp < heartbeat_timestamp {
+                removed_list.push(video_info.clone());
+                false
+            } else {
+                true
+            }
+        });
+
+        for video_info in removed_list {
+            let _ = fs::remove_file(self.get_video_file_path(&video_info));
+        }
 
         self.save_state();
     }

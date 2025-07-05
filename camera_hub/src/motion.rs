@@ -16,7 +16,7 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
-use crate::Client;
+use privastead_client_lib::mls_client::MlsClient;
 use privastead_client_lib::http_client::HttpClient;
 use privastead_client_lib::video_net_info::VideoNetInfo;
 use std::fs::File;
@@ -60,7 +60,7 @@ pub fn upload_pending_enc_videos(
 }
 
 pub fn prepare_motion_video(
-    client: &mut Client,
+    mls_client: &mut MlsClient,
     mut video_info: VideoInfo,
     delivery_monitor: &mut DeliveryMonitor,
 ) -> io::Result<()> {
@@ -69,7 +69,7 @@ pub fn prepare_motion_video(
     debug!("Starting to send video.");
 
     // Update MLS epoch
-    let (commit_msg, epoch) = client.user.update(&client.group_name)?;
+    let (commit_msg, epoch) = mls_client.update()?;
 
     video_info.epoch = epoch;
     let enc_video_file_path = delivery_monitor.get_enc_video_file_path(&video_info);
@@ -87,9 +87,8 @@ pub fn prepare_motion_video(
 
     let net_info = VideoNetInfo::new(video_info.timestamp, file_len, READ_SIZE as u64);
 
-    let msg = client
-        .user
-        .encrypt(&bincode::serialize(&net_info).unwrap(), &client.group_name)
+    let msg = mls_client
+        .encrypt(&bincode::serialize(&net_info).unwrap())
         .map_err(|e| {
             error!("encrypt() returned error:");
             e
@@ -112,12 +111,11 @@ pub fn prepare_motion_video(
             );
         }
 
-        let msg = client
-            .user
-            .encrypt(&buffer, &client.group_name)
+        let msg = mls_client
+            .encrypt(&buffer)
             .map_err(|e| {
                 error!("send_video() returned error:");
-                client.user.save_groups_state();
+                mls_client.save_group_state();
                 e
             })?;
         append_to_file(&enc_file, msg);
@@ -129,7 +127,7 @@ pub fn prepare_motion_video(
     // Then, we enqueue to be uploaded to the server.
     enc_file.flush().unwrap();
     enc_file.sync_all().unwrap();
-    client.user.save_groups_state();
+    mls_client.save_group_state();
 
     // FIXME: fatal crash point here. We have committed the update, but we will never enqueue it for sending.
     // Severity: medium.

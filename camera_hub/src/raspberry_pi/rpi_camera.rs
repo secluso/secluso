@@ -297,6 +297,9 @@ impl Camera for RaspberryPiCamera {
     fn record_motion_video(&self, info: &VideoInfo, duration: u64) -> io::Result<()> {
         let rt = Runtime::new()?;
 
+        // FIXME: use a temp name for recording and then rename at the end?
+        // If not, we might end up with half-recorded videos on crash, factory reset, etc.
+        // This might be okay though.
         let future = Self::write_mp4(
             self.video_dir.clone() + "/" + &info.filename,
             duration,
