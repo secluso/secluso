@@ -65,8 +65,8 @@ fn handle_heartbeat_request(
             )
         })?;
 
-    info!("handle_heartbeat");
-    delivery_monitor.process_heartbeat(heartbeat_request.timestamp);
+    info!("handle_heartbeat: {}, {}", heartbeat_request.timestamp, heartbeat_request.motion_epoch);
+    delivery_monitor.process_heartbeat(heartbeat_request.motion_epoch);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("Could not convert time")

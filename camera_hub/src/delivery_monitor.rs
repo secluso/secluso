@@ -63,9 +63,9 @@ pub struct DeliveryMonitor {
     // If the video is lost in the server, this list won't know.
     watch_list: HashMap<u64, VideoInfo>, //<video timestamp, video info>
     // We use the pending_list to keep track of videos that are not delivered to the app.
-    // A video is only removed from this list if a heartbeat signal with a larger timestamp
-    // is received.
-    pending_list: HashMap<u64, VideoInfo>, //<video timestamp, video info>
+    // A video is only removed from this list if a heartbeat signal with an equal or larger
+    // motion epoch is received.
+    pending_list: HashMap<u64, VideoInfo>, //<video epoch, video info>
     video_dir: String,
     state_dir: String,
     pending_livestream_updates: Vec<Vec<u8>>,
@@ -120,7 +120,7 @@ impl DeliveryMonitor {
     pub fn enqueue_video(&mut self, video_info: VideoInfo) {
         info!("enqueue_event: {}", video_info.timestamp);
         let _ = self.watch_list.insert(video_info.timestamp, video_info.clone());
-        let _ = self.pending_list.insert(video_info.timestamp, video_info);
+        let _ = self.pending_list.insert(video_info.epoch, video_info);
 
         self.save_state();
     }
@@ -134,17 +134,15 @@ impl DeliveryMonitor {
         self.save_state();
     }
 
-    pub fn process_heartbeat(&mut self, heartbeat_timestamp: u64) {
-        info!("process_heartbeat: {}", heartbeat_timestamp);
-
+    pub fn process_heartbeat(&mut self, motion_epoch: u64) {
         let mut removed_list = vec![];
 
         // FIXME: the heartbeat_timestamp comes from the app.
         // The video timestamp is from the camera.
         // If the wall clock times on these two are not synchronized,
         // we could end up with incorrect result here.
-        self.pending_list.retain(|&timestamp, video_info| {
-            if timestamp < heartbeat_timestamp {
+        self.pending_list.retain(|&epoch, video_info| {
+            if epoch <= motion_epoch {
                 removed_list.push(video_info.clone());
                 false
             } else {

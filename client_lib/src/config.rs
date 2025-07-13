@@ -34,6 +34,7 @@ pub enum HeartbeatResult {
 #[derive(Serialize, Deserialize)]
 pub struct HeartbeatRequest {
     pub timestamp: u64,
+    pub motion_epoch: u64,
 }
 
 #[derive(Serialize, Deserialize)]

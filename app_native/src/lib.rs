@@ -627,8 +627,15 @@ pub fn generate_heartbeat_request_config_command(
         ));
     }
 
+    let motion_epoch = clients
+        .as_mut()
+        .unwrap()
+        .mls_clients[MOTION]
+        .get_epoch()?;
+
     let heartbeat_request = HeartbeatRequest {
         timestamp,
+        motion_epoch,
     };
 
     let mut config_msg = vec![OPCODE_HEARTBEAT_REQUEST];
