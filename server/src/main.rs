@@ -547,8 +547,11 @@ async fn livestream_upload(
     check_path_sandboxed(&root, &livestream_end_path)?;
 
     if livestream_end_path.exists() {
-        fs::remove_file(livestream_end_path).await.ok();
-        return Ok(0.to_string());
+        // If it's a commit msg, let it be uploaded.
+        if filename != "0" {
+            fs::remove_file(livestream_end_path).await.ok();
+            return Ok(0.to_string());
+        }
     }
 
     let num_pending_files = get_num_files(&camera_path).await?;
