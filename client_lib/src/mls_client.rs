@@ -706,15 +706,28 @@ impl MlsClient {
                     "Error: Unexpected external join proposal message!".to_string(),
                 ));
             }
-            ProcessedMessageContent::StagedCommitMessage(commit_ptr) => {
+            ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
                 if app_msg {
                     return Err(io::Error::new(
                         io::ErrorKind::Other,
-                        "Error: expected an application message, but received a commit message",
+                        "Error: expected an application message, but received a commit message.",
                     ));
                 }
+
+                // Restrict the type of staged commits that we'll merge: no proposals!
+                if !staged_commit.add_proposals().next().is_none() ||
+                !staged_commit.remove_proposals().next().is_none() ||
+                !staged_commit.update_proposals().next().is_none() ||
+                !staged_commit.psk_proposals().next().is_none() ||
+                !staged_commit.queued_proposals().next().is_none() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        "Error: staged commit message must not contain any proposals.",
+                    ));
+                }
+
                 mls_group
-                    .merge_staged_commit(&self.provider, *commit_ptr)
+                    .merge_staged_commit(&self.provider, *staged_commit)
                     .expect("error merging staged commit");
                 return Ok(vec![]);
             }
