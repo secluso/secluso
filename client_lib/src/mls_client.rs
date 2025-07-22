@@ -179,8 +179,6 @@ impl MlsClient {
 
         log::debug!("{} creates group {}", self.username, name);
         let group_id = name.as_bytes();
-        let mut group_aad = group_id.to_vec();
-        group_aad.extend(b" AAD");
 
         // NOTE: Since the DS currently doesn't distribute copies of the group's ratchet
         // tree, we need to include the ratchet_tree_extension.
@@ -189,7 +187,7 @@ impl MlsClient {
             .use_ratchet_tree_extension(true)
             .build();
 
-        let mut mls_group = MlsGroup::new_with_group_id(
+        let mls_group = MlsGroup::new_with_group_id(
             &self.provider,
             &self.identity.signer,
             &group_config,
@@ -197,8 +195,6 @@ impl MlsClient {
             self.identity.credential_with_key.clone(),
         )
         .expect("Failed to create MlsGroup");
-        //FIXME: needed?
-        mls_group.set_aad(group_aad);
 
         let group = Group {
             group_name: name.to_string(),
@@ -280,12 +276,12 @@ impl MlsClient {
 
         log::debug!("{} joining group ...", self.username);
 
-        // NOTE: Since the DS currently doesn't distribute copies of the group's ratchet
+        // NOTE: Since the DS doesn't distribute copies of the group's ratchet
         // tree, we need to include the ratchet_tree_extension.
         let group_config = MlsGroupJoinConfig::builder()
             .use_ratchet_tree_extension(true)
             .build();
-        let mut mls_group =
+        let mls_group =
             StagedWelcome::new_from_welcome(&self.provider, &group_config, welcome, None)
                 .expect("Failed to create staged join")
                 .into_group(&self.provider)
@@ -294,10 +290,6 @@ impl MlsClient {
         let group_id = mls_group.group_id().to_vec();
         //FIXME (from openmls): Use Welcome's encrypted_group_info field to store group_name.
         let group_name = String::from_utf8(group_id.clone()).unwrap();
-        let group_aad = group_name.clone() + " AAD";
-
-        //FIXME: needed?
-        mls_group.set_aad(group_aad.as_bytes().to_vec());
 
         // Currently, we only support groups that have one camera and one app.
         if mls_group.members().count() != 2 {
@@ -535,6 +527,12 @@ impl MlsClient {
 
         let group = self.group.as_mut().unwrap();
 
+        // Set AAD
+        let group_id = group.mls_group.group_id().to_vec();
+        let group_name = String::from_utf8(group_id).unwrap();
+        let group_aad = group_name + " AAD";
+        group.mls_group.set_aad(group_aad.as_bytes().to_vec());
+
         // FIXME: _welcome should be none, group_info should be some.
         // See openmls/src/group/mls_group/updates.rs.
         let (out_message, _welcome, _group_info) = group
@@ -605,6 +603,12 @@ impl MlsClient {
 
         let group = self.group.as_mut().unwrap();
 
+        // Set AAD
+        let group_id = group.mls_group.group_id().to_vec();
+        let group_name = String::from_utf8(group_id).unwrap();
+        let group_aad = group_name + " AAD";
+        group.mls_group.set_aad(group_aad.as_bytes().to_vec());
+
         let message_out = group
             .mls_group
             .create_message(&self.provider, &self.identity.signer, bytes)
@@ -654,6 +658,18 @@ impl MlsClient {
                 ));
             }
         };
+
+        // Check AAD
+        let group_id = mls_group.group_id().to_vec();
+        let group_name = String::from_utf8(group_id.clone()).unwrap();
+        let group_aad = group_name.clone() + " AAD";
+
+        if processed_message.aad().to_vec() != group_aad.into_bytes() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Error: received a message with an invalid AAD".to_string(),
+            ));
+        }
 
         // Accepts messages from the only_contact in the group.
         // Note: in a ProcessedMessage, the credential of the message sender is already inspected.
