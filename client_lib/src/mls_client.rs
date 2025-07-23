@@ -29,8 +29,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tls_codec::{Serialize as TlsSerialize, Deserialize as TlsDeserialize};
 
-// Post-quantum secure ciphersuite: https://cryspen.com/post/pq-openmls/
-const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_256_XWING_CHACHA20POLY1305_SHA256_Ed25519;
+const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 
 pub type KeyPackages = Vec<(Vec<u8>, KeyPackage)>;
 
@@ -48,12 +47,45 @@ impl Contact {
     }
 }
 
-#[derive(Serialize, Deserialize)]
 pub struct Group {
     group_name: String,
     mls_group: MlsGroup,
     // The "only" contact that is also in this group.
     only_contact: Option<Contact>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GroupHelper {
+    group_name: String,
+    only_contact: Option<Contact>,
+}
+
+impl Group {
+    pub(self) fn from_deserialized(
+        group_helper: GroupHelper,
+        provider: &OpenMlsRustPersistentCrypto,
+    ) -> io::Result<Self> {
+        let mls_group_option = MlsGroup::load(provider.storage(), &GroupId::from_slice(group_helper.group_name.as_bytes()))
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("Failed to load group from storage provider - {e}"),
+                )
+            })?;
+
+        if let Some(mls_group) = mls_group_option {
+            return Ok(Group {
+                group_name: group_helper.group_name,
+                only_contact: group_helper.only_contact,
+                mls_group,
+            })
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Group not found in storage provider.",
+            ))
+        }
+    }
 }
 
 pub struct MlsClient {
@@ -77,11 +109,6 @@ impl MlsClient {
         tag: String,
     ) -> io::Result<Self> {
         let mut crypto = OpenMlsRustPersistentCrypto::default();
-        let group = if first_time {
-            None
-        } else {
-            Self::restore_group_state(file_dir.clone(), tag.clone())
-        };
         if !first_time {
             let ks_files = Self::get_state_files_sorted(
                 &file_dir,
@@ -103,6 +130,11 @@ impl MlsClient {
                 panic!("Could not successfully load the key store from file.");
             }
         }
+        let group = if first_time {
+            None
+        } else {
+            Self::restore_group_state(file_dir.clone(), tag.clone(), &crypto)?
+        };
 
         let out = Self {
             username: username.clone(),
@@ -376,7 +408,17 @@ impl MlsClient {
             .expect("Could not convert time")
             .as_nanos();
 
-        let data = bincode::serialize(&self.group).unwrap();
+        let group_helper_option = match &self.group {
+            Some(group) => {
+                Some(GroupHelper {
+                    group_name: group.group_name.clone(),
+                    only_contact: group.only_contact.clone(),
+                })
+            },
+            None => None,
+        };
+
+        let data = bincode::serialize(&group_helper_option).unwrap();
         let pathname = self.file_dir.clone()
             + "/group_state_"
             + &self.tag.clone()
@@ -431,7 +473,7 @@ impl MlsClient {
         }
     }
 
-    pub fn restore_group_state(file_dir: String, tag: String) -> Option<Group> {
+    pub fn restore_group_state(file_dir: String, tag: String, provider: &OpenMlsRustPersistentCrypto) -> io::Result<Option<Group>> {
         let g_files =
             Self::get_state_files_sorted(&file_dir, &("group_state_".to_string() + &tag + "_"))
                 .unwrap();
@@ -442,8 +484,16 @@ impl MlsClient {
                 BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
             let data = reader.fill_buf().unwrap();
             let deserialize_result = bincode::deserialize(data);
-            if let Ok(deserialized_data) = deserialize_result {
-                return deserialized_data;
+            if let Ok(group_helper_option) = deserialize_result {
+                match group_helper_option {
+                    Some(group_helper) => {
+                        let group = Group::from_deserialized(group_helper, provider)?;
+                        return Ok(Some(group));
+                    },
+                    None => {
+                        return Ok(None);
+                    }
+                }
             }
         }
 
@@ -535,7 +585,7 @@ impl MlsClient {
 
         // FIXME: _welcome should be none, group_info should be some.
         // See openmls/src/group/mls_group/updates.rs.
-        let (out_message, _welcome, _group_info) = group
+        let commit_msg_bundle = group
             .mls_group
             .self_update(
                 &self.provider,
@@ -549,7 +599,7 @@ impl MlsClient {
         log::trace!("Generating update message");
         let group_recipients = Self::recipients(&group);
         // Generate the message to the group.
-        let msg = GroupMessage::new(out_message.into(), &group_recipients);
+        let msg = GroupMessage::new(commit_msg_bundle.into_commit().into(), &group_recipients);
 
         // Merge pending commit.
         group

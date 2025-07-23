@@ -24,19 +24,18 @@
 //! OpenMLS.
 
 use openmls_rust_crypto::{MemoryStorage, RustCrypto};
-use openmls_libcrux_crypto::CryptoProvider;
 use openmls_traits::OpenMlsProvider;
 use std::fs::File;
 
 #[derive(Default)]
 pub struct OpenMlsRustPersistentCrypto {
-    crypto: CryptoProvider,
+    crypto: RustCrypto,
     rand: RustCrypto,
     storage: MemoryStorage,
 }
 
 impl OpenMlsProvider for OpenMlsRustPersistentCrypto {
-    type CryptoProvider = CryptoProvider;
+    type CryptoProvider = RustCrypto;
     type RandProvider = RustCrypto;
     type StorageProvider = MemoryStorage;
 
