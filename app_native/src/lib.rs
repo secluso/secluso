@@ -112,9 +112,8 @@ fn read_varying_len(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
 fn perform_pairing_handshake(
     stream: &mut TcpStream,
     app_key_packages: KeyPackages,
-    secret: [u8; pairing::NUM_SECRET_BYTES],
 ) -> anyhow::Result<KeyPackages> {
-    let pairing = pairing::App::new(secret, app_key_packages);
+    let pairing = pairing::App::new(app_key_packages);
     let app_msg = pairing.generate_msg_to_camera();
     write_varying_len(stream, &app_msg)?;
     let camera_msg = read_varying_len(stream)?;
@@ -157,13 +156,13 @@ fn pair_with_camera(
     stream: &mut TcpStream,
     camera_name: &str,
     mls_clients: &mut MlsClients,
-    secret: [u8; pairing::NUM_SECRET_BYTES],
+    secret: Vec<u8>,
 ) -> anyhow::Result<()> {
     for mut mls_client in mls_clients {
         let app_key_packages = mls_client.key_packages();
 
         let camera_key_packages =
-            perform_pairing_handshake(stream, app_key_packages, secret)?;
+            perform_pairing_handshake(stream, app_key_packages)?;
 
         let camera_welcome_msg = read_varying_len(stream)?;
 
@@ -173,6 +172,7 @@ fn pair_with_camera(
             &mut mls_client,
             contact,
             camera_welcome_msg,
+            secret.clone(),
         )?;
     }
 
@@ -183,8 +183,9 @@ fn process_welcome_message(
     mls_client: &mut MlsClient,
     contact: Contact,
     welcome_msg: Vec<u8>,
+    secret: Vec<u8>,
 ) -> io::Result<()> {
-    mls_client.process_welcome(contact, welcome_msg)?;
+    mls_client.process_welcome(contact, welcome_msg, secret)?;
     mls_client.save_group_state();
 
     Ok(())
@@ -235,14 +236,6 @@ pub fn add_camera(
         }
     }
 
-    if secret_vec.len() != pairing::NUM_SECRET_BYTES {
-        info!("Error: incorrect number of bytes in secret!");
-        return false;
-    }
-
-    let mut camera_secret = [0u8; pairing::NUM_SECRET_BYTES];
-    camera_secret.copy_from_slice(&secret_vec[..]);
-
     // Connect to the camera
     //FIXME: port number hardcoded.
     let addr = match SocketAddr::from_str(&(camera_ip + ":12348")) {
@@ -266,7 +259,7 @@ pub fn add_camera(
         &mut stream,
         &camera_name,
         &mut clients.as_mut().mls_clients,
-        camera_secret,
+        secret_vec,
     ) {
         info!("Error: {e}");
         return false;

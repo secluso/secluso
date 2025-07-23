@@ -22,12 +22,14 @@ use super::identity::Identity;
 use super::openmls_rust_persistent_crypto::OpenMlsRustPersistentCrypto;
 use ds_lib::GroupMessage;
 use openmls::prelude::*;
+use openmls::schedule::{ExternalPsk, Psk, PreSharedKeyId};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::io::{BufRead, BufReader, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tls_codec::{Serialize as TlsSerialize, Deserialize as TlsDeserialize};
+use crate::pairing;
 
 const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 
@@ -239,7 +241,7 @@ impl MlsClient {
     }
 
     /// Invite a contact to a group.
-    pub fn invite(&mut self, contact: &Contact) -> io::Result<Vec<u8>> {
+    pub fn invite(&mut self, contact: &Contact, secret: Vec<u8>) -> io::Result<Vec<u8>> {
         if self.group.is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -256,9 +258,30 @@ impl MlsClient {
             ));
         }
 
-        let joiner_key_package = contact.key_packages[0].1.clone();
+        // Create an external psk proposal and commit it.
+        // This is used for mutual authentication.
+        if secret.len() != pairing::NUM_SECRET_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Invalid number of bytes in secret.",
+            ));
+        }
+
+        let psk_id = vec![1u8, 2, 3];
+        //let secret = [0u8; 64];
+        let external_psk = ExternalPsk::new(psk_id);
+        let preshared_key_id =
+            PreSharedKeyId::new(CIPHERSUITE, self.provider.rand(), Psk::External(external_psk))
+                .expect("An unexpected error occured.");
+        preshared_key_id.store(&self.provider, &secret).unwrap();
+
+        let (_psk_proposal, _proposal_ref) = group
+            .mls_group
+            .propose_external_psk(& self.provider, &self.identity.signer, preshared_key_id)
+            .expect("Could not create PSK proposal");
 
         // Build a proposal with this key package and do the MLS bits.
+        let joiner_key_package = contact.key_packages[0].1.clone();
 
         // Note: out_messages is needed for other group members.
         // Currently, we don't need/use it since our groups only have
@@ -298,7 +321,7 @@ impl MlsClient {
     }
 
     /// Join a group with the provided welcome message.
-    fn join_group(&mut self, welcome: Welcome, expected_inviter: Contact) -> io::Result<()> {
+    fn join_group(&mut self, welcome: Welcome, expected_inviter: Contact, secret: Vec<u8>) -> io::Result<()> {
         if self.group.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -307,6 +330,22 @@ impl MlsClient {
         }
 
         log::debug!("{} joining group ...", self.username);
+
+        // Store the secret as an external psk.
+        // This is used for mutual authentication.
+        if secret.len() != pairing::NUM_SECRET_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Invalid number of bytes in secret.",
+            ));
+        }
+
+        let psk_id = vec![1u8, 2, 3];
+        let external_psk = ExternalPsk::new(psk_id);
+        let preshared_key_id =
+            PreSharedKeyId::new(CIPHERSUITE, self.provider.rand(), Psk::External(external_psk))
+                .expect("An unexpected error occured.");
+        preshared_key_id.store(&self.provider, &secret).unwrap();
 
         // NOTE: Since the DS doesn't distribute copies of the group's ratchet
         // tree, we need to include the ratchet_tree_extension.
@@ -373,7 +412,7 @@ impl MlsClient {
     }
 
     /// Process a welcome message
-    pub fn process_welcome(&mut self, expected_inviter: Contact, welcome_msg_vec: Vec<u8>) -> io::Result<()> {
+    pub fn process_welcome(&mut self, expected_inviter: Contact, welcome_msg_vec: Vec<u8>, secret: Vec<u8>) -> io::Result<()> {
         let welcome_msg = match MlsMessageIn::tls_deserialize(&mut welcome_msg_vec.as_slice()) {
             Ok(msg) => msg,
             Err(e) => {return Err(io::Error::new(io::ErrorKind::Other, format!("{}", e)))},
@@ -381,7 +420,7 @@ impl MlsClient {
 
         match welcome_msg.extract() {
             MlsMessageBodyIn::Welcome(welcome) => {
-                self.join_group(welcome, expected_inviter)
+                self.join_group(welcome, expected_inviter, secret)
                     .unwrap();
             }
             _ => panic!("Unsupported message type in process_welcome"),

@@ -98,9 +98,8 @@ fn read_varying_len(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
 fn perform_pairing_handshake(
     stream: &mut TcpStream,
     camera_key_packages: KeyPackages,
-    camera_secret: [u8; pairing::NUM_SECRET_BYTES],
 ) -> anyhow::Result<KeyPackages> {
-    let pairing = pairing::Camera::new(camera_secret, camera_key_packages);
+    let pairing = pairing::Camera::new(camera_key_packages);
 
     let app_msg = read_varying_len(stream)?;
     let (app_key_packages, camera_msg) =
@@ -145,16 +144,8 @@ pub fn get_input_camera_secret() -> Vec<u8> {
 fn pair_with_app(
     stream: &mut TcpStream,
     camera_key_packages: KeyPackages,
-    input_camera_secret: Vec<u8>,
 ) -> anyhow::Result<KeyPackages> {
-    if input_camera_secret.len() != pairing::NUM_SECRET_BYTES {
-        panic!("Invalid number of bytes in secret!");
-    }
-
-    let mut camera_secret = [0u8; pairing::NUM_SECRET_BYTES];
-    camera_secret.copy_from_slice(&input_camera_secret[..]);
-
-    let app_key_packages = perform_pairing_handshake(stream, camera_key_packages, camera_secret);
+    let app_key_packages = perform_pairing_handshake(stream, camera_key_packages);
     app_key_packages
 }
 
@@ -162,12 +153,13 @@ fn invite(
     stream: &mut TcpStream,
     mls_client: &mut MlsClient,
     app_key_packages: KeyPackages,
+    camera_secret: Vec<u8>,
 ) -> io::Result<()> {
     let app_contact = MlsClient::create_contact("app", app_key_packages)?;
     debug!("Added contact.");
 
     let welcome_msg_vec = mls_client
-        .invite(&app_contact)
+        .invite(&app_contact, camera_secret)
         .map_err(|e| {
             error!("invite() returned error:");
             e
@@ -376,11 +368,11 @@ pub fn pair_all(
 
                     debug!("[Pairing] Before pairing");
                     for mls_client in mls_clients_ref.iter_mut() {
-                        match pair_with_app(&mut stream, mls_client.key_packages(), secret.clone())
+                        match pair_with_app(&mut stream, mls_client.key_packages())
                         {
                             Ok(app_key_packages) => {
                                 if let Err(e) =
-                                    invite(&mut stream, mls_client, app_key_packages)
+                                    invite(&mut stream, mls_client, app_key_packages, secret.clone())
                                 {
                                     debug!("[Pairing] Failed to create group: {e}");
                                     success = false;

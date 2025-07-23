@@ -22,8 +22,6 @@ openmls_traits = { git = "https://github.com/openmls/openmls", rev = "openmls-v0
 openmls_rust_crypto = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.7.0" }
 openmls_memory_storage = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.7.0", features = ["persistence"] }
 openmls_basic_credential = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.7.0" }
-hmac = "0.12.1"
-sha3 = "0.10.8"
 bincode = "1.2.1"
 reqwest = { version = "0.11", default-features = false, features = ["blocking", "multipart"], optional = true }
 base64 = { version = "0.22.1", optional = true }
