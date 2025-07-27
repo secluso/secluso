@@ -165,6 +165,8 @@ fn pair_with_camera(
             perform_pairing_handshake(stream, app_key_packages)?;
 
         let camera_welcome_msg = read_varying_len(stream)?;
+        let group_name = read_varying_len(stream)?;
+        let group_name_string = str::from_utf8(&group_name)?.to_string();
 
         let contact = MlsClient::create_contact(camera_name, camera_key_packages)?;
 
@@ -173,6 +175,7 @@ fn pair_with_camera(
             contact,
             camera_welcome_msg,
             secret.clone(),
+            group_name_string,
         )?;
     }
 
@@ -184,8 +187,9 @@ fn process_welcome_message(
     contact: Contact,
     welcome_msg: Vec<u8>,
     secret: Vec<u8>,
+    group_name: String,
 ) -> io::Result<()> {
-    mls_client.process_welcome(contact, welcome_msg, secret)?;
+    mls_client.process_welcome(contact, welcome_msg, secret, group_name)?;
     mls_client.save_group_state();
 
     Ok(())

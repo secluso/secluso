@@ -169,6 +169,10 @@ fn invite(
 
     write_varying_len(stream, &welcome_msg_vec)?;
 
+    // Next, send the shared group name
+    let group_name = mls_client.get_group_name()?;
+    write_varying_len(stream, &group_name.as_bytes())?;
+
     Ok(())
 }
 
@@ -528,7 +532,6 @@ pub fn get_names(
         file.flush().unwrap();
         file.sync_all().unwrap();
 
-        //FIXME: how many random characters should we use here?
         let gname: String = (0..NUM_RANDOM_CHARS)
             .map(|_| rng.sample(rand::distributions::Alphanumeric) as char)
             .collect();

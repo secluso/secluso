@@ -50,15 +50,28 @@ impl Contact {
 }
 
 pub struct Group {
+    // Group name is a shared name for the group used by all members.
+    // It is used by the Privastead framework, but not by OpenMLS.
+    // OpenMLS uses group_id.
+    // We keep these two separate because according to OpenMLS:
+    // "Group IDs should be random and not be misused as, e.g., a group name."
+    // Group name is not confidential. It is used by clients as a shared name
+    // to exchange encrypted data via the delivery service.
     group_name: String,
     mls_group: MlsGroup,
     // The "only" contact that is also in this group.
     only_contact: Option<Contact>,
 }
 
+/// MlsGroup ins Group cannot be serialized, but it is stored in storage provider.
+/// Therefore, we use GroupHelper to serialize other fields.
+/// Upon deserialization, we read MlsGroup from the storage provider.
 #[derive(Serialize, Deserialize)]
 struct GroupHelper {
     group_name: String,
+    // Needed in order to be able to read mls_group from storage upon
+    // deserialization from files.
+    group_id: Vec<u8>,
     only_contact: Option<Contact>,
 }
 
@@ -67,7 +80,7 @@ impl Group {
         group_helper: GroupHelper,
         provider: &OpenMlsRustPersistentCrypto,
     ) -> io::Result<Self> {
-        let mls_group_option = MlsGroup::load(provider.storage(), &GroupId::from_slice(group_helper.group_name.as_bytes()))
+        let mls_group_option = MlsGroup::load(provider.storage(), &GroupId::from_slice(&group_helper.group_id))
             .map_err(|e| {
                 io::Error::new(
                     io::ErrorKind::Other,
@@ -212,7 +225,7 @@ impl MlsClient {
         }
 
         log::debug!("{} creates group {}", self.username, name);
-        let group_id = name.as_bytes();
+        let group_id = GroupId::random(self.provider.rand()).to_vec();
 
         // NOTE: Since the DS currently doesn't distribute copies of the group's ratchet
         // tree, we need to include the ratchet_tree_extension.
@@ -225,7 +238,7 @@ impl MlsClient {
             &self.provider,
             &self.identity.signer,
             &group_config,
-            GroupId::from_slice(group_id),
+            GroupId::from_slice(&group_id),
             self.identity.credential_with_key.clone(),
         )
         .expect("Failed to create MlsGroup");
@@ -321,7 +334,7 @@ impl MlsClient {
     }
 
     /// Join a group with the provided welcome message.
-    fn join_group(&mut self, welcome: Welcome, expected_inviter: Contact, secret: Vec<u8>) -> io::Result<()> {
+    fn join_group(&mut self, welcome: Welcome, expected_inviter: Contact, secret: Vec<u8>, group_name: String) -> io::Result<()> {
         if self.group.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -357,10 +370,6 @@ impl MlsClient {
                 .expect("Failed to create staged join")
                 .into_group(&self.provider)
                 .expect("Failed to create MlsGroup");
-
-        let group_id = mls_group.group_id().to_vec();
-        //FIXME (from openmls): Use Welcome's encrypted_group_info field to store group_name.
-        let group_name = String::from_utf8(group_id.clone()).unwrap();
 
         // Currently, we only support groups that have one camera and one app.
         if mls_group.members().count() != 2 {
@@ -412,7 +421,7 @@ impl MlsClient {
     }
 
     /// Process a welcome message
-    pub fn process_welcome(&mut self, expected_inviter: Contact, welcome_msg_vec: Vec<u8>, secret: Vec<u8>) -> io::Result<()> {
+    pub fn process_welcome(&mut self, expected_inviter: Contact, welcome_msg_vec: Vec<u8>, secret: Vec<u8>, group_name: String) -> io::Result<()> {
         let welcome_msg = match MlsMessageIn::tls_deserialize(&mut welcome_msg_vec.as_slice()) {
             Ok(msg) => msg,
             Err(e) => {return Err(io::Error::new(io::ErrorKind::Other, format!("{}", e)))},
@@ -420,7 +429,7 @@ impl MlsClient {
 
         match welcome_msg.extract() {
             MlsMessageBodyIn::Welcome(welcome) => {
-                self.join_group(welcome, expected_inviter, secret)
+                self.join_group(welcome, expected_inviter, secret, group_name)
                     .unwrap();
             }
             _ => panic!("Unsupported message type in process_welcome"),
@@ -451,6 +460,7 @@ impl MlsClient {
             Some(group) => {
                 Some(GroupHelper {
                     group_name: group.group_name.clone(),
+                    group_id: group.mls_group.group_id().to_vec(),
                     only_contact: group.only_contact.clone(),
                 })
             },
@@ -617,9 +627,7 @@ impl MlsClient {
         let group = self.group.as_mut().unwrap();
 
         // Set AAD
-        let group_id = group.mls_group.group_id().to_vec();
-        let group_name = String::from_utf8(group_id).unwrap();
-        let group_aad = group_name + " AAD";
+        let group_aad = group.group_name.clone() + " AAD";
         group.mls_group.set_aad(group_aad.as_bytes().to_vec());
 
         // FIXME: _welcome should be none, group_info should be some.
@@ -693,9 +701,7 @@ impl MlsClient {
         let group = self.group.as_mut().unwrap();
 
         // Set AAD
-        let group_id = group.mls_group.group_id().to_vec();
-        let group_name = String::from_utf8(group_id).unwrap();
-        let group_aad = group_name + " AAD";
+        let group_aad = group.group_name.clone() + " AAD";
         group.mls_group.set_aad(group_aad.as_bytes().to_vec());
 
         let message_out = group
@@ -749,9 +755,7 @@ impl MlsClient {
         };
 
         // Check AAD
-        let group_id = mls_group.group_id().to_vec();
-        let group_name = String::from_utf8(group_id.clone()).unwrap();
-        let group_aad = group_name.clone() + " AAD";
+        let group_aad = group.group_name.clone() + " AAD";
 
         if processed_message.aad().to_vec() != group_aad.into_bytes() {
             return Err(io::Error::new(
