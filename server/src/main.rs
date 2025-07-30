@@ -32,6 +32,7 @@ use rocket::response::content::RawText;
 use rocket::response::stream::{Event, EventStream};
 use rocket::serde::json::Json;
 use rocket::serde::Deserialize;
+use rocket::tokio;
 use rocket::tokio::fs::{self, File};
 use rocket::tokio::select;
 use rocket::tokio::sync::broadcast::{channel, Sender};
@@ -299,11 +300,18 @@ async fn upload(
     let filepath_tmp = Path::new(&camera_path).join(format!("{}_tmp", filename));
     check_path_sandboxed(&root, &filepath_tmp)?;
 
-    data.open(MAX_MOTION_FILE_SIZE.mebibytes())
-        .into_file(&filepath_tmp)
-        .await?;
+    let mut file = fs::File::create(&filepath_tmp).await?;
+    let mut stream = data.open(MAX_MOTION_FILE_SIZE.mebibytes());
+    tokio::io::copy(&mut stream, &mut file).await?;
+    // Flush the file to disk
+    file.sync_all().await?;
+
     // We write to a temp file first and then rename to avoid a race with the retrieve operation.
     fs::rename(filepath_tmp, filepath).await?;
+
+    // Flush the directory entry metadata to disk
+    let camera_dir = File::open(camera_path).await?;
+    camera_dir.sync_all().await?;
 
     Ok("ok".to_string())
 }
@@ -390,8 +398,13 @@ async fn upload_fcm_token(data: Data<'_>, auth: BasicAuth) -> io::Result<String>
     let token_path = root.join("fcm_token");
     check_path_sandboxed(&Path::new("data"), &token_path)?;
 
+    let mut file = fs::File::create(&token_path).await?;
     // FIXME: hardcoded max size
-    data.open(5.kibibytes()).into_file(token_path).await?;
+    let mut stream = data.open(5.kibibytes());
+    tokio::io::copy(&mut stream, &mut file).await?;
+    // Flush the file to disk
+    file.sync_all().await?;
+
     Ok("ok".to_string())
 }
 
@@ -568,11 +581,18 @@ async fn livestream_upload(
     let filepath_tmp = Path::new(&camera_path).join(format!("{}_tmp", filename));
     check_path_sandboxed(&root, &filepath_tmp)?;
 
-    data.open(MAX_LIVESTREAM_FILE_SIZE.mebibytes())
-        .into_file(&filepath_tmp)
-        .await?;
+    let mut file = fs::File::create(&filepath_tmp).await?;
+    let mut stream = data.open(MAX_LIVESTREAM_FILE_SIZE.mebibytes());
+    tokio::io::copy(&mut stream, &mut file).await?;
+    // Flush the file to disk
+    file.sync_all().await?;
+
     // We write to a temp file first and then rename to avoid a race with the retrieve operation.
     fs::rename(filepath_tmp, filepath).await?;
+
+    // Flush the directory entry metadata to disk
+    let camera_dir = File::open(camera_path).await?;
+    camera_dir.sync_all().await?;
 
     let user_state = get_user_state(all_state.inner().clone(), &auth.username);
     let _ = user_state.sender.send(());
@@ -650,9 +670,11 @@ async fn config_command(
     let command_path = Path::new(&camera_path).join(&command_file_name);    
     check_path_sandboxed(&root, &command_path)?;
 
-    data.open(MAX_COMMAND_FILE_SIZE.kibibytes())
-        .into_file(&command_path)
-        .await?;
+    let mut file = fs::File::create(&command_path).await?;
+    let mut stream = data.open(MAX_COMMAND_FILE_SIZE.kibibytes());
+    tokio::io::copy(&mut stream, &mut file).await?;
+    // Flush the file to disk
+    file.sync_all().await?;
 
     let user_state = get_user_state(all_state.inner().clone(), &auth.username);
 
@@ -741,11 +763,19 @@ async fn config_response(
     let filepath_tmp = camera_path.join("config_response_tmp");
     check_path_sandboxed(&root, &filepath_tmp)?;
 
-    data.open(MAX_COMMAND_FILE_SIZE.kibibytes())
-        .into_file(&filepath_tmp)
-        .await?;
+    let mut file = fs::File::create(&filepath_tmp).await?;
+    let mut stream = data.open(MAX_COMMAND_FILE_SIZE.kibibytes());
+    tokio::io::copy(&mut stream, &mut file).await?;
+    // Flush the file to disk
+    file.sync_all().await?;
+
+
     // We write to a temp file first and then rename to avoid a race with the retrieve operation.
     fs::rename(filepath_tmp, filepath).await?;
+
+    // Flush the directory entry metadata to disk
+    let camera_dir = File::open(camera_path).await?;
+    camera_dir.sync_all().await?;
 
     Ok(())
 }

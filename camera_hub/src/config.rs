@@ -71,8 +71,11 @@ fn handle_heartbeat_request(
         .duration_since(UNIX_EPOCH)
         .expect("Could not convert time")
         .as_secs();
-    // The clocks on the two devices are not synchronized and might be off a bit.
-    if now - heartbeat_request.timestamp < 10 || heartbeat_request.timestamp - now < 10 {
+    // Sometimes, we might be in the middle of recording a video when we receive
+    // the heartbeat notification. Therefore, we need to answer to heartbeats
+    // that are a bit old.
+    // Also, the clocks on the two devices are not synchronized and might be off a bit.
+    if now - heartbeat_request.timestamp < 60 || heartbeat_request.timestamp - now < 10 {
         // We only responsd to recent heartbeat requests.
         send_heartbeat_response(clients, heartbeat_request.timestamp, http_client)?;
     } else {
