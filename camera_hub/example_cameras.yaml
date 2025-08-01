@@ -1,7 +1,3 @@
-# Server IP goes here without any port information
-server:
-    ip: ""
-
 # List cameras in form of name, IP, RTSP port and username/password.
 # Username and password do not need to be included here. They can be left blank / removed and then entered in at runtime.
 # 554 is the default RTSP port

@@ -26,7 +26,6 @@ use docopt::Docopt;
 use privastead_client_lib::http_client::HttpClient;
 use privastead_client_lib::mls_client::MlsClient;
 use privastead_client_lib::mls_clients::{NUM_MLS_CLIENTS, MLS_CLIENT_TAGS, MOTION, LIVESTREAM, FCM, CONFIG, MlsClients};
-use privastead_client_server_lib::auth::parse_user_credentials;
 use serde_yml::Value;
 use std::array;
 use std::collections::HashMap;
@@ -56,7 +55,7 @@ use crate::traits::Camera;
 mod pairing;
 use crate::pairing::{
     pair_all, create_wifi_hotspot, get_input_camera_secret, get_names,
-    read_user_credentials,
+    read_parse_full_credentials,
 };
 mod config;
 use crate::config::process_config_command;
@@ -128,9 +127,6 @@ fn main() -> io::Result<()> {
         .and_then(|d| d.deserialize())
         .unwrap_or_else(|e| e.exit());
 
-    let credentials = read_user_credentials("user_credentials");
-    let (server_username, server_password) = parse_user_credentials(credentials).unwrap();
-
     // Retrieve the cameras.yaml file. If it doesn't exist, print an error message for the user.
     let cameras_file = match File::open("cameras.yaml") {
         Ok(file) => file,
@@ -145,27 +141,16 @@ fn main() -> io::Result<()> {
     let loaded_cameras: HashMap<String, Value> = serde_yml::from_reader(cameras_file)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-    // Extract the server IP and cameras
-    let server_section = loaded_cameras
-        .get("server")
-        .expect("Server section is missing from cameras.yaml");
+    // Extract cameras
     let cameras_section = loaded_cameras
         .get("cameras")
         .expect("Cameras section is missing from cameras.yaml");
-    let server_ip = server_section
-        .get("ip")
-        .expect("Missing IP for server")
-        .as_str()
-        .unwrap();
 
     // Create the general outer directories (where we'll have inner directories representing each camera)
     fs::create_dir_all(STATE_DIR_GENERAL).unwrap();
     fs::create_dir_all(VIDEO_DIR_GENERAL).unwrap();
 
     let mut camera_list: Vec<Box<dyn Camera + Send>> = Vec::new();
-    let server_addr: String = server_ip.to_owned() + ":8080";
-
-    let http_client = HttpClient::new(server_addr, server_username, server_password);
 
     cfg_if! {
         if #[cfg(feature = "raspberry")] {
@@ -313,7 +298,6 @@ fn main() -> io::Result<()> {
     for mut camera in camera_list.into_iter() {
         println!("Starting to instantiate camera: {:?}", camera.get_name());
 
-        let http_client_clone = http_client.clone();
         let args = args.clone();
         let input_camera_secret = input_camera_secret.clone();
 
@@ -321,7 +305,7 @@ fn main() -> io::Result<()> {
         thread::spawn(move || {
             loop {
                 if args.flag_reset || args.flag_reset_full {
-                    match reset(camera.as_ref(), &http_client_clone, args.flag_reset_full) {
+                    match reset(camera.as_ref(), args.flag_reset_full) {
                         Ok(_) => {}
                         Err(e) => {
                             panic!("reset() returned with: {e}");
@@ -334,7 +318,6 @@ fn main() -> io::Result<()> {
                 } else {
                     match core(
                         camera.as_mut(),
-                        &http_client_clone,
                         input_camera_secret.clone(),
                         connect_to_wifi,
                         args.flag_test_motion,
@@ -385,7 +368,6 @@ fn ask_user_password(prompt: String) -> io::Result<String> {
 
 fn reset(
     camera: &dyn Camera,
-    http_client: &HttpClient,
     reset_full: bool,
 ) -> io::Result<()> {
     // FIXME: has some code copy/pasted from core()
@@ -429,6 +411,9 @@ fn reset(
         };
 
         //Second, delete data in the server
+        let (server_username, server_password, server_addr) = read_parse_full_credentials();
+        let http_client = HttpClient::new(server_addr, server_username, server_password);
+
         match http_client.deregister(&group_name) {
             Ok(_) => {
                 info!("{} data on server deleted successfully.", MLS_CLIENT_TAGS[i])
@@ -446,6 +431,7 @@ fn reset(
 
     //Third, delete all the local state files.
     let _ = fs::remove_dir_all(state_dir_path);
+    let _ = fs::remove_file("credentials_full");
 
     //Fourth, (in the case of full reset) delete all the pending videos (those that were never successfully delivered)
     if reset_full {
@@ -509,7 +495,6 @@ fn send_pending_motion_videos(
 
 fn core(
     camera: &mut dyn Camera,
-    http_client: &HttpClient,
     input_camera_secret: Option<Vec<u8>>,
     connect_to_wifi: bool,
     test_mode: bool,
@@ -562,7 +547,6 @@ fn core(
             &mut clients,
             input_camera_secret,
             connect_to_wifi,
-            http_client,
         )?;
 
         File::create(camera.get_state_dir() + "/first_time_done").expect("Could not create file");
@@ -571,6 +555,9 @@ fn core(
     }
 
     println!("[{}] Running...", camera_name);
+
+    let (server_username, server_password, server_addr) = read_parse_full_credentials();
+    let http_client = HttpClient::new(server_addr, server_username, server_password);
 
     let mut locked_motion_check_time: Option<SystemTime> = None;
     let mut locked_delivery_check_time: Option<SystemTime> = None;
@@ -615,7 +602,7 @@ fn core(
         // This is needed after re-pairing.
         // For now, re-pairing is done manually and needs physical proximity.
         // Hence, it is safe to send pending videos to the app that is paired with the camera.
-        let _ = send_pending_motion_videos(camera, &mut clients, &mut delivery_monitor, http_client);
+        let _ = send_pending_motion_videos(camera, &mut clients, &mut delivery_monitor, &http_client);
     }
 
     // Used for anti-dither for motion detection
@@ -694,7 +681,7 @@ fn core(
                     &mut clients[LIVESTREAM],
                     camera,
                     &mut delivery_monitor,
-                    http_client,
+                    &http_client,
                 )?;
             }
 

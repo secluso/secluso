@@ -38,6 +38,23 @@ pub fn parse_user_credentials(credentials: Vec<u8>) -> io::Result<(String, Strin
     ))
 }
 
+pub fn parse_user_credentials_full(credentials_full: Vec<u8>) -> io::Result<(String, String, String)> {
+    let credentials_full_string = String::from_utf8(credentials_full)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    if credentials_full_string.len() <= NUM_USERNAME_CHARS + NUM_PASSWORD_CHARS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Invalid credentials"),
+        ));
+    }
+
+    Ok((
+        credentials_full_string[0..NUM_USERNAME_CHARS].to_string(),
+        credentials_full_string[NUM_USERNAME_CHARS..NUM_USERNAME_CHARS + NUM_PASSWORD_CHARS].to_string(),
+        credentials_full_string[NUM_USERNAME_CHARS + NUM_PASSWORD_CHARS..].to_string(),
+    ))
+}
+
 fn generate_random(num_chars: usize) -> String {
     let charset: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
                            abcdefghijklmnopqrstuvwxyz\
@@ -53,13 +70,16 @@ fn generate_random(num_chars: usize) -> String {
         .collect()
 }
 
-pub fn create_user_credentials() -> Vec<u8> {
+pub fn create_user_credentials(server_addr: String) -> (Vec<u8>, Vec<u8>) {
     let username = generate_random(NUM_USERNAME_CHARS);
     let password = generate_random(NUM_PASSWORD_CHARS);
 
     let credentials_string = format!("{}{}", username, password);
     let credentials = credentials_string.into_bytes();
 
-    credentials
+    let credentials_full_string = format!("{}{}{}", username, password, server_addr);
+    let credentials_full = credentials_full_string.into_bytes();
+
+    (credentials, credentials_full)
 }
     

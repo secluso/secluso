@@ -24,6 +24,7 @@ use privastead_client_lib::http_client::HttpClient;
 use privastead_client_lib::pairing;
 use privastead_client_lib::mls_client::{KeyPackages, MlsClient};
 use privastead_client_lib::mls_clients::{MlsClients, MLS_CLIENT_TAGS, CONFIG};
+use privastead_client_server_lib::auth::parse_user_credentials_full;
 use qrcode::QrCode;
 use rand::Rng;
 use serde_json::{Value};
@@ -183,6 +184,22 @@ fn decrypt_msg(mls_client: &mut MlsClient, msg: Vec<u8>) -> io::Result<Vec<u8>> 
     Ok(decrypted_msg)
 }
 
+fn receive_credentials_full(
+    stream: &mut TcpStream,
+    mls_client: &mut MlsClient,
+) -> io::Result<()> {
+    let encrypted_msg = read_varying_len(stream)?;
+    let credentials_full_bytes = decrypt_msg(mls_client, encrypted_msg)?;
+    
+    // Write to file
+    let mut file = fs::File::create("credentials_full").expect("Could not create file");
+    file.write_all(&credentials_full_bytes).unwrap();
+    file.flush().unwrap();
+    file.sync_all().unwrap();
+
+    Ok(())
+}
+
 fn request_wifi_info(
     stream: &mut TcpStream,
     mls_client: &mut MlsClient,
@@ -330,7 +347,6 @@ pub fn pair_all(
     mls_clients: &mut MlsClients,
     input_camera_secret: Option<Vec<u8>>,
     connect_to_wifi: bool,
-    http_client: &HttpClient,
 ) -> io::Result<()> {
     // Ensure that two cameras don't attempt to pair at the same time (as this would introduce an error when opening two of the same port simultaneously)
     let _lock = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
@@ -391,6 +407,24 @@ pub fn pair_all(
                         }
                     }
 
+                    if success {
+                        match receive_credentials_full(&mut stream, &mut mls_clients[CONFIG]) {
+                            Ok(()) => {},
+                            Err(e) => {
+                                debug!("[Pairing] Failed to receive credentials_full: {e}");
+                                success = false;
+                            }
+                        }
+                    }
+
+                    let http_client = if success {
+                        let (server_username, server_password, server_addr) = read_parse_full_credentials();
+                        Some(HttpClient::new(server_addr, server_username, server_password))
+                    } else {
+                        success = false;
+                        None
+                    };
+
                     let mut changed_wifi = false;
 
                     if connect_to_wifi && success {
@@ -402,7 +436,7 @@ pub fn pair_all(
                                         Ok(_) => {
                                             changed_wifi = true;
                                             debug!("[Pairing] Attempting to confirm pairing...");
-                                            match http_client.send_pairing_token(&pairing_token) {
+                                            match http_client.unwrap().send_pairing_token(&pairing_token) {
                                                 Ok(status) => {
                                                     debug!("[Pairing] Pairing token acknowledged with status: {status}");
                                                     match status.as_str() {
@@ -562,11 +596,17 @@ pub fn get_names(
     (camera_name, group_name)
 }
 
-pub fn read_user_credentials(pathname: &str) -> Vec<u8> {
-    let file = fs::File::open(pathname).expect("Could not open user_credentials file");
+/// Returns username, password, and server addr
+pub fn read_parse_full_credentials() -> (String, String, String) {
+    let file = fs::File::open("credentials_full").expect("Could not open user_credentials file");
     let mut reader =
         BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
     let data = reader.fill_buf().unwrap();
 
-    data.to_vec()
+    let credentials_full_bytes = data.to_vec();
+
+    let (server_username, server_password, server_ip) = parse_user_credentials_full(credentials_full_bytes).unwrap();
+    let server_addr: String = server_ip.to_owned() + ":8080";
+
+    (server_username, server_password, server_addr)
 }

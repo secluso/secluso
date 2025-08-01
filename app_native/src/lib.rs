@@ -151,6 +151,28 @@ fn send_wifi_and_pairing_info(
     Ok(())
 }
 
+fn send_credentials_full(
+    stream: &mut TcpStream,
+    mls_client: &mut MlsClient,
+    credentials_full: String,
+) -> io::Result<()> {
+    info!("Sending credentials_full");
+    let msg = credentials_full.into_bytes();
+    let encrypted_msg = match mls_client.encrypt(&msg) {
+        Ok(msg) => msg,
+        Err(e) => {
+            info!("Failed to encrypt credentials_full: {e}");
+            return Err(e);
+        }
+    };
+
+    write_varying_len(stream, &encrypted_msg)?;
+
+    mls_client.save_group_state();
+
+    Ok(())
+}
+
 #[flutter_rust_bridge::frb]
 fn pair_with_camera(
     stream: &mut TcpStream,
@@ -222,7 +244,8 @@ pub fn add_camera(
     standalone_camera: bool,
     wifi_ssid: String,
     wifi_password: String,
-    pairing_token: String
+    pairing_token: String,
+    credentials_full: String,
 ) -> bool {
     info!("Rust: add_camera method triggered");
     if clients_reg.is_none() {
@@ -264,6 +287,16 @@ pub fn add_camera(
         &camera_name,
         &mut clients.as_mut().mls_clients,
         secret_vec,
+    ) {
+        info!("Error: {e}");
+        return false;
+    }
+
+    // Send credentials (username, password, and IP address of the server)
+    if let Err(e) = send_credentials_full(
+        &mut stream,
+        &mut clients.mls_clients[CONFIG],
+        credentials_full,
     ) {
         info!("Error: {e}");
         return false;

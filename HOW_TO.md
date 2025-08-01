@@ -28,11 +28,11 @@ To generate credentials, do the following (preferrably in the local machine):
 
 ```
 cd privastead/config_tool
-cargo run -- --generate-user-credentials --dir .
+cargo run -- --generate-user-credentials --server-addr <SERVER_IP_ADDR> --dir .
 ```
 
 This generates two files: user_credentials and user_credentials_qrcode.png.
-We will use the former for the camera hub and the server and the latter for the app.
+We will use the former for the server and the latter for the app.
 Keep these files in mind and we will come back to using them in the following steps.
 
 ### Step 2: Generating FCM credentials
@@ -74,6 +74,12 @@ The server needs to be able to send notification requests to FCM. Therefore, cop
 
 ```
 mv /path-to-json-file/service_account_key.json /path-to-privastead/server/
+```
+
+Also, copy the user_credentials file we generated in step 1 to the user_credentials directory in the server.
+
+```
+mv /path-to-user-credentials/user_credentials /path-to-privastead/server/user_credentials/
 ```
 
 To run the server, you need to execute this command:
@@ -206,7 +212,6 @@ The RTSP port is usually 554, but may vary depending on your camera.
 Motion FPS is the amount of times per second that we run our motion detection algorithm against the most recent frame.
 
 ```
-mv /address/to/user_credentials /path-to-privastead/camera_hub
 cd /path-to-privastead/camera_hub
 cargo run --release --features ip
 ```
@@ -293,9 +298,8 @@ This will build and launch the app on your connected device.
 
 ### Step 7: Pairing the app with the hub
 
-When you first run the app, it will ask you for the IP address of teh server and credentials needed to access the server in the form of a QR code.
-Enter the IP address.
-Then scan user_credentials_qrcode.png file that you generated in Step 1.
+When you first run the app, it will ask you for the credentials needed to access the server in the form of a QR code.
+Scan user_credentials_qrcode.png file that you generated in Step 1.
 Note that the app will ask you for permission to access the camera in order to scan the QR code.
 It is enough to give one-time access to the app.
 It does not need the camera other than for scanning QR codes (also needed when pairing with the camera).
