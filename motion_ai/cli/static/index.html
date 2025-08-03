@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Pipeline Replay Viewer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+
+<body>
+  <header>
+    <h1>Pipeline Replay Viewer</h1>
+  </header>
+
+  <main class="grid">
+    <!-- sessions -->
+    <aside class="panel">
+      <h2 class="panel__title">Sessions</h2>
+      <ul id="session-list" class="session-list"></ul>
+    </aside>
+
+    <!-- content -->
+    <section class="content">
+      <!-- metrics -->
+      <div class="cards-row">
+         <div class="card card--chart">
+          <div class="card__head" style="align-items:flex-start;">
+            <div>
+              <h3>CPU / RAM / Temp</h3>
+              <div id="chart-legend" class="legend" aria-label="Series legend"></div>
+            </div>
+            <div id="chart-caption" class="muted"></div>
+          </div>
+
+          <div class="chart-wrap">
+            <canvas id="health-canvas" width="900" height="220" aria-label="Health chart"></canvas>
+          </div>
+        </div>
+
+        <div class="card card--runtime">
+          <h3>Runtime</h3>
+          <div class="runtime__grid">
+            <div>
+              <div class="label">Queue now</div>
+              <div id="queue-now" class="value">-</div>
+            </div>
+            <div>
+              <div class="label">Queue peak</div>
+              <div id="queue-peak" class="value">-</div>
+            </div>
+            <div>
+              <div class="label">Standby has frame</div>
+              <div id="standby-flag" class="value">-</div>
+            </div>
+            <div>
+              <div class="label">Active has frame</div>
+              <div id="active-flag" class="value">-</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- controls -->
+      <div class="card controls">
+        <div class="controls__left">
+          <button id="group-prev" title="Previous Run">⟵ Run</button>
+          <span id="group-label" class="muted">Run -</span>
+          <button id="group-next" title="Next Run">Run ⟶</button>
+        </div>
+        <div class="controls__mid">
+          <button id="prev-btn" title="Previous Frame">⟵</button>
+          <input id="frame-slider" type="range" min="0" max="0" value="0" />
+          <button id="next-btn" title="Next Frame">⟶</button>
+          <span id="frame-info" class="muted"></span>
+        </div>
+        <div class="controls__right">
+          <button id="open-btn" class="btn-primary">Open</button>
+        </div>
+      </div>
+
+      <!-- frames + log -->
+      <div class="split">
+        <div class="card frames">
+          <div id="frames-grid" class="frames__grid"></div>
+        </div>
+
+        <div class="card log">
+          <div class="log__head">
+            <h3>Telemetry</h3>
+            <div class="log__opts">
+              <label><input type="checkbox" id="toggle-ticks" /> Show ticks</label>
+              <label><input type="checkbox" id="toggle-noop" checked /> Hide NoOp intents</label>
+            </div>
+          </div>
+          <div id="log-meta" class="muted log__meta"></div>
+          <div id="log-list" class="log__body"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modal Viewer -->
+  <div id="img-modal" class="modal" aria-hidden="true">
+    <div class="modal__overlay" data-close></div>
+    <div class="modal__dialog" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <button class="modal__close" aria-label="Close" data-close>×</button>
+      <div class="modal__head">
+        <h3 id="modal-title">Image</h3>
+      </div>
+      <div class="modal__body">
+        <img id="modal-img" alt="frame preview" />
+      </div>
+      <div class="modal__foot">
+        <button id="m-prev">⟵</button>
+        <button id="m-next">⟶</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

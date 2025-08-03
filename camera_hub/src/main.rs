@@ -466,13 +466,15 @@ fn core(
             }
         };
 
+        println!("Motion event: {}", motion_event);
+
         // Send motion events only if we haven't sent one in the past minute
         if (motion_event || test_mode)
             && (locked_motion_check_time.is_none()
                 || locked_motion_check_time.unwrap().le(&SystemTime::now()))
         {
             let video_info = VideoInfo::new();
-            info!("Detected motion.");
+            println!("Detected motion.");
             if !test_mode {
                 info!("Sending the FCM notification with timestamp.");
                 let notification_msg = clients[FCM].encrypt(
@@ -563,6 +565,6 @@ fn core(
         }
 
         // Introduce a small delay since we don't need this constantly checked
-        sleep(Duration::from_millis(10));
+        sleep(Duration::from_millis(100));
     }
 }

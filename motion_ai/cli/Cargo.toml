@@ -1,0 +1,20 @@
+[package]
+name = "privastead-motion-ai-cli"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+raspberry = []
+
+[dependencies]
+
+[target.'cfg(all(target_arch = "arm", target_os = "linux"))'.dependencies]
+ffmpeg-next = { version = "7.1.0", features = ["rpi"] }
+
+[target.'cfg(not(all(target_arch = "arm", target_os = "linux")))'.dependencies]
+ffmpeg-next = "7.1.0"
+
+video-rs= { version = "0.10.3", features = ["ndarray"] }
+privastead-motion-ai = { path = "../pipeline", features=["mp4_player"] }
+anyhow = "1.0.41"

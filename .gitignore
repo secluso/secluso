@@ -13,3 +13,5 @@ camera_secret_qrcode.png
 pending_videos
 state
 cameras.yaml
+credentials_full
+*.sh

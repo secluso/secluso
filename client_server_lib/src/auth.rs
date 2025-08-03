@@ -41,6 +41,7 @@ pub fn parse_user_credentials(credentials: Vec<u8>) -> io::Result<(String, Strin
 pub fn parse_user_credentials_full(credentials_full: Vec<u8>) -> io::Result<(String, String, String)> {
     let credentials_full_string = String::from_utf8(credentials_full)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    println!("Debug: {}", credentials_full_string.len());
     if credentials_full_string.len() <= NUM_USERNAME_CHARS + NUM_PASSWORD_CHARS {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,

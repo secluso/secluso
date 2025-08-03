@@ -89,6 +89,11 @@ fn generate_user_credentials(dir: String, server_addr: String) {
         fs::File::create(dir.clone() + "/user_credentials").expect("Could not create file");
     let _ = file.write_all(&credentials);
 
+    // Save the credentials in a file to be given to the camera hub
+    let mut file =
+        fs::File::create(dir.clone() + "/user_credentials_full").expect("Could not create file");
+    let _ = file.write_all(&credentials_full);
+
     // Save the credentials_full (which includes the server addr) as QR code to be shown to the app
     let code = QrCode::new(credentials_full).unwrap();
     let image = code.render::<Luma<u8>>().build();

@@ -27,9 +27,9 @@ use std::{
 use anyhow::{Context, Error};
 use bytes::{BufMut, BytesMut};
 use crossbeam_channel::unbounded;
+use privastead_motion_ai::pipeline;
 use tokio::runtime::Runtime;
-
-use crate::raspberry_pi::motion::detector::MotionDetection;
+use privastead_motion_ai::logic::pipeline::PipelineController;
 use crate::raspberry_pi::rpi_dual_stream;
 use crate::traits::Mp4;
 use crate::{
@@ -81,7 +81,7 @@ pub struct RaspberryPiCamera {
     frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>,
     sps_frame: VideoFrame,
     pps_frame: VideoFrame,
-    motion_detection: MotionDetection,
+    motion_detection: Arc<Mutex<PipelineController>>,
 }
 
 impl RaspberryPiCamera {
@@ -94,8 +94,48 @@ impl RaspberryPiCamera {
         // Frame queue holds recently processed H.264 frames.
         let frame_queue = Arc::new(Mutex::new(VecDeque::new()));
 
-        // Store the latest raw frame for motion detection.
-        let latest_frame = Arc::new(Mutex::new(None));
+
+        // Start motion detection using raw frames from the shared stream.
+        let pipeline = pipeline![
+            privastead_motion_ai::logic::stages::MotionStage,
+            privastead_motion_ai::logic::stages::InferenceStage,
+        ];
+
+        let write_logs = cfg!(feature = "telemetry");
+        println!("Telemetry Output Enabled: {write_logs}");
+        let mut new_controller = match PipelineController::new(pipeline, write_logs) {
+            Ok(c) => c,
+            Err(_) => {
+                panic!("Failed to instantiate pipeline controller");
+            }
+        };
+
+        new_controller.start_working();
+        let motion_detection = Arc::new(Mutex::new(new_controller));
+        let controller_clone = Arc::clone(&motion_detection);
+        motion_detection.lock().unwrap().start_working(); // TODO: Should we start processing later, maybe when we get the first frame?
+
+        // Background thread: runs the pipeline's main event loop
+        thread::spawn(move || {
+            //todo: only loop until exit
+            loop {
+                // when false (health issue), we should exit + we should also have some way for user to safely exit
+                let result = controller_clone.lock().unwrap().tick("cpu_thermal temp1"); //TODO: This string should be put somewhere as a constant
+                if let Err(e) = result {
+                    println!("Encountered error in tick loop: {e}");
+                    break;
+                } else if let Ok(accepted) = result {
+                    if !accepted {
+                        println!("Not accepted");
+                        break;
+                    }
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+
+            debug!("Exited controller tick loop");
+        });
+
 
         // Start the new shared stream.
         rpi_dual_stream::start(
@@ -103,12 +143,12 @@ impl RaspberryPiCamera {
             HEIGHT,
             TOTAL_FRAME_RATE,
             I_FRAME_INTERVAL,
-            Arc::clone(&latest_frame),
+            Arc::clone(&motion_detection),
             Arc::clone(&frame_queue),
             ps_tx,
             motion_fps as u8,
         )
-        .expect("Failed to start shared stream");
+            .expect("Failed to start shared stream");
 
         // Wait for the SPS and PPS frames before continuing.
         let mut sps_frame_opt = None;
@@ -128,10 +168,6 @@ impl RaspberryPiCamera {
         }
         let sps_frame = sps_frame_opt.expect("SPS frame missing");
         let pps_frame = pps_frame_opt.expect("PPS frame missing");
-
-        // Start motion detection using raw frames from the shared stream.
-        let motion_detection = MotionDetection::new(latest_frame, WIDTH, HEIGHT, motion_fps)
-            .expect("Failed to start motion detection");
 
         println!("RaspberryPiCamera initialized.");
 
@@ -189,8 +225,8 @@ impl RaspberryPiCamera {
                     frame_timestamp_micros / 10, // Adjust conversion as needed.
                     frame.kind == VideoFrameKind::IFrame,
                 )
-                .await
-                .with_context(|| "Error processing video frame")?;
+                    .await
+                    .with_context(|| "Error processing video frame")?;
                 frame_count += 1;
             }
             drop(queue);
@@ -237,7 +273,7 @@ impl RaspberryPiCamera {
             RpiCameraAudioParameters::default(),
             file,
         )
-        .await?;
+            .await?;
 
         // Process the rest of the frames, writing both to the MP4 writer and to the raw file.
         Self::copy(&mut mp4, Some(duration), frame_queue).await?;
@@ -262,7 +298,7 @@ impl RaspberryPiCamera {
             RpiCameraAudioParameters::default(),
             livestream_writer,
         )
-        .await?;
+            .await?;
         fmp4.finish_header().await?;
         Self::copy(&mut fmp4, None, frame_queue).await?;
 
@@ -291,7 +327,7 @@ impl RaspberryPiCamera {
 
 impl Camera for RaspberryPiCamera {
     fn is_there_motion(&mut self) -> Result<bool, Error> {
-        self.motion_detection.handle_motion_event()
+        Ok(self.motion_detection.lock().unwrap().motion_recently())
     }
 
     fn record_motion_video(&self, info: &VideoInfo, duration: u64) -> io::Result<()> {

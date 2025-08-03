@@ -25,20 +25,16 @@ use std::{
     io::{BufReader, Read, Write},
     process::{Command, Stdio},
     thread,
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 
 use crate::raspberry_pi::rpi_camera::{VideoFrame, VideoFrameKind};
 use anyhow::anyhow;
 use bytes::BytesMut;
 use crossbeam_channel::Sender;
+use privastead_motion_ai::frame::RawFrame;
+use privastead_motion_ai::logic::pipeline::PipelineController;
 
-/// Represents a single raw YUV420 frame captured from rpicam.
-#[derive(Clone)]
-pub struct RawFrame {
-    pub data: Vec<u8>,
-    pub timestamp: SystemTime,
-}
 
 /// Provides two channels: one for raw YUV420 frames from rpicam‑vid (for motion detection), one for H.264 frames converted by rpicam-vid.
 pub fn start(
@@ -46,7 +42,7 @@ pub fn start(
     height: usize,
     total_frame_rate: usize,
     i_frame_interval: usize,
-    motion_latest_frame: Arc<Mutex<Option<RawFrame>>>,
+    pipeline_controller: Arc<Mutex<PipelineController>>,
     frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>,
     ps_tx: Sender<VideoFrame>,
     motion_fps: u8,
@@ -149,14 +145,13 @@ pub fn start(
 
                 match stream.read_exact(&mut buffer) {
                     Ok(_) => {
-                        let raw_frame = RawFrame {
-                            data: buffer,
-                            timestamp: SystemTime::now(),
-                        };
+                        let raw_frame = RawFrame::create_from_buffer(buffer, width, height);
+                           // data: buffer,
+                       // };
 
                         {
-                            let mut lock = motion_latest_frame.lock().unwrap();
-                            *lock = Some(raw_frame);
+                            let mut lock = pipeline_controller.lock().unwrap();
+                            lock.push_frame(raw_frame);
                         }
                     }
                     Err(e) => {

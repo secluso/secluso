@@ -1,0 +1,3 @@
+[models]
+fast = "onnx_models/nanodet-plus-m_416.onnx"
+accurate = "onnx_models/model.onnx"
