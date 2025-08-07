@@ -39,6 +39,7 @@ use std::path::Path;
 use std::process::exit;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::panic;
 use std::thread::sleep;
 use std::time::SystemTime;
 use std::{thread, time::Duration};
@@ -293,6 +294,14 @@ fn main() -> io::Result<()> {
             }
         }
     }
+
+    // Set a global panic hook and abort when there's a panic in any of the threads.
+    // We typically run the camera_hub using a systemd service, which re-launches it
+    // upon abort. We want every panic to abort so that the program can be re-launched.
+    panic::set_hook(Box::new(|panic_info| {
+        println!("Panic occurred: {:?}", panic_info);
+        std::process::abort();
+    }));
 
     // Iterate through each camera struct and spawn in a thread to manage each individual one
     for mut camera in camera_list.into_iter() {
