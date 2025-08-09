@@ -60,7 +60,7 @@ pub fn start(
 
     // Spawn rpicam‑vid with output directed to stdout (to get rid of TCP dependency for reduced complexity)
     let rpicam_cmd = format!(
-        "rpicam-vid -t 0 -n --width {} --height {} --framerate {} --codec h264 --intra {} -o -",
+        "rpicam-vid --awb tungsten -t 0 -n --width {} --height {} --framerate {} --codec h264 --intra {} -o -",
         width, height, total_frame_rate, i_frame_interval
     );
     let mut rpicam_child = Command::new("sh")
