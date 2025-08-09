@@ -146,9 +146,6 @@ pub fn start(
                 match stream.read_exact(&mut buffer) {
                     Ok(_) => {
                         let raw_frame = RawFrame::create_from_buffer(buffer, width, height);
-                           // data: buffer,
-                       // };
-
                         {
                             let mut lock = pipeline_controller.lock().unwrap();
                             lock.push_frame(raw_frame);

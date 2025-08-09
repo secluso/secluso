@@ -5,15 +5,10 @@ edition = "2024"
 
 [features]
 default = []
-raspberry = []
+raspberry = ["ffmpeg-next/rpi"]
 
 [dependencies]
-
-[target.'cfg(all(target_arch = "arm", target_os = "linux"))'.dependencies]
-ffmpeg-next = { version = "7.1.0", features = ["rpi"] }
-
-[target.'cfg(not(all(target_arch = "arm", target_os = "linux")))'.dependencies]
-ffmpeg-next = "7.1.0"
+ffmpeg-next = { version = "7.1.0", default-features = false, optional = false }
 
 video-rs= { version = "0.10.3", features = ["ndarray"] }
 privastead-motion-ai = { path = "../pipeline", features=["mp4_player"] }

@@ -142,14 +142,13 @@ impl RawFrame {
                 ))
             })?;
 
+        // Resize to save space on SD card
+        use image::imageops::FilterType;
+        img = image::imageops::resize(&img, 416, 416, FilterType::CatmullRom);
+
         if draw_bb {
             if let Some(det) = &self.detection_result {
-                // Resize before drawing boxes
-                use image::imageops::FilterType;
-
-                let resized_img = image::imageops::resize(&img, 416, 416, FilterType::CatmullRom);
-
-                img = self.draw_boxes(resized_img, &det.results)
+                img = self.draw_boxes(img, &det.results)
             }
         }
 
@@ -280,8 +279,7 @@ impl RawFrame {
     Tested with 1292x972 resized frames
     This method approximates of YUV -> RGB, average runtime: 17ms on Raspberry Pi Zero 2W
     Without approximation feature, runtime was 64ms for this method on average.
-     **/
-    pub(crate) fn yuv_to_rgb(&mut self) {
+     **/    pub(crate) fn yuv_to_rgb(&mut self) {
         // For 8-bit yuv420p, frame size = width * height * 3/2 bytes.
         // However, we need to take into account how the width is padded to 64-bytes.
         // This is for a row-aligned format from V4L2 for DMA transfer alignment.
@@ -315,6 +313,7 @@ impl RawFrame {
         // Split output buffer into rows.
         let mut rows: Vec<&mut [u8]> = rgb.chunks_mut(self.width * 3).collect();
         let block_width = self.width / 2;
+        let uv_stride = yuv_width / 2;
 
         // Process rows in pairs in parallel.
         rows.as_mut_slice()
@@ -329,14 +328,14 @@ impl RawFrame {
                     };
 
                     // Calculate starting indices in the Y plane for the two rows.
-                    let y0_offset = by * 2 * self.width;
-                    let y1_offset = (by * 2 + 1) * self.width;
+                    let y0_offset = by * 2 * yuv_width;
+                    let y1_offset = (by * 2 + 1) * yuv_width;
 
                     // Process each 2x2 pixel block.
                     for bx in 0..block_width {
                         let x0 = bx * 2;
                         let x1 = x0 + 1;
-                        let uv_index = by * block_width + bx;
+                        let uv_index = by * uv_stride + bx;
 
                         // Convert U, V to signed values.
                         let u = u_plane[uv_index] as i32 - 128;
