@@ -44,7 +44,9 @@ use crate::livestream::LivestreamWriter;
 use crate::mp4::Mp4Writer;
 use crate::traits::{Camera, CodecParameters, Mp4};
 use std::fs;
+use std::fs::File;
 use std::io;
+use std::io::Write;
 use std::thread;
 use tokio::runtime::Runtime;
 
@@ -62,6 +64,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use crate::ip::ip_motion_detection::MotionDetection;
+use crate::{STATE_DIR_GENERAL, VIDEO_DIR_GENERAL};
 use std::collections::VecDeque;
 use std::process::exit;
 use std::sync::{
@@ -69,6 +72,12 @@ use std::sync::{
     Mutex,
 };
 use std::time::{Duration, SystemTime};
+use rpassword::read_password;
+use serde_yml::Value;
+use std::collections::HashMap;
+
+
+
 pub struct IpCamera {
     name: String,
     state_dir: String,
@@ -88,7 +97,7 @@ struct Frame {
 }
 
 impl IpCamera {
-    pub fn new(
+    fn new(
         name: String,
         ip: String,
         rtsp_port: u16,
@@ -151,6 +160,135 @@ impl IpCamera {
             audio_params,
             motion_detection,
         })
+    }
+
+    /// Parses cameras.yaml file and returns a list of all cameras.
+    pub fn get_all_cameras_info() -> io::Result<Vec<Box<dyn Camera + Send>>> {
+        // Retrieve the cameras.yaml file. If it doesn't exist, print an error message for the user.
+        let cameras_file = match File::open("cameras.yaml") {
+            Ok(file) => file,
+
+            Err(_error) => {
+                println!("Error retrieving cameras.yaml file, see the example_cameras.yaml for an example configuration.");
+                exit(1);
+            }
+        };
+
+        // Load the yml file in for analysis
+        let loaded_cameras: HashMap<String, Value> = serde_yml::from_reader(cameras_file)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        // Extract cameras
+        let cameras_section = loaded_cameras
+            .get("cameras")
+            .expect("Cameras section is missing from cameras.yaml");
+
+        let mut camera_list: Vec<Box<dyn Camera + Send>> = Vec::new();
+
+        // Iterate through every camera in the cameras.yaml file, accumulating structs representing their data
+        if let Value::Sequence(cameras) = cameras_section {
+            for camera in cameras {
+                if let Value::Mapping(map) = camera {
+                    let camera_name = map
+                        .get(&Value::String("name".to_string()))
+                        .expect("Missing camera name")
+                        .as_str()
+                        .unwrap();
+                    let camera_motion_fps = map
+                        .get(&Value::String("motion_fps".to_string()))
+                        .expect("Missing Motion FPS")
+                        .as_u64()
+                        .unwrap();
+
+                    let camera_ip = map
+                        .get(&Value::String("ip".to_string()))
+                        .expect("Missing IP for camera")
+                        .as_str()
+                        .unwrap();
+                    let camera_rtsp_port = map
+                        .get(&Value::String("rtsp_port".to_string()))
+                        .expect("Missing RTSP port")
+                        .as_u64()
+                        .unwrap() as u16;
+                    let mut camera_username = map
+                        .get(&Value::String("username".to_string()))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let mut camera_password = map
+                        .get(&Value::String("password".to_string()))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    if camera_username.is_empty() {
+                        camera_username = Self::ask_user(format!(
+                            "Enter the username for the IP camera {:?}: ",
+                            camera_name
+                        ))
+                            .unwrap();
+                    }
+
+                    if camera_password.is_empty() {
+                        camera_password = Self::ask_user_password(format!(
+                            "Enter the password for the IP camera {:?}: ",
+                            camera_name
+                        ))
+                            .unwrap();
+                    }
+
+                    let ip_camera_result = IpCamera::new(
+                        camera_name.parse().unwrap(),
+                        camera_ip.parse().unwrap(),
+                        camera_rtsp_port,
+                        camera_username.parse().unwrap(),
+                        camera_password.parse().unwrap(),
+                        format!(
+                            "{}/{}",
+                            STATE_DIR_GENERAL,
+                            camera_name.replace(" ", "_").to_lowercase()
+                        ),
+                        format!(
+                            "{}/{}",
+                            VIDEO_DIR_GENERAL,
+                            camera_name.replace(" ", "_").to_lowercase()
+                        ),
+                        camera_motion_fps,
+                    );
+                    match ip_camera_result {
+                        Ok(camera) => {
+                            camera_list.push(Box::new(camera));
+                        }
+                        Err(err) => {
+                            panic!("Failed to initialize the IP camera object. Consider resetting the camera. (Error: {err})");
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(camera_list)
+    }
+
+    fn ask_user(prompt: String) -> io::Result<String> {
+        print!("{prompt}");
+        // Make sure the prompt is displayed before reading input
+        io::stdout().flush()?;
+
+        let mut user_input = String::new();
+        io::stdin().read_line(&mut user_input)?;
+        // Trim the input to remove any extra whitespace or newline characters
+        Ok(user_input.trim().to_string())
+    }
+
+    fn ask_user_password(prompt: String) -> io::Result<String> {
+        print!("{prompt}");
+        // Make sure the prompt is displayed before reading input
+        io::stdout().flush()?;
+
+        let password = read_password()?;
+        // Trim the input to remove any extra whitespace or newline characters
+        Ok(password.trim().to_string())
     }
 
     fn add_frame_and_drop_old(frame_queue: Arc<Mutex<VecDeque<Frame>>>, frame: Frame) {

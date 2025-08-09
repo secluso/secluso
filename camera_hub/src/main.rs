@@ -26,17 +26,12 @@ use docopt::Docopt;
 use privastead_client_lib::http_client::HttpClient;
 use privastead_client_lib::mls_client::MlsClient;
 use privastead_client_lib::mls_clients::{NUM_MLS_CLIENTS, MLS_CLIENT_TAGS, MOTION, LIVESTREAM, FCM, CONFIG, MlsClients};
-use serde_yml::Value;
 use std::array;
-use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io;
-#[cfg(feature = "ip")]
-use std::io::Write;
 use std::ops::Add;
 use std::path::Path;
-use std::process::exit;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::panic;
@@ -64,21 +59,14 @@ mod fmp4;
 mod mp4;
 
 cfg_if! {
-     if #[cfg(all(feature = "ip", feature = "raspberry"))] {
-        mod raspberry_pi;
-        use crate::raspberry_pi::rpi_camera::RaspberryPiCamera;
-        mod ip;
-        use crate::ip::ip_camera::IpCamera;
-        use rpassword::read_password;
-    } else if #[cfg(feature = "raspberry")] {
+    if #[cfg(feature = "raspberry")] {
         mod raspberry_pi;
         use crate::raspberry_pi::rpi_camera::RaspberryPiCamera;
     } else if #[cfg(feature = "ip")] {
         mod ip;
-        use crate::ip::ip_camera::IpCamera;
-        use rpassword::read_password;
+        use crate::ip::ip_camera::IpCamera; 
     } else {
-        compile_error!("At least one of the features 'raspberry' or 'ip' must be enabled");
+        compile_error!("One of the features 'raspberry' or 'ip' must be enabled.");
     }
 }
 
@@ -128,170 +116,46 @@ fn main() -> io::Result<()> {
         .and_then(|d| d.deserialize())
         .unwrap_or_else(|e| e.exit());
 
-    // Retrieve the cameras.yaml file. If it doesn't exist, print an error message for the user.
-    let cameras_file = match File::open("cameras.yaml") {
-        Ok(file) => file,
-
-        Err(_error) => {
-            println!("Error retrieving cameras.yaml file, see the example_cameras.yaml for an example configuration.");
-            exit(1);
-        }
-    };
-
-    // Load the yml file in for analysis
-    let loaded_cameras: HashMap<String, Value> = serde_yml::from_reader(cameras_file)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-    // Extract cameras
-    let cameras_section = loaded_cameras
-        .get("cameras")
-        .expect("Cameras section is missing from cameras.yaml");
-
     // Create the general outer directories (where we'll have inner directories representing each camera)
     fs::create_dir_all(STATE_DIR_GENERAL).unwrap();
     fs::create_dir_all(VIDEO_DIR_GENERAL).unwrap();
 
-    let mut camera_list: Vec<Box<dyn Camera + Send>> = Vec::new();
-
     cfg_if! {
         if #[cfg(feature = "raspberry")] {
-            let mut input_camera_secret: Option<Vec<u8>> = None;
-            let mut connect_to_wifi = false;
-        } else {
-            let mut input_camera_secret: Option<Vec<u8>> = None;
+            let camera = RaspberryPiCamera::new(
+                "RPi".to_string(),
+                STATE_DIR_GENERAL.to_string(),
+                VIDEO_DIR_GENERAL.to_string(),
+                1,
+            );
+        
+            let camera_list: Vec<Box<dyn Camera + Send>> = vec![Box::new(camera)];
+
+            // This means that the secret will be provided to the hub in the camera_secret file.
+            let input_camera_secret = Some(get_input_camera_secret());
+            // This means that the camera_hub needs to receive the WiFi info from the app and
+            // connect to the WiFi network.
+            let connect_to_wifi = true;
+        } else if #[cfg(feature = "ip")] {
+            // When using IP cameras, the hub can support multiple cameras.
+            // The info for these cameras should be encoded in the cameras.yaml
+            // file. get_all_cameras_info() parses this file and returns the
+            // list of cameras here.
+            let camera_list: Vec<Box<dyn Camera + Send>> =
+                IpCamera::get_all_cameras_info()?;
+            let input_camera_secret: Option<Vec<u8>> = if args.flag_test_motion || args.flag_test_livestream {
+                Some(get_input_camera_secret())
+            } else {
+                // This means that the hub generates a new secret. This is usable when the user can
+                // access the generated secret file in order to scan it in the app.
+                // That is the case when using a hub with IP cameras, but not in the case of the
+                // Raspberry Pi camera.
+                None
+            };
+
             let connect_to_wifi = false;
-        }
-    }
-
-    #[cfg(feature = "raspberry")]
-    let mut num_raspberry_pi = 0;
-
-    // Iterate through every camera in the cameras.yaml file, accumulating structs representing their data
-    if let Value::Sequence(cameras) = cameras_section {
-        for camera in cameras {
-            if let Value::Mapping(map) = camera {
-                let camera_type = map
-                    .get(&Value::String("type".to_string()))
-                    .expect("Missing camera type (IP or RaspberryPi)")
-                    .as_str()
-                    .unwrap();
-                let camera_name = map
-                    .get(&Value::String("name".to_string()))
-                    .expect("Missing camera name")
-                    .as_str()
-                    .unwrap();
-                let camera_motion_fps = map
-                    .get(&Value::String("motion_fps".to_string()))
-                    .expect("Missing Motion FPS")
-                    .as_u64()
-                    .unwrap();
-
-                if camera_type == "IP" {
-                    cfg_if! {
-                        if #[cfg(feature = "ip")] {
-                            let camera_ip = map
-                                .get(&Value::String("ip".to_string()))
-                                .expect("Missing IP for camera")
-                                .as_str()
-                                .unwrap();
-                            let camera_rtsp_port = map
-                                .get(&Value::String("rtsp_port".to_string()))
-                                .expect("Missing RTSP port")
-                                .as_u64()
-                                .unwrap() as u16;
-                            let mut camera_username = map
-                                .get(&Value::String("username".to_string()))
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let mut camera_password = map
-                                .get(&Value::String("password".to_string()))
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-
-                            if camera_username.is_empty() {
-                                camera_username = ask_user(format!(
-                                    "Enter the username for the IP camera {:?}: ",
-                                    camera_name
-                                ))
-                                    .unwrap();
-                            }
-
-                            if camera_password.is_empty() {
-                                camera_password = ask_user_password(format!(
-                                    "Enter the password for the IP camera {:?}: ",
-                                    camera_name
-                                ))
-                                    .unwrap();
-                            }
-
-                            let ip_camera_result = IpCamera::new(
-                                camera_name.parse().unwrap(),
-                                camera_ip.parse().unwrap(),
-                                camera_rtsp_port,
-                                camera_username.parse().unwrap(),
-                                camera_password.parse().unwrap(),
-                                format!(
-                                    "{}/{}",
-                                    STATE_DIR_GENERAL,
-                                    camera_name.replace(" ", "_").to_lowercase()
-                                ),
-                                format!(
-                                    "{}/{}",
-                                    VIDEO_DIR_GENERAL,
-                                    camera_name.replace(" ", "_").to_lowercase()
-                                ),
-                                camera_motion_fps,
-                            );
-                            match ip_camera_result {
-                                Ok(camera) => {
-                                    camera_list.push(Box::new(camera));
-                                }
-                                Err(err) => {
-                                    panic!("Failed to initialize the IP camera object. Consider resetting the camera. (Error: {err})");
-                                }
-                            }
-
-                            if args.flag_test_motion || args.flag_test_livestream {
-                                input_camera_secret = Some(get_input_camera_secret());
-                            }
-
-                        } else {
-                             panic!("IP cameras are only supported with the \"ip\" feature.");
-                        }
-                    }
-                } else if camera_type == "RaspberryPi" {
-                    cfg_if! {
-                       if #[cfg(feature = "raspberry")] {
-                            if num_raspberry_pi > 0 {
-                                panic!("cameras.yaml can only specify one Raspberry Pi camera!");
-                            }
-                            num_raspberry_pi += 1;
-
-                            let camera = RaspberryPiCamera::new(
-                                camera_name.parse().unwrap(),
-                                STATE_DIR_GENERAL.to_string(),
-                                VIDEO_DIR_GENERAL.to_string(),
-                                camera_motion_fps,
-                            );
-                            camera_list.push(Box::new(camera));
-
-                            input_camera_secret = Some(get_input_camera_secret());
-                            connect_to_wifi = true;
-                        } else {
-                            panic!(
-                                "Raspberry Pi cameras are only supported with the \"raspberry\" feature."
-                            )
-                        }
-                    }
-                } else {
-                    panic!(
-                        "Unknown camera type ({:?}). Supported types are IP and RaspberryPi",
-                        camera_type
-                    )
-                };
-            }
+        } else {
+            compile_error!("One of the features 'raspberry' or 'ip' must be enabled.");
         }
     }
 
@@ -350,29 +214,6 @@ fn main() -> io::Result<()> {
     }
 
     Ok(())
-}
-
-#[cfg(feature = "ip")]
-fn ask_user(prompt: String) -> io::Result<String> {
-    print!("{prompt}");
-    // Make sure the prompt is displayed before reading input
-    io::stdout().flush()?;
-
-    let mut user_input = String::new();
-    io::stdin().read_line(&mut user_input)?;
-    // Trim the input to remove any extra whitespace or newline characters
-    Ok(user_input.trim().to_string())
-}
-
-#[cfg(feature = "ip")]
-fn ask_user_password(prompt: String) -> io::Result<String> {
-    print!("{prompt}");
-    // Make sure the prompt is displayed before reading input
-    io::stdout().flush()?;
-
-    let password = read_password()?;
-    // Trim the input to remove any extra whitespace or newline characters
-    Ok(password.trim().to_string())
 }
 
 fn reset(
