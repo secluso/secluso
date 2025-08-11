@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Represents actions or commands that can be issued within the pipeline to modify behavior, log transitions, or trigger processing stages.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Intent {
     RunStage(StageType),    // Triggers execution of a specific pipeline stage
     StartTimer(Duration),   // Starts a countdown timer

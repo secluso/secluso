@@ -466,7 +466,7 @@ fn core(
             }
         };
 
-        println!("Motion event: {}", motion_event);
+        debug!("Motion event: {}", motion_event);
 
         // Send motion events only if we haven't sent one in the past minute
         if (motion_event || test_mode)

@@ -13,6 +13,11 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
+use log::{debug, warn};
+use once_cell::sync::Lazy;
+use flume::{Receiver, Sender};
+use std::{fs, path::PathBuf, thread};
+
 
 #[cfg(feature = "mp4_player")]
 use yuv::{
@@ -84,6 +89,69 @@ mod serde_bytes_arc_option {
     }
 }
 
+enum SaveJob {
+    Rgb { img: image::RgbImage, path: PathBuf },
+    Gray { img: image::GrayImage, path: PathBuf },
+}
+
+// BOUNDED queue to prevent unbounded memory growth under backpressure.
+static TX: Lazy<Sender<SaveJob>> = Lazy::new(|| {
+    let (tx, rx) = flume::bounded::<SaveJob>(256);
+    thread::spawn(move || worker(rx));
+    tx
+});
+
+fn worker(rx: Receiver<SaveJob>) {
+    while let Ok(job) = rx.recv() {
+        match job {
+            SaveJob::Rgb { img, path } => {
+                if let Some(parent) = path.parent() {
+                    if let Err(e) = fs::create_dir_all(parent) {
+                        warn!("create_dir_all({}): {}", parent.display(), e);
+                        // still attempt save; will likely fail below
+                    }
+                }
+                if let Err(e) = img.save(&path) {
+                    warn!("image save failed {}: {}", path.display(), e);
+                } else {
+                    debug!("saved RGB {}", path.display());
+                }
+            }
+            SaveJob::Gray { img, path } => {
+                if let Some(parent) = path.parent() {
+                    if let Err(e) = fs::create_dir_all(parent) {
+                        warn!("create_dir_all({}): {}", parent.display(), e);
+                    }
+                }
+                if let Err(e) = img.save(&path) {
+                    warn!("gray save failed {}: {}", path.display(), e);
+                } else {
+                    debug!("saved GRAY {}", path.display());
+                }
+            }
+        }
+    }
+}
+
+// Non-blocking enqueue helpers; drop if queue is full (won’t stall hot path).
+#[inline]
+fn save_rgb_async(img: image::RgbImage, path: PathBuf) {
+    if let Err(_e) = TX.try_send(SaveJob::Rgb { img, path }) {
+        debug!("save queue full; dropped RGB save");
+    }
+}
+
+#[inline]
+fn save_gray_async_if_room(img: &image::GrayImage, path: PathBuf) {
+    if !TX.is_full() {
+        // one clone to transfer ownership to worker
+        let _ = TX.try_send(SaveJob::Gray { img: img.clone(), path });
+    } else {
+        debug!("save queue full; dropped GRAY save");
+    }
+}
+
+
 /// Core methods to manipulate, save, and convert raw image frames.
 /// Includes support for saving annotated detections and converting YUV420p to RGB.
 impl RawFrame {
@@ -118,14 +186,6 @@ impl RawFrame {
                 ))
             })?;
 
-
-        let buf_len = buf.len();
-        println!("Buf len: {buf_len}");
-        println!("Expected len: {expected_len}");
-        let w = self.width;
-        let h = self.height;
-        println!("Width, height: {w} x {h}");
-
         if buf.len() != expected_len {
             return Err(image::ImageError::Parameter(
                 image::error::ParameterError::from_kind(
@@ -157,9 +217,9 @@ impl RawFrame {
             .join("runs")
             .join(session_id)
             .join("frames");
-        std::fs::create_dir_all(&base)?;
         let path = base.join(format!("{}_{}.png", run_id.0, file_name));
-        img.save(&path)?;
+        save_rgb_async(img, path.clone());
+
         Ok(path.to_string_lossy().into_owned())
     }
 
@@ -178,9 +238,9 @@ impl RawFrame {
             .join("runs")
             .join(session_id)
             .join("frames");
-        std::fs::create_dir_all(&base)?;
+
         let path = base.join(format!("{}_{}.png", run_id.0, file_name));
-        gray_image.save(&path)?;
+        save_gray_async_if_room(gray_image, path.clone());
         Ok(path.to_string_lossy().into_owned())
     }
 
@@ -200,7 +260,7 @@ impl RawFrame {
     /// Draws bounding boxes onto an RGB image for detections that are not classified as 'Other'.
     fn draw_boxes(&self, mut img: RgbImage, boxes: &Vec<BoxInfo>) -> RgbImage {
         let len = boxes.len();
-        println!("Drawing {len} boxes");
+        debug!("Drawing {len} boxes");
         // TODO: Convert the labels to map into 1-6... e.g. we have 2 occurrences of 33, both should map to 1, then another occurrence of 34 which maps to 2. ordering not guaranteed
         for bbox in boxes {
             if bbox.det_type != DetectionType::Other {

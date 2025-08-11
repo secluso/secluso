@@ -119,9 +119,7 @@ impl RaspberryPiCamera {
             //todo: only loop until exit
             loop {
                 // when false (health issue), we should exit + we should also have some way for user to safely exit
-                let start_time = Instant::now();
                 let result = controller_clone.lock().unwrap().tick("cpu_thermal temp1"); //TODO: This string should be put somewhere as a constant
-                println!("Took {}ms to tick", start_time.elapsed().as_millis());
 
                 if let Err(e) = result {
                     println!("Encountered error in tick loop: {e}");

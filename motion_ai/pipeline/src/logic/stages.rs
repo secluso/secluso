@@ -5,6 +5,7 @@ use crate::ml::models::DetectionType;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
+use log::debug;
 
 /// Describes the type of stage within the pipeline (e.g., motion, inference).
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize, Hash, Eq)]
@@ -70,7 +71,7 @@ impl PipelineStage for MotionStage {
         ctx: &mut StateContext,
         telemetry: &mut TelemetryRun,
     ) -> Result<StageResult, anyhow::Error> {
-        println!("Motion stage handle called!");
+        debug!("Motion stage handle called!");
         frame.yuv_to_rgb(); // We convert the existing YUV data to RGB state for motion analysis (stores in frame)
         let how_often_average: f32 = 1f32; // TODO: Find this # by figuring out how often we detect motion... running avg in context? What about for gaps where we send the video and aren't actively detecting? Still update?
         if let Ok(result) =
@@ -134,7 +135,7 @@ impl PipelineStage for InferenceStage {
             return Ok(StageResult::Continue);
         }
 
-        println!("Inference stage handle called!");
+        debug!("Inference stage handle called!");
 
         // Run the current model and handle inference errors.
         let result = match ctx.active_model.run(frame, telemetry, &ctx.run_id) {
