@@ -10,7 +10,6 @@ use crate::logic::health_states::{
     CriticalTempState, HighTempState, NormalState, ResourceLowState,
 };
 use crate::logic::intent::{Intent, IntentBus};
-use crate::logic::replay::ReplayRecorder;
 use crate::logic::stages::{PipelineStage, StageResult, StageType};
 use crate::logic::telemetry::{TelemetryPacket, TelemetryRun};
 use crate::logic::timer::{Timer, TimerManager};
@@ -46,7 +45,6 @@ impl Pipeline {
         &mut self,
         stage_type: StageType,
         frame_buffer: &mut FrameBuffer,
-        recorder: &mut ReplayRecorder,
         telemetry: &mut TelemetryRun,
         ctx: &mut StateContext,
     ) -> Result<StageResult, anyhow::Error> {
@@ -69,7 +67,6 @@ impl Pipeline {
             .iter_mut()
             .find(|s| s.kind() == stage_type)
             .with_context(|| format!("Stage {:?} not found in pipeline", stage_type))?;
-        recorder.record_frame(&frame);
 
         let start = Instant::now();
         let name = stage.name();
@@ -90,7 +87,6 @@ impl Pipeline {
             last_latency_ms: latency,
             faults: s.faults,
             dropped_frames: s.dropped_frames,
-            replay_frame_idx: Some(recorder.frames.len().saturating_sub(1)),
             ts: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
         })?;
 
@@ -175,7 +171,6 @@ pub enum PipelineEvent {
 pub struct PipelineController {
     intent_bus: IntentBus,
     host_data: PipelineHostData,
-    recorder: ReplayRecorder,
     pub activity_registry: FsmRegistry<ActivityState>,
     pub health_registry: FsmRegistry<HealthState>,
     last_health_change: Option<(HealthState, Instant)>,
@@ -191,7 +186,6 @@ pub struct FrameBuffer {
 
 /// Shared mutable data for the pipeline, used across event processing and FSM transitions.
 pub struct PipelineHostData {
-    pub recorder: ReplayRecorder,
     pub event_queue: VecDeque<PipelineEvent>,
     pub ctx: StateContext,
     pub pipeline: Pipeline,
@@ -244,9 +238,7 @@ impl PipelineController {
             activity_registry,
             health_registry,
             last_health_change: None,
-            recorder: ReplayRecorder::default(),
             host_data: PipelineHostData {
-                recorder: Default::default(),
                 event_queue: VecDeque::new(),
                 ctx: StateContext::new(),
                 pipeline,
@@ -381,7 +373,6 @@ impl PipelineController {
             // record_event
             {
                 let t0 = Instant::now();
-                self.recorder.record_event(&event);
                 t_record_event += t0.elapsed().as_millis() as u128;
             }
 
@@ -465,13 +456,12 @@ impl PipelineController {
 
                 {
                     let t0 = Instant::now();
-                    self.recorder.record_intent(&intent);
-                    t_record_intent += t0.elapsed().as_millis() as u128;
+                    t_record_intent += t0.elapsed().as_millis();
                 }
 
                 let exec_t0 = Instant::now();
                 self.intent_bus.execute(&mut self.host_data, &intent)?;
-                let exec_ms = exec_t0.elapsed().as_millis() as u128;
+                let exec_ms = exec_t0.elapsed().as_millis();
 
                 t_intent_execute += exec_ms;
                 intents_processed += 1;

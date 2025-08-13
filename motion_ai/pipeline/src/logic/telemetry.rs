@@ -24,7 +24,6 @@ pub enum TelemetryPacket<'a> {
         last_latency_ms: u32,
         faults: u64,
         dropped_frames: u64,
-        replay_frame_idx: Option<usize>,
         ts: u128,
     },
     // Snapshot of system state at each pipeline tick

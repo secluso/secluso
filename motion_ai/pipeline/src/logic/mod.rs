@@ -4,7 +4,6 @@ mod fsm;
 mod health_states;
 mod intent;
 pub mod pipeline;
-mod replay;
 pub mod stages;
 pub(crate) mod telemetry;
 mod timer;

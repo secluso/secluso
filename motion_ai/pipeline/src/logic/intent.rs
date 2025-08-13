@@ -85,10 +85,9 @@ impl IntentBus {
 
                 let ctx = &mut host_data.ctx;
                 let pipeline = &mut host_data.pipeline;
-                let recorder = &mut host_data.recorder;
                 let frame_buffer = &mut host_data.frame_buffer;
                 let telemetry = &mut host_data.telemetry;
-                match pipeline.run(kind.clone(), frame_buffer, recorder, telemetry, ctx)? {
+                match pipeline.run(kind.clone(), frame_buffer, telemetry, ctx)? {
                     StageResult::Continue => host_data
                         .event_queue
                         .push_back(PipelineEvent::StageSuccess(kind.clone())), // TODO: Make use of some success method
