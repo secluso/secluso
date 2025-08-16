@@ -90,7 +90,7 @@ fn send_heartbeat_response(
     timestamp: u64,
     http_client: &HttpClient,
 ) -> io::Result<()> {
-    let heartbeat = Heartbeat::generate(clients, timestamp)?;
+    let heartbeat = Heartbeat::generate(clients, timestamp, format!("v{}", env!("CARGO_PKG_VERSION")))?;
 
     let mut config_msg = vec![OPCODE_HEARTBEAT_RESPONSE];
     config_msg.extend(bincode::serialize(&heartbeat).unwrap());

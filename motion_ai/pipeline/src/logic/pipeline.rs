@@ -265,10 +265,10 @@ impl PipelineController {
                 let elapsed = last_detection.elapsed();
                 let secs = elapsed.as_secs();
                 if elapsed <= Duration::from_secs(30) {
-                    println!("Motion detected {} seconds ago (within 30s window).", secs);
+                    debug!("Motion detected {} seconds ago (within 30s window).", secs);
                     true
                 } else {
-                    println!("Motion detected {} seconds ago (outside 30s window).", secs);
+                    debug!("Motion detected {} seconds ago (outside 30s window).", secs);
                     false
                 }
             }

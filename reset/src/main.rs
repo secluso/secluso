@@ -52,16 +52,34 @@ fn reset_action() {
 }
 
 fn main() {
-    let pin_number = 21;
+    let button_pin_number = 16;
+    let led_pin_number = 25;
 
     let gpio = Gpio::new().expect("Failed to initialize GPIO");
-    let mut button = gpio.get(pin_number).expect("Failed to get GPIO pin").into_input_pullup();
+    
+    let mut button = gpio.get(button_pin_number).expect("Failed to get GPIO pin").into_input_pullup();
     button.set_interrupt(Trigger::Both, Some(Duration::from_millis(50)))
         .expect("Failed to set interrupt");
+
+    let mut led = gpio
+        .get(led_pin_number)
+        .expect("Failed to get LED GPIO")
+        .into_output();
+
+    led.set_low();
+
+    // Blink for 5 seconds at start
+    for _ in 0..5 {
+        led.set_high();
+        thread::sleep(Duration::from_millis(500));
+        led.set_low();
+        thread::sleep(Duration::from_millis(500));
+    }
 
     let button_held = Arc::new(Mutex::new(false));
     let last_press_time = Arc::new(Mutex::new(None));
     let cancel_flag = Arc::new(AtomicBool::new(false));
+    let led_shared = Arc::new(Mutex::new(led));
 
     println!("Waiting for button press...");
 
@@ -75,9 +93,15 @@ fn main() {
                         *last_press = Some(Instant::now());
                         println!("Button pressed!");
 
+                        // Turn LED ON immediately
+                        let mut led = led_shared.lock().unwrap();
+                        led.set_high(); // LED ON
+                        drop(led);
+
                         let button_held_clone = Arc::clone(&button_held);
                         let last_press_clone = Arc::clone(&last_press_time);
                         let cancel_flag_clone = Arc::clone(&cancel_flag);
+                        let led_clone = Arc::clone(&led_shared);
 
                         cancel_flag_clone.store(false, Ordering::Relaxed);
 
@@ -92,7 +116,19 @@ fn main() {
 
                             if *button_held_clone.lock().unwrap() {
                                 println!("Button held for 5 seconds!");
-                                reset_action();
+                                thread::spawn(|| {
+                                    reset_action();
+                                });                                
+
+                                // Blink for 5 seconds
+                                let mut led = led_clone.lock().unwrap();
+                                for _ in 0..10 {
+                                    led.set_low();
+                                    thread::sleep(Duration::from_millis(250));
+                                    led.set_high();
+                                    thread::sleep(Duration::from_millis(250));
+                                }
+                                drop(led);
                             }
 
                             *last_press_clone.lock().unwrap() = None;
@@ -105,6 +141,11 @@ fn main() {
                     *button_held.lock().unwrap() = false;
                     *last_press_time.lock().unwrap() = None;
                     cancel_flag.store(true, Ordering::Relaxed);
+
+                    // Turn LED OFF
+                    let mut led = led_shared.lock().unwrap();
+                    led.set_low();
+                    drop(led);
                 }
             }
             Ok(None) => {} // No event

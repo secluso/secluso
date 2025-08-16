@@ -39,6 +39,7 @@ pub struct HeartbeatRequest {
 
 #[derive(Serialize, Deserialize)]
 pub struct Heartbeat {
+    pub firmware_version: String,
     pub timestamp: u64,
     pub epochs: Vec<u64>, //for motion and livestream MLS clients
     pub ciphertexts: Vec<Vec<u8>>, //for all MLS clients except for config
@@ -48,6 +49,7 @@ impl Heartbeat {
     pub fn generate(
         mls_clients: &mut MlsClients,
         timestamp: u64,
+        firmware_version: String,
     ) -> io::Result<Self> {
         let mut ciphertexts: Vec<Vec<u8>> = vec![];
         let mut epochs: Vec<u64> = vec![];
@@ -68,6 +70,7 @@ impl Heartbeat {
         }
         
         Ok(Self {
+            firmware_version,
             timestamp,
             epochs,
             ciphertexts,

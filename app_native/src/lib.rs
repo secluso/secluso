@@ -173,6 +173,28 @@ fn send_credentials_full(
     Ok(())
 }
 
+fn receive_firmware_version(
+    stream: &mut TcpStream,
+    mls_client: &mut MlsClient,
+) -> anyhow::Result<String> {
+    info!("Sending credentials_full");
+    let encrypted_msg = read_varying_len(stream)?;
+
+    let firmware_version_bytes = match mls_client.decrypt(encrypted_msg, true) {
+        Ok(msg) => msg,
+        Err(e) => {
+            info!("Failed to decrypt firmware version: {e}");
+            return Err(e.into());
+        }
+    };
+
+    mls_client.save_group_state();
+
+    let firmware_version = String::from_utf8(firmware_version_bytes)?;
+
+    Ok(firmware_version)
+}
+
 #[flutter_rust_bridge::frb]
 fn pair_with_camera(
     stream: &mut TcpStream,
@@ -246,11 +268,11 @@ pub fn add_camera(
     wifi_password: String,
     pairing_token: String,
     credentials_full: String,
-) -> bool {
+) -> String {
     info!("Rust: add_camera method triggered");
     if clients_reg.is_none() {
         info!("Error: clients not initialized!");
-        return false;
+        return "Error".to_string();
     }
 
     let clients = clients_reg.as_mut().unwrap();
@@ -259,7 +281,7 @@ pub fn add_camera(
     for mls_client in &clients.as_mut().mls_clients {
         if mls_client.get_group_name().is_ok() {
             info!("Error: camera_name used before!");
-            return false;
+            return "Error".to_string();
         }
     }
 
@@ -269,7 +291,7 @@ pub fn add_camera(
         Ok(a) => a,
         Err(e) => {
             info!("Error: invalid IP address: {e}");
-            return false;
+            return "Error".to_string();
         }
     };
 
@@ -277,7 +299,7 @@ pub fn add_camera(
         Ok(s) => s,
         Err(e) => {
             info!("Error: {e}");
-            return false;
+            return "Error".to_string();
         }
     };
 
@@ -289,7 +311,7 @@ pub fn add_camera(
         secret_vec,
     ) {
         info!("Error: {e}");
-        return false;
+        return "Error".to_string();
     }
 
     // Send credentials (username, password, and IP address of the server)
@@ -299,8 +321,19 @@ pub fn add_camera(
         credentials_full,
     ) {
         info!("Error: {e}");
-        return false;
+        return "Error".to_string();
     }
+
+    let firmware_version = match receive_firmware_version(
+        &mut stream,
+        &mut clients.mls_clients[CONFIG],
+    ) {
+        Ok(version) => version,
+        Err(e) => {
+            info!("Error: {e}");
+            return "Error".to_string();
+        }
+    };
 
     // Send Wi-Fi info
     if standalone_camera {
@@ -312,11 +345,11 @@ pub fn add_camera(
             pairing_token,
         ) {
             info!("Error: {e}");
-            return false;
+            return "Error".to_string();
         }
     }
 
-    true
+    firmware_version
 }
 
 pub fn initialize(
@@ -715,7 +748,7 @@ pub fn process_heartbeat_config_response(
 
                     match heartbeat_result {
                         HeartbeatResult::HealthyHeartbeat(_timestamp) => {
-                            return Ok("healthy".to_string());
+                            return Ok(format!("healthy_{}", heartbeat.firmware_version));
                         },
                         HeartbeatResult::InvalidTimestamp => {
                             return Ok("invalid timestamp".to_string());

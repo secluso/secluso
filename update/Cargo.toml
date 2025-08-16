@@ -1,0 +1,18 @@
+[package]
+name = "privastead-update"
+version = "0.1.0"
+edition = "2021"
+authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
+
+[dependencies]
+anyhow = "1"
+reqwest = { version = "0.12.22", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+semver = "1"
+base64 = "0.22.1"
+p384 = { version = "0.13", features = ["ecdsa"] }
+ecdsa = "0.16"
+sha2 = "0.10"
+pem = "3.0"
+bytes = "1.5"
+docopt = "~1.1"

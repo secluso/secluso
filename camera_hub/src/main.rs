@@ -120,6 +120,9 @@ fn main() -> io::Result<()> {
     fs::create_dir_all(STATE_DIR_GENERAL).unwrap();
     fs::create_dir_all(VIDEO_DIR_GENERAL).unwrap();
 
+    // Write current package version to a file to be used by the update service if needed.
+    fs::write("current_version", format!("v{}", env!("CARGO_PKG_VERSION")))?;
+
     cfg_if! {
         if #[cfg(feature = "raspberry")] {
             let camera = RaspberryPiCamera::new(
