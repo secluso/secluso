@@ -28,7 +28,7 @@ To generate credentials, do the following (preferrably in the local machine):
 
 ```
 cd privastead/config_tool
-cargo run -- --generate-user-credentials --server-addr <SERVER_IP_ADDR> --dir .
+cargo run -- --generate-user-credentials --server-addr <SERVER_URL> --dir .
 ```
 
 This generates two files: user_credentials and user_credentials_qrcode.png.
@@ -129,6 +129,22 @@ Finally, enable it so that it runs on every reboot:
 
 ```
 sudo systemctl enable privastead.service
+```
+
+Note: running our server launches an HTTP server on the local IP address.
+We recommend, however, to use HTTPS to connect to the server.
+To do this, you can use an nginx reverse proxy in the server machine.
+Using HTTPS protects (by encryption) the server credentials, which would otherwise be sent in plaintext with HTTP.
+If however you cannot use HTTPS and have to use HTTP, make sure to change this line in the server (main.rs):
+
+```
+address: "127.0.0.1".parse().unwrap(),
+```
+
+to
+
+```
+address: "0.0.0.0".parse().unwrap(),
 ```
 
 ### Step 4: Configuring the IP camera and connecting it to your local machine

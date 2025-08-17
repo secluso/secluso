@@ -56,10 +56,11 @@ pub fn parse_user_credentials_full(credentials_full: Vec<u8>) -> io::Result<(Str
 }
 
 fn generate_random(num_chars: usize) -> String {
+    // We exclude : because that character has a special use in the http(s) auth header.
     let charset: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
                            abcdefghijklmnopqrstuvwxyz\
                            0123456789\
-                           !@#$%^&*()-_=+[]{}|;:,.<>?/";
+                           !@#$%^&*()-_=+[]{}|;,.<>?/";
     
     let mut rng = thread_rng();
     (0..num_chars)

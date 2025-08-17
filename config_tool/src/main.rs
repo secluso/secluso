@@ -27,6 +27,7 @@ use qrcode::QrCode;
 use std::fs;
 use std::io;
 use std::io::Write;
+use url::Url;
 use privastead_client_server_lib::auth::create_user_credentials;
 
 // FIXME: these constants should match the ones in rest of the code.
@@ -46,7 +47,7 @@ Usage:
 Options:
     --generate-user-credentials     Generate a random username and a random key to be used to authenticate with the server.
     --generate-camera-secret        Generate a random secret to be used for camera pairing (used for Raspberry Pi cameras).
-    --server-addr ADDR              IP address of the server.
+    --server-addr ADDR              Address (URL) of the server, e.g., https://example.com:8080/ or http://192.168.0.1/.
     --dir DIR                       Directory for storing the camera's secret files.
     --version, -v                   Show tool version.
     --help, -h                      Show this screen.
@@ -80,7 +81,22 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-fn generate_user_credentials(dir: String, server_addr: String) {
+fn generate_user_credentials(dir: String, mut server_addr: String) {
+    if let Ok(parsed_url) = Url::parse(&server_addr) {
+        if parsed_url.scheme() != "http" && parsed_url.scheme() != "https" {
+            println!("Invalid server URL scheme: {}", parsed_url.scheme());
+            return;
+        }
+    } else {
+        println!("Invalid server URL");
+        return;
+    }
+
+    if server_addr.ends_with('/') {
+        server_addr.pop();
+    }
+    println!("{server_addr}");
+
     let (credentials, credentials_full) =
         create_user_credentials(server_addr);
 

@@ -13,4 +13,5 @@ openmls_rust_crypto = { git = "https://github.com/openmls/openmls", rev = "openm
 qrcode = "0.14.0"
 image = "0.25.1"
 rand = "0.8"
+url = "2"
 privastead-client-server-lib = { path = "../client_server_lib" }

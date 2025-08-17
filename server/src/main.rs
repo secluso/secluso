@@ -811,8 +811,8 @@ fn rocket() -> _ {
     let pairing_state: SharedPairingState = Arc::new(Mutex::new(HashMap::new()));
 
     let config = rocket::Config {
-        port: 8080,
-        address: "0.0.0.0".parse().unwrap(),
+        port: 8000,
+        address: "127.0.0.1".parse().unwrap(),
         ..rocket::Config::default()
     };
 

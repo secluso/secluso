@@ -52,7 +52,7 @@ impl HttpClient {
 
     /// Atomically confrm pairing with app
     pub fn send_pairing_token(&self, pairing_token: &str) -> io::Result<String> {
-        let url = format!("http://{}/pair", self.server_addr);
+        let url = format!("{}/pair", self.server_addr);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
@@ -108,7 +108,7 @@ impl HttpClient {
             .unwrap()
             .to_string();
 
-        let server_url = format!("http://{}/{}/{}", self.server_addr, group_name, enc_file_name);
+        let server_url = format!("{}/{}/{}", self.server_addr, group_name, enc_file_name);
 
         let file = File::open(enc_file_path)?;
         let reader = BufReader::new(file);
@@ -152,7 +152,7 @@ impl HttpClient {
             .unwrap()
             .to_string();
 
-        let server_url = format!("http://{}/{}/{}", self.server_addr, group_name, enc_file_name);
+        let server_url = format!("{}/{}/{}", self.server_addr, group_name, enc_file_name);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
@@ -206,7 +206,7 @@ impl HttpClient {
         &self,
         group_name: &str,
     ) -> io::Result<()> {
-        let server_url = format!("http://{}/{}", self.server_addr, group_name);
+        let server_url = format!("{}/{}", self.server_addr, group_name);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
@@ -235,7 +235,7 @@ impl HttpClient {
         &self,
         notification: Vec<u8>,
     ) -> io::Result<()> {
-        let server_url = format!("http://{}/fcm_notification", self.server_addr);
+        let server_url = format!("{}/fcm_notification", self.server_addr);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
@@ -265,7 +265,7 @@ impl HttpClient {
         &self,
         group_name: &str,
     ) -> io::Result<()> {
-        let server_url = format!("http://{}/livestream/{}", self.server_addr, group_name);
+        let server_url = format!("{}/livestream/{}", self.server_addr, group_name);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
@@ -291,7 +291,7 @@ impl HttpClient {
 
     /// Checks to see if there's a livestream request.
     pub fn livestream_check(&self, group_name: &str) -> io::Result<()> {
-        let server_url = format!("http://{}/livestream/{}", self.server_addr, group_name);
+        let server_url = format!("{}/livestream/{}", self.server_addr, group_name);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
@@ -334,7 +334,7 @@ impl HttpClient {
         data: Vec<u8>,
         chunk_number: u64,
     ) -> io::Result<usize> {
-        let server_url = format!("http://{}/livestream/{}/{}", self.server_addr, group_name, chunk_number);
+        let server_url = format!("{}/livestream/{}/{}", self.server_addr, group_name, chunk_number);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
@@ -375,8 +375,8 @@ impl HttpClient {
         group_name: &str,
         chunk_number: u64,
     ) -> io::Result<Vec<u8>> {
-        let server_url = format!("http://{}/livestream/{}/{}", self.server_addr, group_name, chunk_number);
-        let server_del_url = format!("http://{}/{}/{}", self.server_addr, group_name, chunk_number);
+        let server_url = format!("{}/livestream/{}/{}", self.server_addr, group_name, chunk_number);
+        let server_del_url = format!("{}/{}/{}", self.server_addr, group_name, chunk_number);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
@@ -431,7 +431,7 @@ impl HttpClient {
         &self,
         group_name: &str,
     ) -> io::Result<()> {
-        let server_url = format!("http://{}/livestream_end/{}", self.server_addr, group_name);
+        let server_url = format!("{}/livestream_end/{}", self.server_addr, group_name);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
@@ -461,7 +461,7 @@ impl HttpClient {
         group_name: &str,
         command: Vec<u8>,
     ) -> io::Result<()> {
-        let server_url = format!("http://{}/config/{}", self.server_addr, group_name);
+        let server_url = format!("{}/config/{}", self.server_addr, group_name);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
@@ -490,7 +490,7 @@ impl HttpClient {
     /// The server sends the command encoded in Base64.
     /// This function converts the command to Vec<u8> to returns it.
     pub fn config_check(&self, group_name: &str) -> io::Result<Vec<u8>> {
-        let server_url = format!("http://{}/config/{}", self.server_addr, group_name);
+        let server_url = format!("{}/config/{}", self.server_addr, group_name);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
@@ -533,7 +533,7 @@ impl HttpClient {
         group_name: &str,
         response: Vec<u8>,
     ) -> io::Result<()> {
-        let server_url = format!("http://{}/config_response/{}", self.server_addr, group_name);
+        let server_url = format!("{}/config_response/{}", self.server_addr, group_name);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
@@ -563,7 +563,7 @@ impl HttpClient {
         &self,
         group_name: &str,
     ) -> io::Result<Vec<u8>> {
-        let server_url = format!("http://{}/config_response/{}", self.server_addr, group_name);
+        let server_url = format!("{}/config_response/{}", self.server_addr, group_name);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);

@@ -628,8 +628,7 @@ pub fn read_parse_full_credentials() -> (String, String, String) {
 
     let credentials_full_bytes = data.to_vec();
 
-    let (server_username, server_password, server_ip) = parse_user_credentials_full(credentials_full_bytes).unwrap();
-    let server_addr: String = server_ip.to_owned() + ":8080";
+    let (server_username, server_password, server_addr) = parse_user_credentials_full(credentials_full_bytes).unwrap();
 
     (server_username, server_password, server_addr)
 }
