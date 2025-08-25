@@ -15,13 +15,13 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
+use crate::delivery_monitor::{DeliveryMonitor, ThumbnailInfo, VideoInfo};
 use privastead_client_lib::mls_client::MlsClient;
 use privastead_client_lib::http_client::HttpClient;
 use privastead_client_lib::video_net_info::VideoNetInfo;
 use std::fs::File;
 use std::io;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 
 fn append_to_file(mut file: &File, msg: Vec<u8>) {
     let msg_len: u32 = msg.len().try_into().unwrap();
@@ -30,17 +30,45 @@ fn append_to_file(mut file: &File, msg: Vec<u8>) {
     let _ = file.write_all(&msg);
 }
 
+pub fn upload_pending_enc_thumbnails(
+    group_name: &str,
+    delivery_monitor: &mut DeliveryMonitor,
+    http_client: &HttpClient,
+) {
+    // Send pending thumbnails
+    let send_list_thumbnails: Vec<ThumbnailInfo> = delivery_monitor.thumbnails_to_send();
+    for enc_thumbnail in &send_list_thumbnails {
+        let enc_video_file_path = delivery_monitor.get_enc_thumbnail_file_path(enc_thumbnail);
+        match http_client.upload_enc_file(group_name, &*enc_video_file_path) {
+            Ok(_) => {
+                info!(
+                    "Thumbnail (epoch #{}) successfully uploaded to the server.",
+                    enc_thumbnail.epoch
+                );
+                delivery_monitor.dequeue_thumbnail(enc_thumbnail);
+            }
+            Err(e) => {
+                info!(
+                    "Could not upload thumbnail (epoch #{}) ({}). Will try again later.",
+                    enc_thumbnail.epoch, e
+                );
+                break;
+            }
+        }
+    }
+}
+
 pub fn upload_pending_enc_videos(
     group_name: &str,
     delivery_monitor: &mut DeliveryMonitor,
     http_client: &HttpClient,
 ) {
     // Send pending videos
-    let send_list = delivery_monitor.videos_to_send();
+    let send_list_videos = delivery_monitor.videos_to_send();
     // The send list is sorted. We must send the videos in order.
-    for video_info in &send_list {
+    for video_info in &send_list_videos {
         let enc_video_file_path = delivery_monitor.get_enc_video_file_path(video_info);
-        match http_client.upload_enc_video(group_name, &enc_video_file_path) {
+        match http_client.upload_enc_file(group_name, &enc_video_file_path) {
             Ok(_) => {
                 info!(
                     "Video {} successfully uploaded to the server.",
@@ -59,6 +87,66 @@ pub fn upload_pending_enc_videos(
     }
 }
 
+pub fn prepare_motion_thumbnail(
+    mls_client: &mut MlsClient,
+    mut thumbnail_info: ThumbnailInfo,
+    delivery_monitor: &mut DeliveryMonitor,
+) -> io::Result<()> {
+    debug!("Starting to send timestamp.");
+
+    // Update MLS epoch
+    let (commit_msg, thumbnail_epoch) = mls_client.update()?;
+    let thumbnail_file_path = delivery_monitor.get_thumbnail_file_path(&thumbnail_info);
+
+    thumbnail_info.epoch = thumbnail_epoch;
+
+    let enc_thumbnail_file_path = delivery_monitor.get_enc_thumbnail_file_path(&thumbnail_info);
+    let mut enc_file =
+        File::create(&enc_thumbnail_file_path).expect("Could not create encrypted video file");
+
+    append_to_file(&enc_file, commit_msg);
+
+    // We need to store the timestamp to match against the video's, as otherwise we only have epoch-level info (which can vary between videos and timestamps easily)
+    let msg = mls_client
+        .encrypt(&bincode::serialize(&thumbnail_info.timestamp).unwrap())
+        .map_err(|e| {
+            error!("encrypt() returned error:");
+            e
+        })?;
+    append_to_file(&enc_file, msg);
+
+    let mut file = File::open(thumbnail_file_path).expect("Could not open video file to send");
+    let mut thumbnail_data: Vec<u8> = Vec::new();
+    file.read_to_end(&mut thumbnail_data)?;
+
+    let msg = mls_client
+        .encrypt(&thumbnail_data)
+        .map_err(|e| {
+            error!("encrypt() returned error:");
+            e
+        })?;
+    append_to_file(&enc_file, msg);
+
+    // Here, we first make sure the enc_file is flushed.
+    // Then, we save groups state, which persists the update.
+    // Then, we enqueue to be uploaded to the server.
+    enc_file.flush().unwrap();
+    enc_file.sync_all().unwrap();
+    mls_client.save_group_state();
+
+    // FIXME: fatal crash point here. We have committed the update, but we will never enqueue it for sending.
+    // Severity: medium.
+    // Rationale: Both operations before and after the fatal crash point are file system writes.
+
+    info!(
+        "Thumbnail (vid timestamp: {}, thumbnail epoch #{:?}) is enqueued for sending to server.",
+        thumbnail_info.timestamp, thumbnail_info.epoch
+    );
+    delivery_monitor.enqueue_thumbnail(thumbnail_info);
+
+    Ok(())
+}
+
 pub fn prepare_motion_video(
     mls_client: &mut MlsClient,
     mut video_info: VideoInfo,
@@ -67,8 +155,6 @@ pub fn prepare_motion_video(
     let video_file_path = delivery_monitor.get_video_file_path(&video_info);
 
     debug!("Starting to send video.");
-
-    // Update MLS epoch
     let (commit_msg, epoch) = mls_client.update()?;
 
     video_info.epoch = epoch;

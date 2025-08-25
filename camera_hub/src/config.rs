@@ -28,6 +28,7 @@ pub fn process_config_command(
     http_client: &HttpClient,
     delivery_monitor: &mut DeliveryMonitor,
 ) -> io::Result<()> {
+    debug!("Processing config command");
     match clients[CONFIG]
         .decrypt(enc_config_command.to_vec(), true) {
             
@@ -35,6 +36,7 @@ pub fn process_config_command(
             clients[CONFIG].save_group_state();
             match command[0] {
                 OPCODE_HEARTBEAT_REQUEST => {
+                    debug!("Handling heartbeat request");
                     handle_heartbeat_request(clients, &command[1..], http_client, delivery_monitor)?;
                     Ok(())
                 },
@@ -65,8 +67,8 @@ fn handle_heartbeat_request(
             )
         })?;
 
-    info!("handle_heartbeat: {}, {}", heartbeat_request.timestamp, heartbeat_request.motion_epoch);
-    delivery_monitor.process_heartbeat(heartbeat_request.motion_epoch);
+    info!("handle_heartbeat: {}, {}, {}", heartbeat_request.timestamp, heartbeat_request.motion_epoch, heartbeat_request.thumbnail_epoch);
+    delivery_monitor.process_heartbeat(heartbeat_request.motion_epoch, heartbeat_request.thumbnail_epoch);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("Could not convert time")

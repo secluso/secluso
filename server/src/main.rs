@@ -23,7 +23,7 @@ extern crate rocket;
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
@@ -45,6 +45,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use base64::engine::general_purpose::STANDARD as base64_engine;
 use base64::Engine;
+use serde::Serialize;
 
 mod auth;
 mod fcm;
@@ -72,6 +73,12 @@ struct MotionPair {
 #[derive(Deserialize)]
 struct MotionPairs {
     group_names: Vec<MotionPair>,
+}
+
+#[derive(Serialize)]
+struct GroupTimestamp {
+    group_name: String,
+    timestamp: i64,
 }
 
 // Pairing structures
@@ -317,12 +324,12 @@ async fn upload(
 }
 
 #[post("/bulkCheck", format = "application/json", data = "<data>")]
-async fn bulk_group_check(data: Json<MotionPairs>, auth: BasicAuth) -> RawText<String> {
+async fn bulk_group_check(data: Json<MotionPairs>, auth: BasicAuth) -> Json<Vec<GroupTimestamp>> {
     let root = Path::new("data").join(&auth.username);
     let pairs_wrapper: MotionPairs = data.into_inner();
     let pair_list = pairs_wrapper.group_names;
 
-    let mut valid_pairs = Vec::new();
+    let mut results: Vec<GroupTimestamp> = Vec::new();
 
     for pair in pair_list {
         let group_name = pair.group_name;
@@ -339,16 +346,18 @@ async fn bulk_group_check(data: Json<MotionPairs>, auth: BasicAuth) -> RawText<S
         }
 
         if let Ok(true) = Path::try_exists(&filepath) {
-            valid_pairs.push(group_name);
+            if let Ok(meta) = fs::metadata(&filepath).await {
+                let ts = meta.created().or_else(|_| meta.modified()).and_then(|t| t.duration_since(UNIX_EPOCH).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))).map(|d| d.as_secs() as i64).unwrap_or(0);
+
+                results.push(GroupTimestamp {
+                    group_name,
+                    timestamp: ts,
+                });
+            }
         }
     }
 
-    RawText(
-        valid_pairs
-            .iter()
-            .map(|x| x.to_string() + ",")
-            .collect::<String>(),
-    )
+    Json(results)
 }
 
 #[get("/<camera>/<filename>")]

@@ -16,7 +16,7 @@ use privastead_client_lib::pairing;
 use privastead_client_lib::mls_client::{Contact, KeyPackages, MlsClient};
 use privastead_client_lib::mls_clients::MlsClients;
 use privastead_client_lib::video_net_info::{VideoNetInfo, VIDEONETINFO_SANITY};
-use privastead_client_lib::mls_clients::{NUM_MLS_CLIENTS, MLS_CLIENT_TAGS, MOTION, LIVESTREAM, FCM, CONFIG};
+use privastead_client_lib::mls_clients::{NUM_MLS_CLIENTS, MLS_CLIENT_TAGS, MOTION, LIVESTREAM, FCM, CONFIG, THUMBNAIL};
 use privastead_client_lib::config::{HeartbeatResult, Heartbeat, HeartbeatRequest, OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE};
 use serde_json::json;
 
@@ -251,7 +251,7 @@ pub fn encrypt_settings_message(
     let config_mls_client = &mut clients.mls_clients[CONFIG];
 
     debug!("Encrypting message");
-    let settings_msg = config_mls_client.encrypt(&message,).context("Failed to encrypt SSID")?;
+    let settings_msg = config_mls_client.encrypt(&message).context("Failed to encrypt SSID")?;
     config_mls_client.save_group_state();
 
     Ok(settings_msg)
@@ -310,7 +310,7 @@ pub fn add_camera(
         &mut clients.as_mut().mls_clients,
         secret_vec,
     ) {
-        info!("Error: {e}");
+        info!("Error (pairing): {e}");
         return "Error".to_string();
     }
 
@@ -320,7 +320,7 @@ pub fn add_camera(
         &mut clients.mls_clients[CONFIG],
         credentials_full,
     ) {
-        info!("Error: {e}");
+        info!("Error (credentials): {e}");
         return "Error".to_string();
     }
 
@@ -330,7 +330,7 @@ pub fn add_camera(
     ) {
         Ok(version) => version,
         Err(e) => {
-            info!("Error: {e}");
+            info!("Error (firmware): {e}");
             return "Error".to_string();
         }
     };
@@ -344,7 +344,7 @@ pub fn add_camera(
             wifi_password,
             pairing_token,
         ) {
-            info!("Error: {e}");
+            info!("Error (WiFi-info): {e}");
             return "Error".to_string();
         }
     }
@@ -487,6 +487,70 @@ pub fn decrypt_video(
     Ok(dec_filename)
 }
 
+pub fn decrypt_thumbnail(
+    clients: &mut Option<Box<Clients>>,
+    encrypted_filename: String,
+) -> io::Result<String> {
+    if clients.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Error: clients not initialized!"),
+        ));
+    }
+
+    let file_dir = clients.as_mut().unwrap().mls_clients[THUMBNAIL].get_file_dir();
+    info!("File dir: {}", file_dir);
+    let enc_pathname: String = format!("{}/{}", file_dir, encrypted_filename);
+
+    let mut enc_file = fs::File::open(enc_pathname).expect("Could not open encrypted file");
+
+    let enc_msg = read_next_msg_from_file(&mut enc_file)?;
+    // The first message is a commit message
+    clients
+        .as_mut()
+        .unwrap()
+        .mls_clients[THUMBNAIL]
+        .decrypt(enc_msg, false)?;
+    clients.as_mut().unwrap().mls_clients[MOTION].save_group_state();
+
+    let enc_msg = read_next_msg_from_file(&mut enc_file)?;
+    // The second message is the timestamp
+    let dec_msg = clients
+        .as_mut()
+        .unwrap()
+        .mls_clients[THUMBNAIL]
+        .decrypt(enc_msg, true)?;
+
+    let timestamp: u64 = bincode::deserialize(&dec_msg)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+
+    let dec_filename = format!("{}.png", timestamp);
+    let dec_pathname: String = file_dir.to_owned() + "/" + &dec_filename;
+
+    if Path::new(&dec_pathname).exists() {
+        return Ok("Duplicate".to_string());
+    }
+
+    let mut dec_file = fs::File::create(&dec_pathname).expect("Could not create decrypted file");
+
+    let enc_msg = read_next_msg_from_file(&mut enc_file)?;
+    let dec_msg = clients
+        .as_mut()
+        .unwrap()
+        .mls_clients[THUMBNAIL]
+        .decrypt(enc_msg, true)?;
+
+    let _ = dec_file.write_all(&dec_msg);
+
+    // Here, we first make sure the dec_file is flushed.
+    // Then, we save groups state, which persists the update.
+    dec_file.flush().unwrap();
+    dec_file.sync_all().unwrap();
+    clients.as_mut().unwrap().mls_clients[THUMBNAIL].save_group_state();
+
+    Ok(dec_filename)
+}
+
 pub fn decrypt_message(
     clients: &mut Option<Box<Clients>>,
     client_tag: &str,
@@ -575,6 +639,7 @@ fn client_tag_to_index(tag: &str) -> Option<usize> {
         "livestream" => Some(LIVESTREAM),
         "fcm" => Some(FCM),
         "config" => Some(CONFIG),
+        "thumbnail" => Some(THUMBNAIL),
         _ => None,
     }
 }
@@ -696,9 +761,16 @@ pub fn generate_heartbeat_request_config_command(
         .mls_clients[MOTION]
         .get_epoch()?;
 
+    let thumbnail_epoch = clients
+        .as_mut()
+        .unwrap()
+        .mls_clients[THUMBNAIL]
+        .get_epoch()?;
+
     let heartbeat_request = HeartbeatRequest {
         timestamp,
         motion_epoch,
+        thumbnail_epoch,
     };
 
     let mut config_msg = vec![OPCODE_HEARTBEAT_REQUEST];
@@ -729,7 +801,7 @@ pub fn process_heartbeat_config_response(
     }
 
     match clients.as_mut().unwrap().mls_clients[CONFIG]
-        .decrypt(config_response, true) {            
+        .decrypt(config_response, true) {
         Ok(command) => {
             clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state();
             info!("Decrypted command: {}", command.len());
@@ -743,24 +815,24 @@ pub fn process_heartbeat_config_response(
                             )
                         })?;
 
-                    let heartbeat_result = 
+                    let heartbeat_result =
                         heartbeat.process(&mut clients.as_mut().unwrap().mls_clients, expected_timestamp)?;
 
                     match heartbeat_result {
                         HeartbeatResult::HealthyHeartbeat(_timestamp) => {
                             return Ok(format!("healthy_{}", heartbeat.firmware_version));
-                        },
+                        }
                         HeartbeatResult::InvalidTimestamp => {
                             return Ok("invalid timestamp".to_string());
-                        },
+                        }
                         HeartbeatResult::InvalidCiphertext => {
                             return Ok("invalid ciphertext".to_string());
-                        },
+                        }
                         HeartbeatResult::InvalidEpoch => {
                             return Ok("invalid epoch".to_string());
-                        },
+                        }
                     }
-                },
+                }
                 _ => {
                     error!("Error: Unknown config command response opcode!");
                     return Err(io::Error::new(
@@ -769,7 +841,7 @@ pub fn process_heartbeat_config_response(
                     ));
                 }
             }
-        },
+        }
         Err(e) => {
             error!("Failed to decrypt command message: {e}");
             clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state();

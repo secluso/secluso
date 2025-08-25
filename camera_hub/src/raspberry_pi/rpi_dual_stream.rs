@@ -92,12 +92,6 @@ pub fn start(
                                     // Update the frame timestamp on extraction.
                                     frame.timestamp = Instant::now();
 
-                                    debug!(
-                                        "Extracted frame kind: {:?}, size: {} bytes",
-                                        frame.kind,
-                                        frame.data.len()
-                                    );
-
                                     if !sps_sent && frame.kind == VideoFrameKind::Sps {
                                         let _ = ps_tx.send(frame.clone());
                                         sps_sent = true;

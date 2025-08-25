@@ -290,7 +290,7 @@ impl MotionDetection {
         Ok(Some(line_str))
     }
 
-    pub fn handle_motion_event(&mut self) -> anyhow::Result<bool> {
+    pub fn handle_motion_event(&mut self) -> anyhow::Result<(bool, Option<image::RgbImage>), anyhow::Error>  {
         let binding = self.latest_frame.lock().unwrap();
         if let Some(latest_frame) = binding.as_ref() {
             let latest_video_time = latest_frame.timestamp;
@@ -369,7 +369,7 @@ impl MotionDetection {
                         diff_result.save(format!("difference_global_{:?}.png", millis)).expect("Failed to save difference image!");
                         */
 
-                        return Ok(true);
+                         return Ok((true, Some(decoded.to_rgb8())));
                     } else if total_amt_of_points as f64
                         >= points_scale_factor * MINIMUM_TOTAL_CLUSTERED_POINTS as f64
                     {
@@ -420,13 +420,14 @@ impl MotionDetection {
                             diff_result.save(format!("difference_cluster_{:?}.png", millis)).expect("Failed to save difference image!");
                             */
 
-                            return Ok(true);
+
+                            return Ok((true, Some(decoded.to_rgb8())));
                         }
                     }
                 }
             }
         }
 
-        return Ok(false);
+        return Ok((false, None));
     }
 }

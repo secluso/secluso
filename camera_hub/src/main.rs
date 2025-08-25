@@ -25,7 +25,7 @@ use cfg_if::cfg_if;
 use docopt::Docopt;
 use privastead_client_lib::http_client::HttpClient;
 use privastead_client_lib::mls_client::MlsClient;
-use privastead_client_lib::mls_clients::{NUM_MLS_CLIENTS, MLS_CLIENT_TAGS, MOTION, LIVESTREAM, FCM, CONFIG, MlsClients};
+use privastead_client_lib::mls_clients::{NUM_MLS_CLIENTS, MLS_CLIENT_TAGS, MOTION, LIVESTREAM, FCM, CONFIG, MlsClients, THUMBNAIL};
 use std::array;
 use std::fs;
 use std::fs::File;
@@ -41,20 +41,32 @@ use std::{thread, time::Duration};
 use regex::Regex;
 
 mod delivery_monitor;
-use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
+
+use crate::delivery_monitor::{DeliveryMonitor, ThumbnailInfo, VideoInfo};
+
 mod motion;
-use crate::motion::{prepare_motion_video, upload_pending_enc_videos};
+
+use crate::motion::{prepare_motion_thumbnail, prepare_motion_video, upload_pending_enc_thumbnails, upload_pending_enc_videos};
+
 mod livestream;
+
 use crate::livestream::livestream;
+
 mod traits;
+
 use crate::traits::Camera;
+
 mod pairing;
+
 use crate::pairing::{
     pair_all, create_wifi_hotspot, get_input_camera_secret, get_names,
     read_parse_full_credentials,
 };
+
 mod config;
+
 use crate::config::process_config_command;
+
 mod fmp4;
 mod mp4;
 
@@ -72,6 +84,7 @@ cfg_if! {
 
 const STATE_DIR_GENERAL: &str = "state";
 const VIDEO_DIR_GENERAL: &str = "pending_videos";
+const THUMBNAIL_DIR_GENERAL: &str = "pending_thumbnails";
 
 // A counter representing the amount of active camera threads
 static GLOBAL_THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -119,6 +132,7 @@ fn main() -> io::Result<()> {
     // Create the general outer directories (where we'll have inner directories representing each camera)
     fs::create_dir_all(STATE_DIR_GENERAL).unwrap();
     fs::create_dir_all(VIDEO_DIR_GENERAL).unwrap();
+    fs::create_dir_all(THUMBNAIL_DIR_GENERAL).unwrap();
 
     // Write current package version to a file to be used by the update service if needed.
     fs::write("current_version", format!("v{}", env!("CARGO_PKG_VERSION")))?;
@@ -129,6 +143,7 @@ fn main() -> io::Result<()> {
                 "RPi".to_string(),
                 STATE_DIR_GENERAL.to_string(),
                 VIDEO_DIR_GENERAL.to_string(),
+                THUMBNAIL_DIR_GENERAL.to_string(),
                 1,
             );
         
@@ -346,6 +361,54 @@ fn send_pending_motion_videos(
     Ok(())
 }
 
+fn send_pending_thumbnails(
+    camera: &mut dyn Camera,
+    clients: &mut MlsClients,
+    delivery_monitor: &mut DeliveryMonitor,
+    http_client: &HttpClient,
+) -> io::Result<()> {
+    let mut pending_timestamps = Vec::new();
+    let video_dir = camera.get_thumbnail_dir();
+
+    let re = Regex::new(r"^thumbnail_(\d+)\.png$").unwrap();
+
+    for entry in fs::read_dir(video_dir)? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+
+        if let Some(caps) = re.captures(&file_name) {
+            if let Some(matched) = caps.get(1) {
+                if let Ok(ts) = matched.as_str().parse::<u64>() {
+                    pending_timestamps.push(ts);
+                }
+            }
+        }
+    }
+
+    for timestamp in &pending_timestamps {
+        println!("Recovered pending thumbnail {:?}", *timestamp);
+        prepare_motion_thumbnail(&mut clients[THUMBNAIL], ThumbnailInfo::new(timestamp.clone(), 0), delivery_monitor)?;
+
+        upload_pending_enc_thumbnails(
+            &clients[THUMBNAIL].get_group_name().unwrap(),
+            delivery_monitor,
+            http_client,
+        );
+    }
+
+    if pending_timestamps.len() > 0 {
+        //Timestamp of 0 tells the app it's time to start downloading.
+        let dummy_timestamp: u64 = 0;
+        let notification_msg = clients[FCM].encrypt(
+            &bincode::serialize(&dummy_timestamp).unwrap())?;
+        clients[FCM].save_group_state();
+        http_client.send_fcm_notification(notification_msg)?;
+    }
+
+    Ok(())
+}
+
 fn core(
     camera: &mut dyn Camera,
     input_camera_secret: Option<Vec<u8>>,
@@ -376,7 +439,7 @@ fn core(
             state_dir.clone(),
             MLS_CLIENT_TAGS[i].to_string(),
         )
-        .expect("MlsClient::new() for returned error.");
+            .expect("MlsClient::new() for returned error.");
 
         if first_time {
             mls_client.create_group(&group_name).unwrap();
@@ -417,7 +480,8 @@ fn core(
     let mut locked_livestream_check_time: Option<SystemTime> = None;
     let mut locked_config_check_time: Option<SystemTime> = None;
     let video_dir = camera.get_video_dir();
-    let mut delivery_monitor = DeliveryMonitor::from_file_or_new(video_dir, state_dir);
+    let thumbnail_dir = camera.get_thumbnail_dir();
+    let mut delivery_monitor = DeliveryMonitor::from_file_or_new(video_dir, thumbnail_dir, state_dir);
     let livestream_request = Arc::new(Mutex::new(false));
     let livestream_request_clone = Arc::clone(&livestream_request);
     let group_livestream_name_clone = clients[LIVESTREAM].get_group_name().unwrap();
@@ -456,6 +520,7 @@ fn core(
         // For now, re-pairing is done manually and needs physical proximity.
         // Hence, it is safe to send pending videos to the app that is paired with the camera.
         let _ = send_pending_motion_videos(camera, &mut clients, &mut delivery_monitor, &http_client);
+        let _ = send_pending_thumbnails(camera, &mut clients, &mut delivery_monitor, &http_client);
     }
 
     // Used for anti-dither for motion detection
@@ -469,15 +534,33 @@ fn core(
             }
         };
 
-        debug!("Motion event: {}", motion_event);
+        //debug!("Motion event: {}", motion_event.0);
 
         // Send motion events only if we haven't sent one in the past minute
-        if (motion_event || test_mode)
+        if (motion_event.0 || test_mode)
             && (locked_motion_check_time.is_none()
-                || locked_motion_check_time.unwrap().le(&SystemTime::now()))
+            || locked_motion_check_time.unwrap().le(&SystemTime::now()))
         {
             let video_info = VideoInfo::new();
             println!("Detected motion.");
+
+            // We send the thumbnail BEFORE the FCM notification, to ensure that when the mobile app receives it, it can download it.
+            if let Some(thumbnail_image) = motion_event.1 {
+                info!("Starting to save and send video thumbnail");
+                let thumbnail_info = ThumbnailInfo::new(video_info.timestamp, 0); //0 = unset
+                let thumbnail_file = camera.get_thumbnail_dir() + "/" + &*thumbnail_info.filename.clone();
+                thumbnail_image.save(thumbnail_file).expect("Failed to save thumbnail PNG file");
+
+                prepare_motion_thumbnail(&mut clients[THUMBNAIL], thumbnail_info, &mut delivery_monitor)?;
+
+                info!("Uploading the encrypted thumbnail.");
+                upload_pending_enc_thumbnails(
+                    &clients[THUMBNAIL].get_group_name().unwrap(),
+                    &mut delivery_monitor,
+                    &http_client,
+                );
+            }
+
             if !test_mode {
                 info!("Sending the FCM notification with timestamp.");
                 let notification_msg = clients[FCM].encrypt(
@@ -495,7 +578,6 @@ fn core(
             let duration = if test_mode { 1 } else { 20 };
 
             camera.record_motion_video(&video_info, duration)?;
-
             prepare_motion_video(&mut clients[MOTION], video_info, &mut delivery_monitor)?;
 
             info!("Uploading the encrypted video.");
@@ -552,12 +634,17 @@ fn core(
                 &mut delivery_monitor,
                 &http_client,
             );
+            upload_pending_enc_thumbnails(
+                &clients[THUMBNAIL].get_group_name().unwrap(),
+                &mut delivery_monitor,
+                &http_client,
+            );
             locked_delivery_check_time = Some(SystemTime::now().add(Duration::from_secs(60)));
         }
 
         // Check for config commands every second
         if locked_config_check_time.is_none()
-                    || locked_config_check_time.unwrap().le(&SystemTime::now())
+            || locked_config_check_time.unwrap().le(&SystemTime::now())
         {
             let mut enc_commands = config_enc_commands.lock().unwrap();
             for enc_command in &*enc_commands {

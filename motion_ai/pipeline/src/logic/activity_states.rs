@@ -5,7 +5,7 @@ use crate::logic::pipeline::{Pipeline, PipelineEvent};
 use crate::logic::stages::StageType;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::time::{Duration, Instant};
+use std::time::{Duration};
 
 #[derive(Hash, Eq, PartialEq, Clone, Debug, Copy, Serialize, Deserialize)]
 /// Activity lifecycle states for a single processing cycle
@@ -89,7 +89,7 @@ impl StateHandler<ActivityState> for DetectingState {
     fn on_event(
         &mut self,
         pipeline: &mut Pipeline,
-        ctx: &mut StateContext,
+        _ctx: &mut StateContext,
         event: &PipelineEvent,
     ) -> TransitionDecision<ActivityState> {
         match event {
@@ -97,12 +97,10 @@ impl StateHandler<ActivityState> for DetectingState {
                 if let Some(next_stage) = pipeline.next_stage(stage.clone()) {
                     TransitionDecision::Stay(vec![Intent::RunStage(next_stage)])
                 } else {
-                    println!("Updating last detection to now!");
-                    ctx.last_detection = Some(Instant::now());
                     TransitionDecision::Transition {
                         to: ActivityState::Cooldown,
                         reason: "Pipeline complete".into(),
-                        intents: vec![Intent::StartTimer(Duration::from_millis(500))],
+                        intents: vec![Intent::ConcludePipeline, Intent::StartTimer(Duration::from_millis(500))],
                     }
                 }
             }

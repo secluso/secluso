@@ -25,6 +25,28 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Serialize, Deserialize, Clone)]
+pub struct ThumbnailInfo {
+    pub timestamp: u64,
+    pub epoch: u64,
+    pub filename: String,
+}
+
+impl ThumbnailInfo {
+    pub fn new(video_timestamp: u64, thumbnail_epoch: u64) -> Self {
+        Self {
+            timestamp: video_timestamp,
+            epoch: thumbnail_epoch,
+            filename: Self::get_filename_from_timestamp(video_timestamp),
+        }
+    }
+
+    pub fn get_filename_from_timestamp(timestamp: u64) -> String {
+        "thumbnail_".to_owned() + &timestamp.to_string() + ".png"
+    }
+}
+
+
+#[derive(Serialize, Deserialize, Clone)]
 pub struct VideoInfo {
     pub timestamp: u64,
     pub filename: String,
@@ -46,7 +68,7 @@ impl VideoInfo {
         Self {
             timestamp,
             filename: Self::get_filename_from_timestamp(timestamp),
-            epoch: 0
+            epoch: 0,
         }
     }
 
@@ -61,18 +83,21 @@ pub struct DeliveryMonitor {
     // uploaded to the server.
     // A video will be removed from this list as soon as it is uploaded to the server.
     // If the video is lost in the server, this list won't know.
-    watch_list: HashMap<u64, VideoInfo>, //<video timestamp, video info>
+    video_watch_list: HashMap<u64, VideoInfo>, //<video timestamp, video info>
     // We use the pending_list to keep track of videos that are not delivered to the app.
     // A video is only removed from this list if a heartbeat signal with an equal or larger
     // motion epoch is received.
-    pending_list: HashMap<u64, VideoInfo>, //<video epoch, video info>
+    video_pending_list: HashMap<u64, VideoInfo>, //<video epoch, video info>
+    thumbnail_watch_list: HashMap<u64, ThumbnailInfo>, // <video timestamp, thumbnail info>
+    thumbnail_pending_list: HashMap<u64, ThumbnailInfo>, //<thumbnail epoch, thumbnail info>
     video_dir: String,
+    thumbnail_dir: String,
     state_dir: String,
     pending_livestream_updates: Vec<Vec<u8>>,
 }
 
 impl DeliveryMonitor {
-    pub fn from_file_or_new(video_dir: String, state_dir: String) -> Self {
+    pub fn from_file_or_new(video_dir: String, thumbnail_dir: String, state_dir: String) -> Self {
         let d_files = MlsClient::get_state_files_sorted(&state_dir, "delivery_monitor_").unwrap();
         for f in &d_files {
             let pathname = state_dir.clone() + "/" + f;
@@ -87,10 +112,13 @@ impl DeliveryMonitor {
         }
 
         Self {
-            watch_list: HashMap::new(),
+            video_watch_list: HashMap::new(),
             // TODO: search the file system and add pending videos to this list
-            pending_list: HashMap::new(),
+            video_pending_list: HashMap::new(),
+            thumbnail_watch_list: HashMap::new(),
+            thumbnail_pending_list: HashMap::new(),
             video_dir,
+            thumbnail_dir,
             state_dir,
             pending_livestream_updates: vec![],
         }
@@ -119,8 +147,24 @@ impl DeliveryMonitor {
 
     pub fn enqueue_video(&mut self, video_info: VideoInfo) {
         info!("enqueue_event: {}", video_info.timestamp);
-        let _ = self.watch_list.insert(video_info.timestamp, video_info.clone());
-        let _ = self.pending_list.insert(video_info.epoch, video_info);
+        let _ = self.video_watch_list.insert(video_info.timestamp, video_info.clone());
+        let _ = self.video_pending_list.insert(video_info.epoch, video_info);
+
+        self.save_state();
+    }
+
+    pub fn enqueue_thumbnail(&mut self, thumbnail_info: ThumbnailInfo) {
+        info!("enqueue_thumbnail_event: {}", thumbnail_info.timestamp);
+        let _ = self.thumbnail_watch_list.insert(thumbnail_info.timestamp, thumbnail_info.clone());
+        let _ = self.thumbnail_pending_list.insert(thumbnail_info.epoch, thumbnail_info);
+
+        self.save_state();
+    }
+    pub fn dequeue_thumbnail(&mut self, thumbnail_info: &ThumbnailInfo) {
+        info!("dequeue_thumbnail_event: {}", thumbnail_info.timestamp);
+
+        let _ = self.thumbnail_watch_list.remove(&thumbnail_info.timestamp);
+        let _ = fs::remove_file(self.get_enc_thumbnail_file_path(thumbnail_info));
 
         self.save_state();
     }
@@ -128,20 +172,20 @@ impl DeliveryMonitor {
     pub fn dequeue_video(&mut self, video_info: &VideoInfo) {
         info!("dequeue_event: {}", video_info.timestamp);
 
-        let _ = self.watch_list.remove(&video_info.timestamp);
+        let _ = self.video_watch_list.remove(&video_info.timestamp);
         let _ = fs::remove_file(self.get_enc_video_file_path(video_info));
 
         self.save_state();
     }
 
-    pub fn process_heartbeat(&mut self, motion_epoch: u64) {
+    pub fn process_heartbeat(&mut self, motion_epoch: u64,  thumbnail_epoch: u64) {
         let mut removed_list = vec![];
 
         // FIXME: the heartbeat_timestamp comes from the app.
         // The video timestamp is from the camera.
         // If the wall clock times on these two are not synchronized,
         // we could end up with incorrect result here.
-        self.pending_list.retain(|&epoch, video_info| {
+        self.video_pending_list.retain(|&epoch, video_info| {
             if epoch <= motion_epoch {
                 removed_list.push(video_info.clone());
                 false
@@ -154,13 +198,40 @@ impl DeliveryMonitor {
             let _ = fs::remove_file(self.get_video_file_path(&video_info));
         }
 
+        // Process thumbnails now
+        let mut removed_list = vec![];
+        self.thumbnail_pending_list.retain(|&epoch, thumbnail_info| {
+            if epoch <= thumbnail_epoch {
+                removed_list.push(thumbnail_info.clone());
+                false
+            } else {
+                true
+            }
+        });
+
+        for thumbnail_info in removed_list {
+            let _ = fs::remove_file(self.get_thumbnail_file_path(&thumbnail_info));
+        }
+
         self.save_state();
     }
 
     pub fn videos_to_send(&self) -> Vec<VideoInfo> {
         let mut send_list: Vec<VideoInfo> = Vec::new();
 
-        for info in self.watch_list.values() {
+        for info in self.video_watch_list.values() {
+            send_list.push(info.clone());
+        }
+
+        send_list.sort_by_key(|key| key.timestamp);
+
+        send_list
+    }
+
+    pub fn thumbnails_to_send(&self) -> Vec<ThumbnailInfo> {
+        let mut send_list: Vec<ThumbnailInfo> = Vec::new();
+
+        for info in self.thumbnail_watch_list.values() {
             send_list.push(info.clone());
         }
 
@@ -190,8 +261,19 @@ impl DeliveryMonitor {
         video_dir_path.join(&info.filename)
     }
 
+    pub fn get_thumbnail_file_path(&self, info: &ThumbnailInfo) -> PathBuf {
+        let video_dir_path = Path::new(&self.thumbnail_dir);
+        video_dir_path.join(&info.filename)
+    }
+
     pub fn get_enc_video_file_path(&self, info: &VideoInfo) -> PathBuf {
         let video_dir_path = Path::new(&self.video_dir);
+        let enc_filename = format!("{}", info.epoch);
+        video_dir_path.join(&enc_filename)
+    }
+
+    pub fn get_enc_thumbnail_file_path(&self, info: &ThumbnailInfo) -> PathBuf {
+        let video_dir_path = Path::new(&self.thumbnail_dir);
         let enc_filename = format!("{}", info.epoch);
         video_dir_path.join(&enc_filename)
     }

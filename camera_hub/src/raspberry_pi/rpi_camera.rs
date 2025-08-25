@@ -78,6 +78,7 @@ pub struct RaspberryPiCamera {
     name: String,
     state_dir: String,
     video_dir: String,
+    thumbnail_dir: String,
     frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>,
     sps_frame: VideoFrame,
     pps_frame: VideoFrame,
@@ -85,7 +86,7 @@ pub struct RaspberryPiCamera {
 }
 
 impl RaspberryPiCamera {
-    pub fn new(name: String, state_dir: String, video_dir: String, motion_fps: u64) -> Self {
+    pub fn new(name: String, state_dir: String, video_dir: String, thumbnail_dir: String, motion_fps: u64) -> Self {
         println!("Initializing Raspberry Pi Camera...");
 
         // Create a channel to receive SPS/PPS frames.
@@ -175,6 +176,7 @@ impl RaspberryPiCamera {
             name,
             state_dir,
             video_dir,
+            thumbnail_dir,
             frame_queue,
             sps_frame,
             pps_frame,
@@ -326,8 +328,9 @@ impl RaspberryPiCamera {
 }
 
 impl Camera for RaspberryPiCamera {
-    fn is_there_motion(&mut self) -> Result<bool, Error> {
-        Ok(self.motion_detection.lock().unwrap().motion_recently())
+    /// When Ok, there's motion
+    fn is_there_motion(&mut self) -> Result<(bool, Option<image::RgbImage>), Error> {
+            self.motion_detection.lock().unwrap().motion_recently()
     }
 
     fn record_motion_video(&self, info: &VideoInfo, duration: u64) -> io::Result<()> {
@@ -385,6 +388,8 @@ impl Camera for RaspberryPiCamera {
     fn get_video_dir(&self) -> String {
         self.video_dir.clone()
     }
+
+    fn get_thumbnail_dir(&self) -> String {self.thumbnail_dir.clone() }
 }
 
 struct RpiCameraVideoParameters {

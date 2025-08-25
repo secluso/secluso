@@ -6,6 +6,7 @@ use crate::ml::models::ModelKind;
 use crate::motion::detector::MotionDetection;
 use std::collections::HashMap;
 use std::time::Instant;
+use crate::frame::RawFrame;
 
 /// Per-run, in-memory state updated by the FSM and stages
 pub struct StateContext {
@@ -29,6 +30,7 @@ pub struct StateContext {
     /// Per stage counters and last-latency samples.
     pub stats: HashMap<String, StageStats>,
     pub last_detection: Option<Instant>,
+    pub last_detection_frame: Option<RawFrame>
 }
 
 impl StateContext {
@@ -47,7 +49,8 @@ impl StateContext {
             use_inference: true,
             // metadata: Default::default(),
             stats: Default::default(),
-            last_detection: None
+            last_detection: None,
+            last_detection_frame: None,
         }
     }
 }

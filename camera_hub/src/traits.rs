@@ -20,6 +20,7 @@ use crate::livestream::LivestreamWriter;
 use anyhow::Error;
 use bytes::BytesMut;
 use std::io;
+use image::RgbImage;
 
 pub trait CodecParameters {
     fn write_codec_box(&self, buf: &mut BytesMut) -> Result<(), Error>;
@@ -40,10 +41,11 @@ pub trait Mp4 {
 }
 
 pub trait Camera {
-    fn is_there_motion(&mut self) -> Result<bool, Error>;
+    fn is_there_motion(&mut self) -> Result<(bool, Option<RgbImage>), Error>;
     fn record_motion_video(&self, info: &VideoInfo, duration: u64) -> io::Result<()>;
     fn launch_livestream(&self, livestream_writer: LivestreamWriter) -> io::Result<()>;
     fn get_name(&self) -> String;
     fn get_state_dir(&self) -> String;
     fn get_video_dir(&self) -> String;
+    fn get_thumbnail_dir(&self) -> String;
 }

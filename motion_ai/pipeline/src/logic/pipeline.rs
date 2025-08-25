@@ -14,11 +14,12 @@ use crate::logic::stages::{PipelineStage, StageResult, StageType};
 use crate::logic::telemetry::{TelemetryPacket, TelemetryRun};
 use crate::logic::timer::{Timer, TimerManager};
 use crate::ml::models::init_model_paths;
-use anyhow::Context;
+use anyhow::{Context, Error};
 use serde::{Deserialize, Serialize};
 use std::collections::{BinaryHeap, BTreeMap, HashMap, VecDeque};
 use std::default::Default;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use image::RgbImage;
 use log::debug;
 
 /// The main sequential container for executing image processing stages.
@@ -255,21 +256,26 @@ impl PipelineController {
     }
 
     // Was there a positive motion event in the last 30 seconds? TODO: Adjust 30 accordingly
-    pub fn motion_recently(&mut self) -> bool {
+    pub fn motion_recently(&mut self) -> Result<(bool, Option<image::RgbImage>), Error> {
         match self.host_data.ctx.last_detection {
             None => {
-                //println!("No detection recently");
-                false
+               Ok((false, None))
             }
             Some(last_detection) => {
                 let elapsed = last_detection.elapsed();
                 let secs = elapsed.as_secs();
                 if elapsed <= Duration::from_secs(30) {
                     debug!("Motion detected {} seconds ago (within 30s window).", secs);
-                    true
+                    if let Some(frame) = self.host_data.ctx.last_detection_frame.take() {
+                        let data = frame.rgb_data.unwrap().to_vec();
+                        let img = RgbImage::from_raw(frame.width as u32, frame.height as u32, data).expect("Failed to convert RGB data into RgbImage");
+
+                        return Ok((true, Some(img as RgbImage)))
+                    }
+                    return Ok((false, None))
                 } else {
                     debug!("Motion detected {} seconds ago (outside 30s window).", secs);
-                    false
+                    Ok((false, None))
                 }
             }
         }

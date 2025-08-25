@@ -64,7 +64,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use crate::ip::ip_motion_detection::MotionDetection;
-use crate::{STATE_DIR_GENERAL, VIDEO_DIR_GENERAL};
+use crate::{STATE_DIR_GENERAL, VIDEO_DIR_GENERAL, THUMBNAIL_DIR_GENERAL};
 use std::collections::VecDeque;
 use std::process::exit;
 use std::sync::{
@@ -82,6 +82,7 @@ pub struct IpCamera {
     name: String,
     state_dir: String,
     video_dir: String,
+    thumbnail_dir: String,
     frame_queue: Arc<Mutex<VecDeque<Frame>>>,
     video_params: VideoParameters,
     audio_params: AudioParameters,
@@ -105,6 +106,7 @@ impl IpCamera {
         password: String,
         state_dir: String,
         video_dir: String,
+        thumbnail_dir: String,
         motion_fps: u64,
     ) -> io::Result<Self> {
         let frame_queue: Arc<Mutex<VecDeque<Frame>>> = Arc::new(Mutex::new(VecDeque::new()));
@@ -155,6 +157,7 @@ impl IpCamera {
             name,
             state_dir,
             video_dir,
+            thumbnail_dir,
             frame_queue,
             video_params,
             audio_params,
@@ -251,6 +254,11 @@ impl IpCamera {
                         format!(
                             "{}/{}",
                             VIDEO_DIR_GENERAL,
+                            camera_name.replace(" ", "_").to_lowercase()
+                        ),
+                        format!(
+                            "{}/{}",
+                            THUMBNAIL_DIR_GENERAL,
                             camera_name.replace(" ", "_").to_lowercase()
                         ),
                         camera_motion_fps,
@@ -689,7 +697,7 @@ impl Camera for IpCamera {
         Ok(())
     }
 
-    fn is_there_motion(&mut self) -> anyhow::Result<bool> {
+    fn is_there_motion(&mut self) -> Result<(bool, Option<image::RgbImage>), Error> {
         self.motion_detection.handle_motion_event()
     }
 
@@ -704,6 +712,7 @@ impl Camera for IpCamera {
     fn get_video_dir(&self) -> String {
         self.video_dir.clone()
     }
+    fn get_thumbnail_dir(&self) -> String {self.thumbnail_dir.clone() }
 }
 
 struct IpCameraVideoParameters {

@@ -96,8 +96,8 @@ impl HttpClient {
         Ok(status.to_string())
     }
 
-    /// Uploads an (encrypted) video file.
-    pub fn upload_enc_video(
+    /// Uploads an (encrypted) file.
+    pub fn upload_enc_file(
         &self,
         group_name: &str,
         enc_file_path: &Path,

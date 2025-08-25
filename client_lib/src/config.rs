@@ -35,6 +35,7 @@ pub enum HeartbeatResult {
 pub struct HeartbeatRequest {
     pub timestamp: u64,
     pub motion_epoch: u64,
+    pub thumbnail_epoch: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -63,7 +64,7 @@ impl Heartbeat {
                 ciphertexts.push(ciphertext);
             }
 
-            if MLS_CLIENT_TAGS[i] == "motion" || MLS_CLIENT_TAGS[i] == "livestream" {
+            if MLS_CLIENT_TAGS[i] == "motion" || MLS_CLIENT_TAGS[i] == "livestream" || MLS_CLIENT_TAGS[i] == "thumbnail" {
                 let epoch = mls_clients[i].get_epoch()?;
                 epochs.push(epoch);
             }
@@ -92,7 +93,7 @@ impl Heartbeat {
         let mut epoch_i = 0;
         for i in 0..NUM_MLS_CLIENTS {
             if MLS_CLIENT_TAGS[i] != "config" {
-                if MLS_CLIENT_TAGS[i] == "motion" || MLS_CLIENT_TAGS[i] == "livestream" {
+                if MLS_CLIENT_TAGS[i] == "motion" || MLS_CLIENT_TAGS[i] == "livestream" || MLS_CLIENT_TAGS[i] == "thumbnail" {
                     let epoch = match mls_clients[i].get_epoch() {
                         Ok(e) => e,
                         Err(e) => {
