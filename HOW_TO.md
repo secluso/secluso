@@ -1,25 +1,45 @@
-## Instructions
+# Instructions
 
 Privastead is fully open source and hence can be used by anyone interested in it.
 Below are the instructions.
+Note that some of the steps are shared between the standalone camera setup and the IP camera setup.
+The other steps however are customized for each setup.
 
-### Requirements
+## Table of Contents
+- [Requirements](#requirements)
+- [Step 1: Generating Privastead credentials](#step-1-generating-privastead-credentials)
+- [Step 2: Generating FCM credentials](#step-2-generating-fcm-credentials)
+- [Step 3: Running the server](#step-3-running-the-server)
+- [Step 4 (IP camera only): Configuring the IP camera and connecting it to your local machine](#step-4-ip-camera-only-configuring-the-ip-camera-and-connecting-it-to-your-local-machine)
+- [Step 5 (standalone camera): Configuring and running camera hub](#step-5-standalone-camera-configuring-and-running-camera-hub)
+- [Step 5 (IP camera): Configuring and running camera hub](#step-5-ip-camera-configuring-and-running-camera-hub)
+- [Step 6: Building and installing the app](#step-6-building-and-installing-the-app)
+- [Step 7: Pairing the app with the hub](#step-7-pairing-the-app-with-the-hub)
+
+## Requirements
 
 You will need the following:
 
-- An IP camera (see [here](README.md) for the list of IP cameras tested with Privastead).
 - A smartphone (see [here](README.md) for the list of smartphones tested with Privastead).
-- A local machine (e.g., a laptop or desktop). The local machine will be connected to the IP camera and to the Internet.
 - A server. The server needs to be accessible by the hub and the mobile app on the smartphone. Given that the smartphone could be connected to various networks, the server should have a public IP address. We refer to this address as the server IP address going forward.
 - A Google account to set up the FCM project. (Create a new account. Don't use your personal account.)
 
-Fetch the Privastead source code both in the hub and in the server:
+In the case of a standalone camera, you also need:
+
+- A Raspberry Pi board and a camera connected to it. Note that we currently compile the camera hub on the Raspberry Pi itself. While you can run the hub on a weak Raspberry Pi (e.g., Raspberry Pi Zero 2W), we suggest using a more powerful Raspberry Pi (e.g., Raspberry Pi 4) for building the hub.
+
+In the case of an IP camera, you also need:
+
+- An IP camera (see [here](README.md) for the list of IP cameras tested with Privastead).
+- A local machine (e.g., a laptop or desktop). The local machine will be connected to the IP camera and to the Internet.
+
+Fetch the Privastead source code in the Raspberry Pi where you'll build the hub (for the standalone camera), in the local machine (for the IP camera), and in the server:
 
 ```
 git clone https://github.com/privastead/privastead.git
 ```
 
-### Step 1: Generating Privastead credentials
+## Step 1: Generating Privastead credentials
 
 The server is fully untrusted and cannot decrypt videos.
 Yet, we have a simple authentication protocol between the hub/app and the server in order to prevent unauthorized access to the server (since servers cost money and you may not want others to use your server.)
@@ -35,7 +55,7 @@ This generates two files: user_credentials and user_credentials_qrcode.png.
 We will use the former for the server and the latter for the app.
 Keep these files in mind and we will come back to using them in the following steps.
 
-### Step 2: Generating FCM credentials
+## Step 2: Generating FCM credentials
 
 Privastead uses FCM to send notifications to the android/ios app.
 We need to set up an FCM project and then generate two credential files, one for the server to be able to send notifications via FCM and one for the app to be able to receive them.
@@ -68,7 +88,7 @@ This will create a json file for you. As the warning said, it includes a private
 
 Hold on to the file for now. We'll use it in the next step.
 
-### Step 3: Running the server
+## Step 3: Running the server
 
 The server needs to be able to send notification requests to FCM. Therefore, copy the service_account_key.json file generated in the last step in the Privastead server directory.
 
@@ -147,7 +167,7 @@ to
 address: "0.0.0.0".parse().unwrap(),
 ```
 
-### Step 4: Configuring the IP camera and connecting it to your local machine
+## Step 4 (IP camera only): Configuring the IP camera and connecting it to your local machine
 
 Our goal is to connect the camera to your local machine (aka machine) without giving the IP camera Internet access.
 You will use this local machine later to run the Privastead camera hub software.
@@ -204,7 +224,27 @@ In the camera's web interface, do the following (note that these instructions ar
 
 You are now done configuring the camera. Make sure to connect the machine to the Internet using WiFi.
 
-### Step 5: Configuring and running camera hub
+## Step 5 (standalone camera): Configuring and running camera hub
+
+Access a terminal within the Raspberry Pi board (either via SSH or a graphical interface). Run:
+
+```
+cd /path-to-privastead/camera_hub
+cargo run --release --features raspberry
+```
+
+Note that this assumes your Raspberry Pi board is powerful enough to build the hub in a reasonable amount of time.
+If you want to build it on a powerful board and transfer it to a weaker board for execution, Run the following on the powerful board:
+
+```
+cd /path-to-privastead/camera_hub
+cargo build --release --features raspberry
+# transfer the executable (target/release/privastead-camera-hub) to the weaker board
+```
+
+Then simply execute the executable on the weaker board.
+
+## Step 5 (IP camera): Configuring and running camera hub
 
 Copy over the example_cameras.yaml file into cameras.yaml
 ```
@@ -236,7 +276,7 @@ The Privastead hub will now run and ask you for the username and password for ea
 After providing them, it will create a QR code containing a secret needed for pairing (camera_hub/camera_name_secret_qrcode.png).
 Each camera then waits to be paired with the app.
 
-### Step 6: Building and installing the app
+## Step 6: Building and installing the app
 
 
 Clone the Repository:
@@ -312,7 +352,7 @@ flutter run
 This will build and launch the app on your connected device.
 
 
-### Step 7: Pairing the app with the hub
+## Step 7: Pairing the app with the hub
 
 When you first run the app, it will ask you for the credentials needed to access the server in the form of a QR code.
 Scan user_credentials_qrcode.png file that you generated in Step 1.
@@ -325,13 +365,30 @@ Grant the permissions if you want to receive motion notifications.
 
 Next, you will go to the main app page.
 To pair with the camera, press the + button on the bottom right of the screen.
-A new activity will be launched asking you to enter a name for the camera, the IP address of the hub, and the camera secret QR code.
+A new activity will be launched asking you the type of the camera you want to pair with.
+
+For the standalone camera, select the first option and follow the instructions.
+These steps include scanning the secret QR code, entering a name for the camera, and entering the SSID and password for the WiFi network that you want the camera to connect to.
 The name can be anything you'd like to use to refer to the camera (anything without a space).
+For the secret QR code, you need to generate it and provide a copy for the camera hub to in the Raspberry Pi to use.
+More specifically, you can use the config tool:
+
+```
+cd privastead/config_tool
+cargo run -- --generate-camera-secret --dir .
+```
+
+This will generate two files: camera_secret and camera_secret_qrcode.png. The former is for the camera hub in the Raspberry Pi. The latter is to be scanned by the app. Note that the secret needs to be kept confidential.
+
+
+For the IP camera, select the second option.
+You will then need to enter a name for the camera, the IP address of the hub, and the camera secret QR code.
+The QR code is the one that the camera hub generated (camera_hub/camera_name_secret_qrcode.png).
 The IP address is the address of the hub (not the IP camera!).
 The smartphone running the app and the machine running the hub need to be connected to the same network for the pairing process.
 Therefore, make sure they are both connected to the same router.
 To find the IP address of the hub, you can again use the ifconfig command.
-The QR code is the one that the camera hub generated (camera_hub/camera_name_secret_qrcode.png).
+
 Once you've provided all, click on ADD CAMERA.
 The camera hub and the app should be paired now.
 The camera hub will also print:
@@ -342,5 +399,5 @@ The camera hub will also print:
 ```
 
 At this point, the system is operational.
-Whenever the camera detects motion, the camera hub will record a video and send it to the app.
+Whenever the camera detects an event, the camera hub will record a video and send it to the app.
 Also, in the app, you can livestream the camera.

@@ -5,49 +5,57 @@
 # Privastead
 
 Privastead is a privacy-preserving home security camera solution that uses end-to-end encryption.
-It has three key benefits:
+In Privastead, the camera encrypts the videos end-to-end for the app on the user's smartphone.
+Videos are relayed by a server, but the server cannot decrypt them.
 
-* End-to-end encryption using the OpenMLS implementation of the Messaging Layer Security (MLS) protocol.
-* Software-only solution that works with existing IP cameras with minimal trust assumptions about the IP camera.
-* Rust implementation (camera hub, MLS code for the mobile app, and untrusted server).
+Privastead has two key benefits:
+
+* **End-to-end encryption** using the OpenMLS implementation of the Messaging Layer Security (MLS) protocol.
+* **Rust** implementation.
 
 ## Components
 
-The Privastead camera solution has three components:
+Privastead has three components:
 
-* A camera hub, which runs on a local machine and directly interacts with IP camera(s).
-* A mobile app that allows one to receive event notifications (e.g., motion) as well as livestream the camera remotely.
-* An untrusted server that relays (encrypted) messages between the hub and the app. In addition, Privastead uses the Google Firebase Cloud Messaging (FCM) for notifications. Similar to the server, FCM is untrusted.
+* A **camera hub** that records, encrypts, and sends videos.
+* A **mobile app** that allows one to receive event notifications (e.g., person or motion) from the camera as well as livestream the camera remotely.
+* An **untrusted server** that relays (encrypted) messages between the hub and the app. In addition, Privastead uses the Google Firebase Cloud Messaging (FCM) for notifications. Similar to the server, FCM is untrusted.
 
-## Threat Model and Guarantees
+## Camera types
 
-The key advantage of the Privastead camera solution over existing home security camera solutions is that it provides strong privacy assurance using end-to-end encryption.
-More specifically, it makes the following assumptions:
+Privastead supports two types of cameras.
 
-* It assumes that the local machine running the hub and the smartphone running the mobile app are secure and not compromised.
-* It assumes that the server is fully untrusted and under the control of the adversary.
-* It makes minimal trust assumptions about the IP camera. That is, it assumes that the camera does not have a covert, undisclosed network interface card (e.g., cellular) to connect to the Internet on its own (therefore, it's best that this is explicitly checked and verified by user). Other than that, the IP camera is untrusted and hence Privastead does not directly connect the camera to the Internet; rather, the camera is connected to the hub directly.
+* **Standalone camera** using a Raspberry Pi. In this case, the camera hub runs directly on the Raspberry Pi.
+* Commercial **IP cameras**. In this case, the camera hub runs on another machine and works with existing IP cameras with minimal trust assumptions about these cameras.
 
-It then provides the following guarantees:
+## Security
 
-* It guarantees that only the hub and the mobile app have access to unecrypted videos.
-* It guarantees that the server cannot decrypt the videos.
-* It provides forward secrecy and post-comproise security through MLS (see definitions below).
-* It does NOT currently hide the timing of events and livestreams from the adversary (who we assume is in control of the server and/or FCM channel).
+Privastead has been carefully designed to strongly protect the user's videos against an attacker that might try to access and view them.
+It provides advanced encryption guarantees, namely **forward secrecy** and **post-compromise security**.
+For a more accurate and detailed discussion of its security guarantees, please see [here](SECURITY.md).
 
-Definitions: According to MLS: ``Forward secrecy means that messages sent at a certain point in time are secure in the face of later compromise of a group member. Post-compromise security means that messages are secure even if a group member was compromised at some point in the past.''
-What do these mean in Privastead?
-In Privastead, the camera hub and the mobile app are the only members in an MLS group used for transfer of videos.
-They mean that if the key used to encrypt a video between the hub and the app is compromised, that key cannot be used to decrypt any of the videos sent before and after the compromised video.
+## Event detection
+
+The camera hub is capable of detecting various events and sending a notification to the mobile app.
+
+* Events supported for the standalone camera: motion, person, pet, vehicle
+
+* Events supported for IP cameras: motion
 
 ## Supported Cameras
 
-Privastead camera can theoretically support any IP camera (or any other camera that has an open interface).
+* Standalone camera: Privastead should be able to run on any Raspberry Pi boards that is capable of running its event detection pipeline.
+So far, the following boards have been successfully tested:
+
+  * Rasperry Pi Zero 2W
+  * Raspberry Pi 4
+
+* IP camera: Privastead camera can theoretically support any IP camera (or any other camera that has an open interface).
 The current prototype relies on RTSP and MJPEG support by the camera.
 The former is used for streaming videos from the camera and the latter is used for a custom motion detection implementation.
 So far, the following cameras have been tested:
 
-* Amcrest, model: IP4M-1041W ([Link](https://www.amazon.com/Amcrest-UltraHD-Security-4-Megapixel-IP4M-1041W/dp/B095XD17K5/) on Amazon)
+  * Amcrest, model: IP4M-1041W ([Link](https://www.amazon.com/Amcrest-UltraHD-Security-4-Megapixel-IP4M-1041W/dp/B095XD17K5/) on Amazon)
     * Software Version: V2.800.00AC006.0.R, Build Date: 2023-10-27
     * WEB Version: V3.2.1.18144
 
@@ -63,13 +71,8 @@ So far, the following cameras have been tested:
 * Moto G 5G (2024) (Android 14)
 * iPhone 16 Pro (iOS 18.5)
 
-## Tested execution environment for the hub
-
-* Ubuntu
-
 ## (Current) key limitations
 
-* The camera hub relies on MJPEG instead of H.264 frames for custom motion detection
 * The camera hub pairs with one app instance only.
 * Performance may become a bottleneck for high camera resolutions and frame rates.
 
