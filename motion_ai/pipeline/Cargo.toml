@@ -37,3 +37,4 @@ rocket = { version = "0.5.1", features = ["json"] } #todo: make this feature bas
 video-rs= { version = "0.10.3", features = ["ndarray"], optional = true }
 crossbeam-channel = "0.5.14"
 flume = "0.11.1"
+include_dir="0.7.4"

@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use thiserror::Error;
+use include_dir::{Dir, include_dir};
 
 /// Lazily-initialized map of model kinds to file paths, loaded from config.
 static MODEL_PATHS: OnceLock<HashMap<ModelKind, String>> = OnceLock::new();
@@ -17,6 +18,12 @@ static MODEL_PATHS: OnceLock<HashMap<ModelKind, String>> = OnceLock::new();
 /// Thread-safe global cache of ONNX sessions per model kind.
 static SESSION_CACHE: Lazy<Mutex<HashMap<ModelKind, SessionEntry>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Loads the models.toml configuration into the binary when compiling
+static MODEL_CONFIG: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/models.toml"));
+
+/// Loads the model ONNX files directory into the binary when compiling
+static MODEL_DATA_DIR: Dir<'_>  = include_dir!("$CARGO_MANIFEST_DIR/onnx_models");
 
 /// Associates an ONNX session with the model path it was built from, to detect changes.
 struct SessionEntry {
@@ -89,14 +96,12 @@ fn build_session(path: &str) -> Result<Session, ort::Error> {
     Ok(SessionBuilder::new()?
         .with_inter_threads(1)?
         .with_intra_threads(1)?
-        .commit_from_file(path)?)
+        .commit_from_memory(MODEL_DATA_DIR.get_file(path).unwrap().contents())?)
 }
 
 /// Loads model file paths from `models.toml` and registers them for later lookup.
 pub fn init_model_paths() -> Result<bool, ModelError> {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/models.toml");
-    let raw_str = std::fs::read_to_string(path)?;
-    let raw: toml::Value = toml::from_str(&raw_str)
+    let raw: toml::Value = toml::from_str(&MODEL_CONFIG)
         .map_err(|e| ModelError::Inference(format!("Failed to parse TOML: {}", e)))?;
     let tbl = raw["models"]
         .as_table()
@@ -114,8 +119,8 @@ pub fn init_model_paths() -> Result<bool, ModelError> {
     Ok(MODEL_PATHS
         .set(
             vec![
-                (ModelKind::Fast, format!("{}/{}", env!("CARGO_MANIFEST_DIR"), fast_path.to_string())),
-                (ModelKind::Accurate, format!("{}/{}", env!("CARGO_MANIFEST_DIR"), accurate_path.to_string())),
+                (ModelKind::Fast, fast_path.to_string()),
+                (ModelKind::Accurate, accurate_path.to_string()),
             ]
             .into_iter()
             .collect(),

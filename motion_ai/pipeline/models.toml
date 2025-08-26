@@ -1,3 +1,5 @@
+# These correspond to file names located in the onnx_models folder. Pass them as file name only, no paths.
+# The binary must be re-compiled for these to be updated, as they're built into the binary now.
 [models]
-fast = "onnx_models/nanodet-plus-m_416.onnx"
-accurate = "onnx_models/model.onnx"
+fast = "nanodet-plus-m_416.onnx"
+accurate = "model.onnx"
