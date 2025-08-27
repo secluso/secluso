@@ -16,7 +16,6 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::io;
-use std::time::{SystemTime, UNIX_EPOCH};
 use privastead_client_lib::config::{OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE, HeartbeatRequest, Heartbeat};
 use privastead_client_lib::mls_clients::{CONFIG, MlsClients};
 use privastead_client_lib::http_client::HttpClient;
@@ -59,7 +58,7 @@ fn handle_heartbeat_request(
     http_client: &HttpClient,
     delivery_monitor: &mut DeliveryMonitor,
 ) -> io::Result<()> {
-    let heartbeat_request: HeartbeatRequest = bincode::deserialize(command_bytes)
+    let mut heartbeat_request: HeartbeatRequest = bincode::deserialize(command_bytes)
         .map_err(|e| {
             io::Error::new(
                 io::ErrorKind::Other,
@@ -67,22 +66,12 @@ fn handle_heartbeat_request(
             )
         })?;
 
-    info!("handle_heartbeat: {}, {}, {}", heartbeat_request.timestamp, heartbeat_request.motion_epoch, heartbeat_request.thumbnail_epoch);
+    let _ = heartbeat_request.process_update_proposals(clients);
+
+    info!("handle_heartbeat_request: {}, {}, {}", heartbeat_request.timestamp, heartbeat_request.motion_epoch, heartbeat_request.thumbnail_epoch);
     delivery_monitor.process_heartbeat(heartbeat_request.motion_epoch, heartbeat_request.thumbnail_epoch);
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("Could not convert time")
-        .as_secs();
-    // Sometimes, we might be in the middle of recording a video when we receive
-    // the heartbeat notification. Therefore, we need to answer to heartbeats
-    // that are a bit old.
-    // Also, the clocks on the two devices are not synchronized and might be off a bit.
-    if now - heartbeat_request.timestamp < 60 || heartbeat_request.timestamp - now < 10 {
-        // We only responsd to recent heartbeat requests.
-        send_heartbeat_response(clients, heartbeat_request.timestamp, http_client)?;
-    } else {
-        info!("Won't respond to old heartbeat request (now = {now})");
-    }
+
+    send_heartbeat_response(clients, heartbeat_request.timestamp, http_client)?;
 
     Ok(())
 }

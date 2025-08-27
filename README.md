@@ -47,7 +47,7 @@ The camera hub is capable of detecting various events and sending a notification
 * Standalone camera: Privastead should be able to run on any Raspberry Pi boards that is capable of running its event detection pipeline.
 So far, the following boards have been successfully tested:
 
-  * Rasperry Pi Zero 2W
+  * Raspberry Pi Zero 2W
   * Raspberry Pi 4
 
 * IP camera: Privastead camera can theoretically support any IP camera (or any other camera that has an open interface).

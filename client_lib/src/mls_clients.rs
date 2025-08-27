@@ -34,3 +34,6 @@ pub const CONFIG: usize = 3;
 pub const THUMBNAIL: usize = 4;
 
 pub type MlsClients = [MlsClient; NUM_MLS_CLIENTS];
+
+// Maximum time that we allow other group members to be offline (in seconds)
+pub const MAX_OFFLINE_WINDOW: u64 = 24 * 60 * 60;

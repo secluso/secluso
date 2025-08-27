@@ -216,6 +216,20 @@ impl DeliveryMonitor {
         self.save_state();
     }
 
+    pub fn get_all_pending_video_timestamps(&self) -> Vec<u64> {
+        self.video_pending_list
+            .values()
+            .map(|info| info.timestamp)
+            .collect()
+    }
+
+    pub fn get_all_pending_thumbnail_timestamps(&self) -> Vec<u64> {
+        self.thumbnail_pending_list
+            .values()
+            .map(|info| info.timestamp)
+            .collect()
+    }
+
     pub fn videos_to_send(&self) -> Vec<VideoInfo> {
         let mut send_list: Vec<VideoInfo> = Vec::new();
 

@@ -25,7 +25,8 @@ use cfg_if::cfg_if;
 use docopt::Docopt;
 use privastead_client_lib::http_client::HttpClient;
 use privastead_client_lib::mls_client::MlsClient;
-use privastead_client_lib::mls_clients::{NUM_MLS_CLIENTS, MLS_CLIENT_TAGS, MOTION, LIVESTREAM, FCM, CONFIG, MlsClients, THUMBNAIL};
+use privastead_client_lib::mls_clients::{NUM_MLS_CLIENTS, MLS_CLIENT_TAGS,
+    MOTION, LIVESTREAM, FCM, CONFIG, THUMBNAIL, MlsClients};
 use std::array;
 use std::fs;
 use std::fs::File;
@@ -38,7 +39,6 @@ use std::panic;
 use std::thread::sleep;
 use std::time::SystemTime;
 use std::{thread, time::Duration};
-use regex::Regex;
 
 mod delivery_monitor;
 
@@ -46,7 +46,8 @@ use crate::delivery_monitor::{DeliveryMonitor, ThumbnailInfo, VideoInfo};
 
 mod motion;
 
-use crate::motion::{prepare_motion_thumbnail, prepare_motion_video, upload_pending_enc_thumbnails, upload_pending_enc_videos};
+use crate::motion::{prepare_motion_thumbnail, prepare_motion_video, upload_pending_enc_thumbnails,
+    upload_pending_enc_videos, send_pending_motion_videos, send_pending_thumbnails};
 
 mod livestream;
 
@@ -194,34 +195,29 @@ fn main() -> io::Result<()> {
 
         GLOBAL_THREAD_COUNT.fetch_add(1, Ordering::SeqCst);
         thread::spawn(move || {
-            loop {
-                if args.flag_reset || args.flag_reset_full {
-                    match reset(camera.as_ref(), args.flag_reset_full) {
-                        Ok(_) => {}
-                        Err(e) => {
-                            panic!("reset() returned with: {e}");
-                        }
-                    };
+            if args.flag_reset || args.flag_reset_full {
+                match reset(camera.as_ref(), args.flag_reset_full) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        panic!("reset() returned with: {e}");
+                    }
+                };
 
-                    // Deduct one from our thread count for main thread to know when to exit (when all are finished)
-                    GLOBAL_THREAD_COUNT.fetch_sub(1, Ordering::SeqCst);
-                    return;
-                } else {
-                    match core(
-                        camera.as_mut(),
-                        input_camera_secret.clone(),
-                        connect_to_wifi,
-                        args.flag_test_motion,
-                    ) {
-                        Ok(_) => {}
-                        Err(e) => {
-                            error!("core() returned with: {e}");
-                        }
+                // Deduct one from our thread count for main thread to know when to exit (when all are finished)
+                GLOBAL_THREAD_COUNT.fetch_sub(1, Ordering::SeqCst);
+                return;
+            } else {
+                match core(
+                    camera.as_mut(),
+                    input_camera_secret.clone(),
+                    connect_to_wifi,
+                    args.flag_test_motion,
+                ) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        panic!("core() returned with: {e}");
                     }
                 }
-                println!("There was a problem with the connection to the server. Will try to connect again soon.");
-                let _ = fs::remove_file(camera.get_state_dir() + "/registration_done");
-                sleep(Duration::from_secs(10));
             }
         });
     }
@@ -301,111 +297,18 @@ fn reset(
     let _ = fs::remove_dir_all(state_dir_path);
     let _ = fs::remove_file("credentials_full");
 
-    //Fourth, (in the case of full reset) delete all the pending videos (those that were never successfully delivered)
+    //Fourth, (in the case of full reset) delete all the pending videos and thumbnails (those that were never successfully delivered)
     if reset_full {
         let video_dir = camera.get_video_dir();
         let video_dir_path = Path::new(&video_dir);
         let _ = fs::remove_dir_all(video_dir_path);
+
+        let thumbnail_dir = camera.get_thumbnail_dir();
+        let thumbnail_dir_path = Path::new(&thumbnail_dir);
+        let _ = fs::remove_dir_all(thumbnail_dir_path);
     }
 
     println!("Reset finished.");
-    Ok(())
-}
-
-fn send_pending_motion_videos(
-    camera: &mut dyn Camera,
-    clients: &mut MlsClients,
-    delivery_monitor: &mut DeliveryMonitor,
-    http_client: &HttpClient,
-) -> io::Result<()> {
-    let mut pending_timestamps = Vec::new();
-    let video_dir = camera.get_video_dir();
-
-    let re = Regex::new(r"^video_(\d+)\.mp4$").unwrap();
-
-    for entry in fs::read_dir(video_dir)? {
-        let entry = entry?;
-        let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
-
-        if let Some(caps) = re.captures(&file_name) {
-            if let Some(matched) = caps.get(1) {
-                if let Ok(ts) = matched.as_str().parse::<u64>() {
-                    pending_timestamps.push(ts);
-                }
-            }
-        }
-    }
-
-    for timestamp in &pending_timestamps {
-        println!("Recovered pending video {:?}", *timestamp);
-        let video_info = VideoInfo::from(*timestamp);
-        prepare_motion_video(&mut clients[MOTION], video_info, delivery_monitor)?;
-
-        upload_pending_enc_videos(
-            &clients[MOTION].get_group_name().unwrap(),
-            delivery_monitor,
-            http_client,
-        );
-    }
-
-    if pending_timestamps.len() > 0 {
-        //Timestamp of 0 tells the app it's time to start downloading.
-        let dummy_timestamp: u64 = 0;
-        let notification_msg = clients[FCM].encrypt(
-            &bincode::serialize(&dummy_timestamp).unwrap())?;
-        clients[FCM].save_group_state();
-        http_client.send_fcm_notification(notification_msg)?;
-    }
-
-    Ok(())
-}
-
-fn send_pending_thumbnails(
-    camera: &mut dyn Camera,
-    clients: &mut MlsClients,
-    delivery_monitor: &mut DeliveryMonitor,
-    http_client: &HttpClient,
-) -> io::Result<()> {
-    let mut pending_timestamps = Vec::new();
-    let video_dir = camera.get_thumbnail_dir();
-
-    let re = Regex::new(r"^thumbnail_(\d+)\.png$").unwrap();
-
-    for entry in fs::read_dir(video_dir)? {
-        let entry = entry?;
-        let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
-
-        if let Some(caps) = re.captures(&file_name) {
-            if let Some(matched) = caps.get(1) {
-                if let Ok(ts) = matched.as_str().parse::<u64>() {
-                    pending_timestamps.push(ts);
-                }
-            }
-        }
-    }
-
-    for timestamp in &pending_timestamps {
-        println!("Recovered pending thumbnail {:?}", *timestamp);
-        prepare_motion_thumbnail(&mut clients[THUMBNAIL], ThumbnailInfo::new(timestamp.clone(), 0), delivery_monitor)?;
-
-        upload_pending_enc_thumbnails(
-            &clients[THUMBNAIL].get_group_name().unwrap(),
-            delivery_monitor,
-            http_client,
-        );
-    }
-
-    if pending_timestamps.len() > 0 {
-        //Timestamp of 0 tells the app it's time to start downloading.
-        let dummy_timestamp: u64 = 0;
-        let notification_msg = clients[FCM].encrypt(
-            &bincode::serialize(&dummy_timestamp).unwrap())?;
-        clients[FCM].save_group_state();
-        http_client.send_fcm_notification(notification_msg)?;
-    }
-
     Ok(())
 }
 
@@ -554,7 +457,7 @@ fn core(
                 prepare_motion_thumbnail(&mut clients[THUMBNAIL], thumbnail_info, &mut delivery_monitor)?;
 
                 info!("Uploading the encrypted thumbnail.");
-                upload_pending_enc_thumbnails(
+                let _ = upload_pending_enc_thumbnails(
                     &clients[THUMBNAIL].get_group_name().unwrap(),
                     &mut delivery_monitor,
                     &http_client,
@@ -581,7 +484,7 @@ fn core(
             prepare_motion_video(&mut clients[MOTION], video_info, &mut delivery_monitor)?;
 
             info!("Uploading the encrypted video.");
-            upload_pending_enc_videos(
+            let _ = upload_pending_enc_videos(
                 &clients[MOTION].get_group_name().unwrap(),
                 &mut delivery_monitor,
                 &http_client,
@@ -629,16 +532,26 @@ fn core(
         if locked_delivery_check_time.is_none()
             || locked_delivery_check_time.unwrap().le(&SystemTime::now())
         {
-            upload_pending_enc_videos(
+            if let Ok(_) = upload_pending_enc_videos(
                 &clients[MOTION].get_group_name().unwrap(),
                 &mut delivery_monitor,
                 &http_client,
-            );
-            upload_pending_enc_thumbnails(
+            ) {
+                // After sending all the pending encrypted videos, we might still have
+                // some pending videos that are not encrypted. This could happen if we
+                // previously failed to encrypt them, e.g., as a result of enforcing PCS.
+                // We'll try to send them here.
+                let _ = send_pending_motion_videos(camera, &mut clients, &mut delivery_monitor, &http_client);
+            }
+
+            if let Ok(_) = upload_pending_enc_thumbnails(
                 &clients[THUMBNAIL].get_group_name().unwrap(),
                 &mut delivery_monitor,
                 &http_client,
-            );
+            ) {
+                let _ = send_pending_thumbnails(camera, &mut clients, &mut delivery_monitor, &http_client);
+            }
+
             locked_delivery_check_time = Some(SystemTime::now().add(Duration::from_secs(60)));
         }
 
@@ -648,7 +561,9 @@ fn core(
         {
             let mut enc_commands = config_enc_commands.lock().unwrap();
             for enc_command in &*enc_commands {
-                let _ = process_config_command(&mut clients, enc_command, &http_client, &mut delivery_monitor);
+                if let Err(e) = process_config_command(&mut clients, enc_command, &http_client, &mut delivery_monitor) {
+                    info!("process_confg_command returned error - {e}");
+                }
             }
             enc_commands.clear();
             locked_config_check_time = Some(SystemTime::now().add(Duration::from_secs(1)));

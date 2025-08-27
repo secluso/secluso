@@ -17,11 +17,15 @@
 
 use crate::delivery_monitor::{DeliveryMonitor, ThumbnailInfo, VideoInfo};
 use privastead_client_lib::mls_client::MlsClient;
+use privastead_client_lib::mls_clients::{MlsClients, MOTION, FCM, THUMBNAIL, MAX_OFFLINE_WINDOW};
 use privastead_client_lib::http_client::HttpClient;
 use privastead_client_lib::video_net_info::VideoNetInfo;
+use std::fs;
 use std::fs::File;
 use std::io;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write, Read};
+use regex::Regex;
+use crate::traits::Camera;
 
 fn append_to_file(mut file: &File, msg: Vec<u8>) {
     let msg_len: u32 = msg.len().try_into().unwrap();
@@ -34,7 +38,7 @@ pub fn upload_pending_enc_thumbnails(
     group_name: &str,
     delivery_monitor: &mut DeliveryMonitor,
     http_client: &HttpClient,
-) {
+) -> io::Result<()> {
     // Send pending thumbnails
     let send_list_thumbnails: Vec<ThumbnailInfo> = delivery_monitor.thumbnails_to_send();
     for enc_thumbnail in &send_list_thumbnails {
@@ -46,23 +50,26 @@ pub fn upload_pending_enc_thumbnails(
                     enc_thumbnail.epoch
                 );
                 delivery_monitor.dequeue_thumbnail(enc_thumbnail);
+                return Ok(());
             }
             Err(e) => {
                 info!(
                     "Could not upload thumbnail (epoch #{}) ({}). Will try again later.",
                     enc_thumbnail.epoch, e
                 );
-                break;
+                return Err(e);
             }
         }
     }
+
+    Ok(())
 }
 
 pub fn upload_pending_enc_videos(
     group_name: &str,
     delivery_monitor: &mut DeliveryMonitor,
     http_client: &HttpClient,
-) {
+) -> io::Result<()> {
     // Send pending videos
     let send_list_videos = delivery_monitor.videos_to_send();
     // The send list is sorted. We must send the videos in order.
@@ -75,16 +82,19 @@ pub fn upload_pending_enc_videos(
                     video_info.timestamp
                 );
                 delivery_monitor.dequeue_video(video_info);
+                return Ok(());
             }
             Err(e) => {
                 info!(
                     "Could not upload video {} ({}). Will try again later.",
                     video_info.timestamp, e
                 );
-                break;
+                return Err(e);
             }
         }
     }
+
+    Ok(())
 }
 
 pub fn prepare_motion_thumbnail(
@@ -92,6 +102,12 @@ pub fn prepare_motion_thumbnail(
     mut thumbnail_info: ThumbnailInfo,
     delivery_monitor: &mut DeliveryMonitor,
 ) -> io::Result<()> {
+    if mls_client.offline_period() > MAX_OFFLINE_WINDOW {
+        info!("App has been offline for too long. Won't send any more videos until there is a heartbeat.");
+        // FIXME: not enforcing this yet.
+        //return Ok(());
+    }
+
     debug!("Starting to send timestamp.");
 
     // Update MLS epoch
@@ -152,6 +168,13 @@ pub fn prepare_motion_video(
     mut video_info: VideoInfo,
     delivery_monitor: &mut DeliveryMonitor,
 ) -> io::Result<()> {
+    if mls_client.offline_period() > MAX_OFFLINE_WINDOW {
+        info!("App has been offline for too long. Won't send any more videos until there is a heartbeat.");
+        // We return Ok(()) since we want the core() in main.rs to continue;
+        // FIXME: not enforcing this yet.
+        //return Ok(());
+    }
+
     let video_file_path = delivery_monitor.get_video_file_path(&video_info);
 
     debug!("Starting to send video.");
@@ -224,6 +247,129 @@ pub fn prepare_motion_video(
         video_info.timestamp
     );
     delivery_monitor.enqueue_video(video_info);
+
+    Ok(())
+}
+
+pub fn send_pending_motion_videos(
+    camera: &mut dyn Camera,
+    clients: &mut MlsClients,
+    delivery_monitor: &mut DeliveryMonitor,
+    http_client: &HttpClient,
+) -> io::Result<()> {
+    if clients[MOTION].offline_period() > MAX_OFFLINE_WINDOW {
+        info!("App has been offline for too long. Won't send any more videos until there is a heartbeat.");
+        // FIXME: not enforcing this yet.
+        //return Ok(());
+    }
+
+    let mut pending_timestamps = Vec::new();
+    let video_dir = camera.get_video_dir();
+
+    let re = Regex::new(r"^video_(\d+)\.mp4$").unwrap();
+
+    for entry in fs::read_dir(video_dir)? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+
+        if let Some(caps) = re.captures(&file_name) {
+            if let Some(matched) = caps.get(1) {
+                if let Ok(ts) = matched.as_str().parse::<u64>() {
+                    pending_timestamps.push(ts);
+                }
+            }
+        }
+    }
+
+    let delivery_monitor_pending_timestamps = delivery_monitor.get_all_pending_video_timestamps();
+
+    for timestamp in &pending_timestamps {
+        // Check to make sure the video is not already tracked by the delivery monitor
+        if delivery_monitor_pending_timestamps.contains(timestamp) {
+            continue;
+        }
+
+        println!("Recovered pending video {:?}", *timestamp);
+        let video_info = VideoInfo::from(*timestamp);
+        prepare_motion_video(&mut clients[MOTION], video_info, delivery_monitor)?;
+
+        let _ = upload_pending_enc_videos(
+            &clients[MOTION].get_group_name().unwrap(),
+            delivery_monitor,
+            http_client,
+        );
+    }
+
+    if pending_timestamps.len() > 0 {
+        //Timestamp of 0 tells the app it's time to start downloading.
+        let dummy_timestamp: u64 = 0;
+        let notification_msg = clients[FCM].encrypt(
+            &bincode::serialize(&dummy_timestamp).unwrap())?;
+        clients[FCM].save_group_state();
+        http_client.send_fcm_notification(notification_msg)?;
+    }
+
+    Ok(())
+}
+
+pub fn send_pending_thumbnails(
+    camera: &mut dyn Camera,
+    clients: &mut MlsClients,
+    delivery_monitor: &mut DeliveryMonitor,
+    http_client: &HttpClient,
+) -> io::Result<()> {
+    if clients[THUMBNAIL].offline_period() > MAX_OFFLINE_WINDOW {
+        info!("App has been offline for too long. Won't send any more videos until there is a heartbeat.");
+        // FIXME: not enforcing this yet.
+        //return Ok(());
+    }
+
+    let mut pending_timestamps = Vec::new();
+    let video_dir = camera.get_thumbnail_dir();
+
+    let re = Regex::new(r"^thumbnail_(\d+)\.png$").unwrap();
+
+    for entry in fs::read_dir(video_dir)? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+
+        if let Some(caps) = re.captures(&file_name) {
+            if let Some(matched) = caps.get(1) {
+                if let Ok(ts) = matched.as_str().parse::<u64>() {
+                    pending_timestamps.push(ts);
+                }
+            }
+        }
+    }
+
+    let delivery_monitor_pending_timestamps = delivery_monitor.get_all_pending_thumbnail_timestamps();
+
+    for timestamp in &pending_timestamps {
+        // Check to make sure the thumbnail is not already tracked by the delivery monitor
+        if delivery_monitor_pending_timestamps.contains(timestamp) {
+            continue;
+        }
+
+        println!("Recovered pending thumbnail {:?}", *timestamp);
+        prepare_motion_thumbnail(&mut clients[THUMBNAIL], ThumbnailInfo::new(timestamp.clone(), 0), delivery_monitor)?;
+
+        let _ = upload_pending_enc_thumbnails(
+            &clients[THUMBNAIL].get_group_name().unwrap(),
+            delivery_monitor,
+            http_client,
+        );
+    }
+
+    if pending_timestamps.len() > 0 {
+        //Timestamp of 0 tells the app it's time to start downloading.
+        let dummy_timestamp: u64 = 0;
+        let notification_msg = clients[FCM].encrypt(
+            &bincode::serialize(&dummy_timestamp).unwrap())?;
+        clients[FCM].save_group_state();
+        http_client.send_fcm_notification(notification_msg)?;
+    }
 
     Ok(())
 }

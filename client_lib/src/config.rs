@@ -18,7 +18,7 @@
 use std::io;
 use log::{info, error};
 use serde::{Deserialize, Serialize};
-use crate::mls_clients::{MlsClients, NUM_MLS_CLIENTS, MLS_CLIENT_TAGS};
+use crate::mls_clients::{MlsClients, NUM_MLS_CLIENTS, MLS_CLIENT_TAGS, MOTION, THUMBNAIL};
 
 /// opcodes
 pub const OPCODE_HEARTBEAT_REQUEST: u8 = 0;
@@ -36,6 +36,57 @@ pub struct HeartbeatRequest {
     pub timestamp: u64,
     pub motion_epoch: u64,
     pub thumbnail_epoch: u64,
+    pub update_proposals: Vec<Vec<u8>>, //for motion, livestream, and thumbnail clients
+}
+
+impl HeartbeatRequest {
+    pub fn generate(
+        mls_clients: &mut MlsClients,
+        timestamp: u64,
+    ) -> io::Result<Self> {
+        let motion_epoch = mls_clients[MOTION]
+            .get_epoch()?;
+
+        let thumbnail_epoch = mls_clients[THUMBNAIL]
+            .get_epoch()?;
+
+        let mut update_proposals: Vec<Vec<u8>> = vec![];
+        for i in 0..NUM_MLS_CLIENTS {
+            if MLS_CLIENT_TAGS[i] == "motion" ||
+                MLS_CLIENT_TAGS[i] == "livestream" ||
+                MLS_CLIENT_TAGS[i] == "thumbnail" {
+                let update_proposal = mls_clients[i]
+                    .update_proposal()?;
+                mls_clients[i].save_group_state();
+                update_proposals.push(update_proposal);
+            }
+        }
+
+        Ok(Self {
+            timestamp,
+            motion_epoch,
+            thumbnail_epoch,
+            update_proposals,
+        })
+    }
+
+    pub fn process_update_proposals(
+        &mut self,
+        mls_clients: &mut MlsClients,
+    ) -> io::Result<()> {
+        let mut proposals_i = 0;
+        for i in 0..NUM_MLS_CLIENTS {
+            if MLS_CLIENT_TAGS[i] == "motion" ||
+                MLS_CLIENT_TAGS[i] == "livestream" ||
+                MLS_CLIENT_TAGS[i] == "thumbnail" {
+                let _ = mls_clients[i].decrypt(self.update_proposals[proposals_i].clone(), false)?;
+                mls_clients[i].save_group_state();
+                proposals_i += 1;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -64,7 +115,9 @@ impl Heartbeat {
                 ciphertexts.push(ciphertext);
             }
 
-            if MLS_CLIENT_TAGS[i] == "motion" || MLS_CLIENT_TAGS[i] == "livestream" || MLS_CLIENT_TAGS[i] == "thumbnail" {
+            if MLS_CLIENT_TAGS[i] == "motion" ||
+                MLS_CLIENT_TAGS[i] == "livestream" ||
+                MLS_CLIENT_TAGS[i] == "thumbnail" {
                 let epoch = mls_clients[i].get_epoch()?;
                 epochs.push(epoch);
             }
@@ -93,7 +146,9 @@ impl Heartbeat {
         let mut epoch_i = 0;
         for i in 0..NUM_MLS_CLIENTS {
             if MLS_CLIENT_TAGS[i] != "config" {
-                if MLS_CLIENT_TAGS[i] == "motion" || MLS_CLIENT_TAGS[i] == "livestream" || MLS_CLIENT_TAGS[i] == "thumbnail" {
+                if MLS_CLIENT_TAGS[i] == "motion" ||
+                    MLS_CLIENT_TAGS[i] == "livestream" ||
+                    MLS_CLIENT_TAGS[i] == "thumbnail" {
                     let epoch = match mls_clients[i].get_epoch() {
                         Ok(e) => e,
                         Err(e) => {

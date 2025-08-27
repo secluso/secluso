@@ -6,6 +6,7 @@ use crate::logic::telemetry::TelemetryPacket;
 use crate::ml::models::ModelKind;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use log::debug;
 
 /// Represents actions or commands that can be issued within the pipeline to modify behavior, log transitions, or trigger processing stages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,7 +186,7 @@ impl IntentBus {
             }
 
             Intent::ConcludePipeline => {
-                println!("Updating last detection to now!");
+                debug!("Updating last detection to now!");
                 host_data.ctx.last_detection = Some(Instant::now());
                 host_data.ctx.last_detection_frame = host_data.frame_buffer.active.take();
             }

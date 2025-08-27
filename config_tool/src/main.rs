@@ -95,7 +95,6 @@ fn generate_user_credentials(dir: String, mut server_addr: String) {
     if server_addr.ends_with('/') {
         server_addr.pop();
     }
-    println!("{server_addr}");
 
     let (credentials, credentials_full) =
         create_user_credentials(server_addr);
@@ -106,11 +105,16 @@ fn generate_user_credentials(dir: String, mut server_addr: String) {
     let _ = file.write_all(&credentials);
 
     // Save the credentials_full (which includes the server addr) as QR code to be shown to the app
-    let code = QrCode::new(credentials_full).unwrap();
+    let code = QrCode::new(&credentials_full).unwrap();
     let image = code.render::<Luma<u8>>().build();
     image
         .save(dir.clone() + "/user_credentials_qrcode.png")
         .unwrap();
+
+    // Save the credentials_full in a file to be used for testing with the example app
+    let mut file =
+        fs::File::create(dir.clone() + "/user_credentials_for_testing").expect("Could not create file");
+    let _ = file.write_all(&credentials_full);
 
     println!("Generated!")
 }

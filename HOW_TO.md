@@ -276,6 +276,9 @@ The Privastead hub will now run and ask you for the username and password for ea
 After providing them, it will create a QR code containing a secret needed for pairing (camera_hub/camera_name_secret_qrcode.png).
 Each camera then waits to be paired with the app.
 
+The camera hub is designed so that it can be resumed if it stops either intentionally or due to an error/panic.
+Therefore, it is recommended to either use a service to run it (see the instructions for configuring a service for the server) or use a script to run it again when it terminates.
+
 ## Step 6: Building and installing the app
 
 

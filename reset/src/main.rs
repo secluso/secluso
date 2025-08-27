@@ -25,28 +25,31 @@ use std::{
 use std::sync::atomic::{AtomicBool, Ordering};
 
 fn run_command_to_completion(command: &str) {
-    let mut child = Command::new("sh")
+    let output = Command::new("sh")
         .arg("-c")
+        .current_dir("/home/privastead/privastead/camera_hub")
         .arg(command)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn().unwrap();
+        .output()
+        .expect("failed to execute process");
 
-    let status = child.wait().unwrap();
+    println!("Status: {}", output.status);
 
-    if status.success() {
-        println!("Command ({:?}) executed successfully", command);
-    } else {
-        println!("Command ({:?} exited with status: {:?}", command, status.code());
-    }
+    println!(
+        "Stdout:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    println!(
+        "Stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn reset_action() {
     // First, stop the privastead service
     run_command_to_completion("sudo systemctl stop privastead.service");
     // Second, reset privastead camera hub
-    run_command_to_completion("rm -r /home/privastead/privastead/camera_hub/state");
-    run_command_to_completion("rm -r /home/privastead/privastead/camera_hub/pending_videos");
+    run_command_to_completion("sudo LD_LIBRARY_PATH=/usr/local/lib/aarch64-linux-gnu/:${LD_LIBRARY_PATH:-} /home/privastead/privastead/camera_hub/target/release/privastead-camera-hub --reset-full");
     // Finally, start the privastead service
     run_command_to_completion("sudo systemctl start privastead.service");
 }

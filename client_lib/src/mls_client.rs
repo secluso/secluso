@@ -41,6 +41,8 @@ pub struct Contact {
     id: Vec<u8>,
     //FIXME: do we need to keep key_packages?
     key_packages: KeyPackages,
+    update_proposal: Option<QueuedProposal>,
+    last_update_timestamp: u64,
 }
 
 impl Contact {
@@ -174,8 +176,6 @@ impl MlsClient {
         self.identity
             .delete_signature_key(self.file_dir.clone(), self.tag.clone());
 
-        let _ = fs::remove_file(self.file_dir.clone() + "/registration_done");
-
         let g_files = Self::get_state_files_sorted(
             &self.file_dir,
             &("group_state_".to_string() + &self.tag.clone() + "_"),
@@ -216,7 +216,10 @@ impl MlsClient {
     }
 
     /// Create a group with the given name.
-    pub fn create_group(&mut self, name: &str) -> io::Result<()> {
+    pub fn create_group(
+        &mut self,
+        name: &str,
+    ) -> io::Result<()> {
         if self.group.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -334,7 +337,13 @@ impl MlsClient {
     }
 
     /// Join a group with the provided welcome message.
-    fn join_group(&mut self, welcome: Welcome, expected_inviter: Contact, secret: Vec<u8>, group_name: String) -> io::Result<()> {
+    fn join_group(
+        &mut self,
+        welcome: Welcome,
+        expected_inviter: Contact,
+        secret: Vec<u8>,
+        group_name: String,
+    ) -> io::Result<()> {
         if self.group.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -421,7 +430,13 @@ impl MlsClient {
     }
 
     /// Process a welcome message
-    pub fn process_welcome(&mut self, expected_inviter: Contact, welcome_msg_vec: Vec<u8>, secret: Vec<u8>, group_name: String) -> io::Result<()> {
+    pub fn process_welcome(
+        &mut self,
+        expected_inviter: Contact,
+        welcome_msg_vec: Vec<u8>,
+        secret: Vec<u8>,
+        group_name: String,
+    ) -> io::Result<()> {
         let welcome_msg = match MlsMessageIn::tls_deserialize(&mut welcome_msg_vec.as_slice()) {
             Ok(msg) => msg,
             Err(e) => {return Err(io::Error::new(io::ErrorKind::Other, format!("{}", e)))},
@@ -451,10 +466,7 @@ impl MlsClient {
     pub fn save_group_state(&mut self) {
         // Use nanos in order to ensure that each time this function is called, we will use a new file name.
         // This does make some assumptions about the execution speed, but those assumptions are reasonable (for now).
-        let current_timestamp: u128 = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Could not convert time")
-            .as_nanos();
+        let current_timestamp: u128 = Self::now_in_nano_secs();
 
         let group_helper_option = match &self.group {
             Some(group) => {
@@ -594,6 +606,8 @@ impl MlsClient {
             username: name.to_string(),
             key_packages,
             id: id.clone(),
+            update_proposal: None,
+            last_update_timestamp: Self::now_in_secs(),
         };
 
         Ok(contact)
@@ -615,7 +629,7 @@ impl MlsClient {
     }
 
     /// Generate a commit to update self leaf node in the ratchet tree, merge the commit, and return the message
-    /// to be sent to other group members.
+    /// to be sent to other group members. It also returns the epoch number after the update.
     pub fn update(&mut self) -> io::Result<(Vec<u8>, u64)> {
         if self.group.is_none() {
             return Err(io::Error::new(
@@ -629,6 +643,18 @@ impl MlsClient {
         // Set AAD
         let group_aad = group.group_name.clone() + " AAD";
         group.mls_group.set_aad(group_aad.as_bytes().to_vec());
+
+        if let Some(proposal) = group.only_contact.as_mut().unwrap().update_proposal.take() {
+            group
+                .mls_group
+                .store_pending_proposal(self.provider.storage(), proposal)
+                .map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("FError: could not store proposal - {e}"),
+                    )
+                })?;
+        }
 
         // FIXME: _welcome should be none, group_info should be some.
         // See openmls/src/group/mls_group/updates.rs.
@@ -670,6 +696,44 @@ impl MlsClient {
         Ok((msg_vec, epoch))
     }
 
+    /// Generate an update proposal for the self leaf node in the ratchet tree and return the proposal message
+    /// to be sent to other group members.
+    pub fn update_proposal(&mut self) -> io::Result<Vec<u8>> {
+        if self.group.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Group not created yet".to_string(),
+            ))
+        }
+
+        let group = self.group.as_mut().unwrap();
+
+        // Set AAD
+        let group_aad = group.group_name.clone() + " AAD";
+        group.mls_group.set_aad(group_aad.as_bytes().to_vec());
+        
+        let (proposal_msg, _) = group
+            .mls_group
+            .propose_self_update(
+                &self.provider,
+                &self.identity.signer,
+                LeafNodeParameters::default(),
+            )
+            .map_err(|e| {
+                io::Error::new(io::ErrorKind::Other, format!("Failed to generate self update proposal message - {e}"))
+            })?;
+
+        let mut msg_vec = Vec::new();
+        proposal_msg.tls_serialize(&mut msg_vec).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("tls_serialize for proposal_msg failed ({e})"),
+            )
+        })?;
+
+        Ok(msg_vec)
+    }
+
     /// Get the current group epoch
     pub fn get_epoch(&self) -> io::Result<u64> {
         if self.group.is_none() {
@@ -687,6 +751,21 @@ impl MlsClient {
             .as_u64();
 
         Ok(epoch)
+    }
+
+    /// Returns how long the only contact has been offline
+    /// It is recommended that this is checked before encrypting a message
+    /// for groups used to send important data.
+    /// If the only contact has been offline for more than a threshold,
+    /// no new messages should be encrypted/sent.
+    pub fn offline_period(&self) -> u64 {
+        let now = Self::now_in_secs();
+        let only_contact = self.group.as_ref().unwrap().only_contact.as_ref().unwrap();
+        if now < only_contact.last_update_timestamp {
+            return 0;
+        }
+
+        now - only_contact.last_update_timestamp
     }
 
     /// Encrypts a message and returns the ciphertext
@@ -735,6 +814,20 @@ impl MlsClient {
         }
         let group = self.group.as_mut().unwrap();
         let mls_group = &mut group.mls_group;
+
+        // Message validation performed within process_message below checks for this as well.
+        // Then why do we explicitly check it here?
+        // We might have a scenario where we might receive an outdated proposal.
+        // We simply want to ignore that case.
+        // If we pass it to process_message(), it prints an error message, which is not great.
+        // Instead, we return an error here and leave it to the caller to decide if the error
+        // needs to be printed or not.
+        if mls_group.epoch() != message.epoch() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Error: message epoch ({}) must match the group epoch ({})", message.epoch(), mls_group.epoch()),
+            ))
+        }
 
         // This works since none of the other members of the group, other than the camera,
         // will be in our contact list (hence "only_matching_contact").
@@ -787,13 +880,25 @@ impl MlsClient {
 
                 return Ok(application_message);
             }
-            ProcessedMessageContent::ProposalMessage(_proposal_ptr) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Error: Unexpected proposal message!".to_string(),
-                ));
+            ProcessedMessageContent::ProposalMessage(proposal) => {
+                if app_msg {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        "Error: expected an application message, but received a proposal message.",
+                    ));
+                }
+
+                let only_contact = group.only_contact.as_mut().unwrap();
+
+                if only_contact.update_proposal.is_none() {
+                    only_contact.update_proposal = Some(*proposal);
+                }
+
+                only_contact.last_update_timestamp = Self::now_in_secs();
+
+                return Ok(vec![]);
             }
-            ProcessedMessageContent::ExternalJoinProposalMessage(_external_proposal_ptr) => {
+            ProcessedMessageContent::ExternalJoinProposalMessage(_external_proposal) => {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
                     "Error: Unexpected external join proposal message!".to_string(),
@@ -807,21 +912,30 @@ impl MlsClient {
                     ));
                 }
 
-                // Restrict the type of staged commits that we'll merge: no proposals!
+                // Restrict the type of staged commits that we'll merge: only one update/queued proposal!
                 if !staged_commit.add_proposals().next().is_none() ||
                 !staged_commit.remove_proposals().next().is_none() ||
-                !staged_commit.update_proposals().next().is_none() ||
+                !(staged_commit.update_proposals().next().is_none() ||
+                    staged_commit.update_proposals().collect::<Vec<_>>().len() == 1) ||                   
                 !staged_commit.psk_proposals().next().is_none() ||
-                !staged_commit.queued_proposals().next().is_none() {
+                !(staged_commit.queued_proposals().next().is_none() ||
+                    staged_commit.queued_proposals().collect::<Vec<_>>().len() == 1) {
                     return Err(io::Error::new(
                         io::ErrorKind::Other,
-                        "Error: staged commit message must not contain any proposals.",
+                        "Error: staged commit message must contain at most one update/queued proposal and no other proposals.",
                     ));
                 }
 
                 mls_group
                     .merge_staged_commit(&self.provider, *staged_commit)
                     .expect("error merging staged commit");
+
+                // TODO: we can only do this here since we know there's only one path for
+                // us to receive a staged commit and in that the only_contact has performed
+                // a self update. However, ideally, we should check the staged commit itself
+                // to see which other leaf nodes/contacts have been updated.
+                group.only_contact.as_mut().unwrap().last_update_timestamp = Self::now_in_secs();
+
                 return Ok(vec![]);
             }
         }
@@ -870,5 +984,19 @@ impl MlsClient {
                 ));
             }
         }
+    }
+
+    fn now_in_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Could not convert time")
+            .as_secs()
+    }
+
+    fn now_in_nano_secs() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Could not convert time")
+            .as_nanos()
     }
 }

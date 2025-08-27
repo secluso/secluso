@@ -18,6 +18,7 @@
 use crate::delivery_monitor::DeliveryMonitor;
 use crate::Camera;
 use privastead_client_lib::mls_client::MlsClient;
+use privastead_client_lib::mls_clients::MAX_OFFLINE_WINDOW;
 use privastead_client_lib::http_client::HttpClient;
 use std::io;
 use std::pin::Pin;
@@ -78,6 +79,13 @@ pub fn livestream(
     delivery_monitor: &mut DeliveryMonitor,
     http_client: &HttpClient,
 ) -> io::Result<()> {
+    if mls_client.offline_period() > MAX_OFFLINE_WINDOW {
+        info!("App has been offline for too long. Won't send any more videos until there is a heartbeat.");
+        // We return Ok(()) since we want the core() in main.rs to continue;
+        // FIXME: not enforcing this yet.
+        //return Ok(());
+    }
+
     // Update MLS epoch
     let (commit_msg, _epoch) = mls_client.update()?;
     mls_client.save_group_state();

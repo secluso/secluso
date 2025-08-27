@@ -27,7 +27,7 @@ It then provides the following guarantees:
 ## End-to_End Encryption
 
 Privastead uses end-to-end encryption between the camera and the app.
-That is, the camera always encrypts the videos (either event-triggered videos or livestream videos) using keys only available to the camera and the app.
+That is, the camera always encrypts the videos (either event-triggered videos and their thumbnails or livestream videos) using keys only available to the camera and the app.
 It then sends the videos to the apps, which can decrypt them.
 The videos are sent to the app via a server.
 The server is fully untrusted.
@@ -66,18 +66,18 @@ This is where the latter guarantee, i.e., post-compromise security, comes into p
 Every once in a while, fresh group secrets are shared between the group members.
 At this point, we say that a new epoch has started.
 Assuming the attacker cannot receive the new secrets, it will not be able to decrypt messages in the new epoch.
-To make sure this assumption is correct, group members need to update their ``encryption keys'', i.e., public/private key pairs used for sharing new secrets.
-This is also called ``self-update'' in the MLS teminology.
+To make sure this assumption is correct, group members need to update their *encryption keys*, i.e., public/private key pairs used for sharing new secrets.
+This is also called *self-update* in the MLS teminology.
 
 An MLS group always starts in epoch 1 and advances to new epochs by exchanging fresh secrets.
 MLS does not automatically advance the epoch and leaves it to the program to decide when to do that.
-Privastead uses a new epoch for every new event-based video and for every livestream session.
+Privastead uses a new epoch for every new event-based video, every livestream session, and every video thumbnail.
 The epoch is advanced by the camera and the camera always performs a self-update for the new epoch.
 
 More specifically, to advance an epoch, the camera issues an MLS self-update process, which generates an MLS commit message.
 It then merges the commit, which means that it advances the epoch.
 It also sends the commit messages to the app.
-For event-based videos, the commit message is included in the beginning of the encrypted video file.
+For event-based videos and thumbnails, the commit message is included in the beginning of the encrypted file.
 For livestreams, it is sent as livestream chunk 0, before data chunks are transmitted.
 
 The app on the other hand does not perform self-updates directly and as frequently (since doing those will complicate the protocol design).
@@ -111,12 +111,12 @@ We will then relax this assumption at the end of this analysis.
 
 First, consider the case where the attacker compromises the camera.
 The attacker could achieve this, for example, by physically accessing the camera, removing the micro SD card, and copying all the relevant files.
-This attacker will only be able to decrypt one video (one motion video and one livestream session).
+This attacker will only be able to decrypt one video (one motion video and one livestream session) and one thumbnail.
 It cannot decrypt any videos from before or after.
 
 Second, consider the case where the attacker compromises the app.
 This attacker cannot decrypt any of the video from the past.
-It can however decrypt motion and livestream videos from the point of compromise until when the app sends a heartbeat message to the camera.
+It can however decrypt motion and livestream videos and thumbnails from the point of compromise until when the app sends a heartbeat message to the camera.
 Note that we assume that attacker is not capable of blocking heartbeats.
 If heartbeats are blocked, the user will receive notifications saying that the camera seems to be offline.
 In such a case, the user needs to look into the issue immediately.

@@ -16,8 +16,10 @@ use privastead_client_lib::pairing;
 use privastead_client_lib::mls_client::{Contact, KeyPackages, MlsClient};
 use privastead_client_lib::mls_clients::MlsClients;
 use privastead_client_lib::video_net_info::{VideoNetInfo, VIDEONETINFO_SANITY};
-use privastead_client_lib::mls_clients::{NUM_MLS_CLIENTS, MLS_CLIENT_TAGS, MOTION, LIVESTREAM, FCM, CONFIG, THUMBNAIL};
-use privastead_client_lib::config::{HeartbeatResult, Heartbeat, HeartbeatRequest, OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE};
+use privastead_client_lib::mls_clients::{NUM_MLS_CLIENTS, MLS_CLIENT_TAGS,
+    MOTION, LIVESTREAM, FCM, CONFIG, THUMBNAIL};
+use privastead_client_lib::config::{HeartbeatResult, Heartbeat, HeartbeatRequest,
+    OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE};
 use serde_json::json;
 
 // Used to generate random names.
@@ -202,7 +204,9 @@ fn pair_with_camera(
     mls_clients: &mut MlsClients,
     secret: Vec<u8>,
 ) -> anyhow::Result<()> {
-    for mut mls_client in mls_clients {
+    for index in 0..mls_clients.len() {
+        let mut mls_client = &mut mls_clients[index];
+
         let app_key_packages = mls_client.key_packages();
 
         let camera_key_packages =
@@ -233,7 +237,12 @@ fn process_welcome_message(
     secret: Vec<u8>,
     group_name: String,
 ) -> io::Result<()> {
-    mls_client.process_welcome(contact, welcome_msg, secret, group_name)?;
+    mls_client.process_welcome(
+        contact,
+        welcome_msg,
+        secret,
+        group_name,
+    )?;
     mls_client.save_group_state();
 
     Ok(())
@@ -755,23 +764,7 @@ pub fn generate_heartbeat_request_config_command(
         ));
     }
 
-    let motion_epoch = clients
-        .as_mut()
-        .unwrap()
-        .mls_clients[MOTION]
-        .get_epoch()?;
-
-    let thumbnail_epoch = clients
-        .as_mut()
-        .unwrap()
-        .mls_clients[THUMBNAIL]
-        .get_epoch()?;
-
-    let heartbeat_request = HeartbeatRequest {
-        timestamp,
-        motion_epoch,
-        thumbnail_epoch,
-    };
+    let heartbeat_request = HeartbeatRequest::generate(&mut clients.as_mut().unwrap().mls_clients, timestamp)?;
 
     let mut config_msg = vec![OPCODE_HEARTBEAT_REQUEST];
     config_msg

@@ -150,6 +150,7 @@ impl IpCamera {
 
         fs::create_dir_all(state_dir.clone()).unwrap();
         fs::create_dir_all(video_dir.clone()).unwrap();
+        fs::create_dir_all(thumbnail_dir.clone()).unwrap();
 
         let motion_detection = MotionDetection::new(ip, username, password, motion_fps).unwrap();
 

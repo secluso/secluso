@@ -21,7 +21,7 @@ use privastead_app_native::{
     generate_heartbeat_request_config_command, process_heartbeat_config_response,
 };
 use privastead_client_lib::http_client::HttpClient;
-use privastead_client_server_lib::auth::parse_user_credentials;
+use privastead_client_server_lib::auth::parse_user_credentials_full;
 use std::fs;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
@@ -40,7 +40,6 @@ use std::env;
 // To run:
 // $ cargo run --release --example app --features for-example
 
-const SERVER_ADDR: &str = "127.0.0.1:8080";
 const CAMERA_ADDR: &str = "127.0.0.1";
 const CAMERA_NAME: &str = "Camera";
 const DATA_DIR: &str = "example_app_data";
@@ -70,9 +69,9 @@ fn main() -> io::Result<()> {
     let file = File::open("user_credentials").expect("Cannot open file to send");
     let mut reader =
         BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
-    let user_credentials = reader.fill_buf().unwrap();
-    let (server_username, server_password) =
-        parse_user_credentials(user_credentials.to_vec()).unwrap();
+    let credentials_full = reader.fill_buf().unwrap();
+    let (server_username, server_password, server_addr) =
+        parse_user_credentials_full(credentials_full.to_vec()).unwrap();
 
     let file2 = File::open("camera_secret").expect("Cannot open file to send");
     let mut reader2 =
@@ -85,7 +84,7 @@ fn main() -> io::Result<()> {
     let first_time: bool = !first_time_path.exists();
 
     let clients: Arc<Mutex<Option<Box<Clients>>>> = Arc::new(Mutex::new(None));
-    let http_client = HttpClient::new(SERVER_ADDR.to_string(), server_username, server_password);
+    let http_client = HttpClient::new(server_addr, server_username, server_password);
 
     if first_time {
         if reset {
@@ -94,7 +93,9 @@ fn main() -> io::Result<()> {
 
         initialize(&mut clients.lock().unwrap(), DATA_DIR.to_string(), true)?;
 
-        if !add_camera(
+        let credentials_full_string = String::from_utf8(credentials_full.to_vec()).unwrap();
+
+        let add_camera_result = add_camera(
             &mut clients.lock().unwrap(),
             CAMERA_NAME.to_string(),
             CAMERA_ADDR.to_string(),
@@ -103,7 +104,10 @@ fn main() -> io::Result<()> {
             "".to_string(),
             "".to_string(),
             "".to_string(),
-        ) {
+            credentials_full_string,
+        );
+
+        if add_camera_result == "Error".to_string() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 format!("Error: Failed to add camera."),
@@ -193,7 +197,11 @@ fn heartbeat_loop(
         http_client.config_command(&config_group_name, config_msg_enc)?;
 
         let mut config_response_opt: Option<Vec<u8>> = None;
-        for _i in 0..5 {
+        for _i in 0..30 {
+            println!("Attempt {_i}");
+            thread::sleep(Duration::from_secs(2));
+            // We want to fetch all pending videos before checking for the heartbeat response.
+            fetch_all_motion_videos(Arc::clone(&clients), http_client);
             match http_client.fetch_config_response(&config_group_name) {
                 Ok(resp) => {
                     config_response_opt = Some(resp);
@@ -201,24 +209,26 @@ fn heartbeat_loop(
                 },
                 Err(_) => {},
             }
-            thread::sleep(Duration::from_secs(1));
         }
-
-        // FIXME: if we received a motion video or started livestreaming in between sending and receiving heartbeat
-        // throw away the results
 
         if config_response_opt.is_none() {
             println!("Error: couldn't fetch the heartbeat response. Camera might be offline.");
             thread::sleep(Duration::from_secs(20));
             continue;
         }
-        
+
         let config_response = config_response_opt.unwrap();
 
         match process_heartbeat_config_response(&mut clients.lock().unwrap(), config_response.clone(), timestamp) {
-            Ok(response) if response == "healthy".to_string() => {
+            Ok(response) if response.contains("healthy") => {
                 println!("Healthy heartbeat");
                 ignored_heartbeats = 0;
+
+                if let Some((_, firmware_version)) = response.split_once('_') {
+                    println!("firmware_version = {firmware_version}");
+                } else {
+                    println!("Error: unknown firmware version");
+                }
             },
             Ok(response) if response == "invalid ciphertext".to_string() => {
                 println!("The connection to the camera is corrupted. Pair the app with the camera again.");
@@ -245,13 +255,24 @@ fn heartbeat_loop(
     }
 }
 
-fn motion_loop(
+fn fetch_all_motion_videos(
     clients: Arc<Mutex<Option<Box<Clients>>>>,
     http_client: &HttpClient,
-    one_video_only: bool,
+) {
+    loop {
+        if let Err(_) = fetch_motion_video(Arc::clone(&clients), http_client) {
+            return;
+        }
+    }
+}
+
+fn fetch_motion_video(
+    clients: Arc<Mutex<Option<Box<Clients>>>>,
+    http_client: &HttpClient,
 ) -> io::Result<()> {
+    let mut clients_locked = clients.lock().unwrap();
     let epoch_file_path = Path::new(DATA_DIR).join("motion_epoch");
-    
+
     let mut epoch: u64 = if epoch_file_path.exists() {
         let file = File::open(&epoch_file_path).expect("Cannot open motion_epoch file");
         let mut reader =
@@ -263,41 +284,41 @@ fn motion_loop(
         2
     };
     
-    let group_name = get_group_name(&mut clients.lock().unwrap(), "motion")?;
+    let group_name = get_group_name(&mut clients_locked, "motion")?;
+    
+    let enc_filename = format!("{}", epoch);
+    let enc_filepath = Path::new(DATA_DIR).join(&enc_filename);
+    match http_client.fetch_enc_video(&group_name, &enc_filepath) {
+        Ok(_) => {
+            let dec_filename = decrypt_video(&mut clients_locked, enc_filename).unwrap();
+            println!("Received and decrypted file: {}", dec_filename);
+            let _ = fs::remove_file(enc_filepath);
+            epoch += 1;
+
+            let epoch_data = bincode::serialize(&epoch).unwrap();
+            let mut file = fs::File::create(&epoch_file_path).expect("Could not create motion_epoch file");
+            file.write_all(&epoch_data).unwrap();
+            file.flush().unwrap();
+            file.sync_all().unwrap();
+
+            return Ok(());
+        }
+
+        Err(e) => {
+            return Err(e);
+        }
+    }
+}
+
+fn motion_loop(
+    clients: Arc<Mutex<Option<Box<Clients>>>>,
+    http_client: &HttpClient,
+    one_video_only: bool,
+) -> io::Result<()> {
     let mut iter = 0;
     loop {
-        let enc_filename = format!("{}", epoch);
-        let enc_filepath = Path::new(DATA_DIR).join(&enc_filename);
-        match http_client.fetch_enc_video(&group_name, &enc_filepath) {
+        match fetch_motion_video(Arc::clone(&clients), http_client) {
             Ok(_) => {
-                let dec_filename = decrypt_video(&mut clients.lock().unwrap(), enc_filename).unwrap();
-                println!("Received and decrypted file: {}", dec_filename);
-                let _ = fs::remove_file(enc_filepath);
-                epoch += 1;
-
-                let epoch_data = bincode::serialize(&epoch).unwrap();
-                let mut file = fs::File::create(&epoch_file_path).expect("Could not create motion_epoch file");
-                file.write_all(&epoch_data).unwrap();
-                file.flush().unwrap();
-                file.sync_all().unwrap();
-
-                // We first try to get the timestamp from the video filename (format: video_<timestamp>.mp4).
-                // This should always work.
-                // If it doesn't, we just get the system timestamp.
-                let video_timestamp = dec_filename
-                    .split('_')
-                    .nth(1)
-                    .and_then(|part| {
-                        part.split('.')
-                            .next()
-                            .and_then(|num_str| num_str.parse::<u64>().ok())
-                    })
-                    .unwrap_or(SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Could not convert time")
-                        .as_secs()
-                    );
-
                 if one_video_only {
                     return Ok(());
                 }
