@@ -146,7 +146,7 @@ impl std::fmt::Display for ModelKind {
 }
 
 /// Semantic label categories for detected objects in a frame.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Eq, Hash, Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub enum DetectionType {
     Human,
     Car,

@@ -17,6 +17,7 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use image::{imageops, GenericImageView, GrayImage, ImageReader};
+use crate::motion::MotionResult;
 use linfa::dataset::Labels;
 use linfa::prelude::Transformer;
 use linfa::Dataset;
@@ -290,7 +291,7 @@ impl MotionDetection {
         Ok(Some(line_str))
     }
 
-    pub fn handle_motion_event(&mut self) -> anyhow::Result<(bool, Option<image::RgbImage>), anyhow::Error>  {
+    pub fn handle_motion_event(&mut self) -> anyhow::Result<MotionResult, anyhow::Error> {
         let binding = self.latest_frame.lock().unwrap();
         if let Some(latest_frame) = binding.as_ref() {
             let latest_video_time = latest_frame.timestamp;
@@ -299,14 +300,14 @@ impl MotionDetection {
             // Ensure that either no detection has occurred before, or that this isn't the same frame as last time.
             if self.last_detection.is_none()
                 || self
-                    .last_detection
-                    .map(|last_time| {
-                        latest_video_time
-                            .duration_since(last_time)
-                            .map(|d| d >= Duration::from_millis(1000.div(self.motion_fps)))
-                            .unwrap_or(false)
-                    })
-                    .unwrap_or(false)
+                .last_detection
+                .map(|last_time| {
+                    latest_video_time
+                        .duration_since(last_time)
+                        .map(|d| d >= Duration::from_millis(1000.div(self.motion_fps)))
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false)
             {
                 let decoded = ImageReader::new(io::Cursor::new(latest_video))
                     .with_guessed_format()
@@ -369,7 +370,11 @@ impl MotionDetection {
                         diff_result.save(format!("difference_global_{:?}.png", millis)).expect("Failed to save difference image!");
                         */
 
-                         return Ok((true, Some(decoded.to_rgb8())));
+                        return Ok(MotionResult {
+                            motion: true,
+                            thumbnail: Some(decoded.to_rgb8()),
+                            detections: vec![],
+                        });
                     } else if total_amt_of_points as f64
                         >= points_scale_factor * MINIMUM_TOTAL_CLUSTERED_POINTS as f64
                     {
@@ -391,9 +396,9 @@ impl MotionDetection {
                             (points_scale_factor * MINIMUM_INDIVIDUAL_CLUSTER_POINTS as f64)
                                 as usize,
                         )
-                        .tolerance(points_scale_factor * DBSCAN_TOLERANCE)
-                        .transform(dataset)
-                        .unwrap();
+                            .tolerance(points_scale_factor * DBSCAN_TOLERANCE)
+                            .transform(dataset)
+                            .unwrap();
                         let label_count = cluster_memberships.label_count().remove(0);
 
                         let mut total_count = 0;
@@ -421,13 +426,21 @@ impl MotionDetection {
                             */
 
 
-                            return Ok((true, Some(decoded.to_rgb8())));
+                            return Ok(MotionResult {
+                                motion: true,
+                                thumbnail: Some(decoded.to_rgb8()),
+                                detections: vec![],
+                            });
                         }
                     }
                 }
             }
         }
 
-        return Ok((false, None));
+        return Ok(MotionResult {
+            motion: false,
+            thumbnail: None,
+            detections: vec![],
+        });
     }
 }

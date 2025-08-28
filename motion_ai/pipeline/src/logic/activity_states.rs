@@ -100,7 +100,7 @@ impl StateHandler<ActivityState> for DetectingState {
                     TransitionDecision::Transition {
                         to: ActivityState::Cooldown,
                         reason: "Pipeline complete".into(),
-                        intents: vec![Intent::ConcludePipeline, Intent::StartTimer(Duration::from_millis(500))],
+                        intents: vec![Intent::StartTimer(Duration::from_millis(500))], //TODO: Add conclude intent
                     }
                 }
             }

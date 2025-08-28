@@ -27,9 +27,12 @@ use std::{
 use anyhow::{Context, Error};
 use bytes::{BufMut, BytesMut};
 use crossbeam_channel::unbounded;
+use image::RgbImage;
+use privastead_client_lib::thumbnail_meta_info::GeneralDetectionType;
 use privastead_motion_ai::pipeline;
 use tokio::runtime::Runtime;
 use privastead_motion_ai::logic::pipeline::PipelineController;
+use privastead_motion_ai::ml::models::DetectionType;
 use crate::raspberry_pi::rpi_dual_stream;
 use crate::traits::Mp4;
 use crate::{
@@ -40,6 +43,7 @@ use crate::{
     traits::{Camera, CodecParameters},
     write_box,
 };
+use crate::motion::MotionResult;
 
 // Frame dimensions
 const WIDTH: usize = 1296;
@@ -329,8 +333,37 @@ impl RaspberryPiCamera {
 
 impl Camera for RaspberryPiCamera {
     /// When Ok, there's motion
-    fn is_there_motion(&mut self) -> Result<(bool, Option<image::RgbImage>), Error> {
-            self.motion_detection.lock().unwrap().motion_recently()
+    fn is_there_motion(&mut self) -> Result<MotionResult, Error> {
+        if let Some(pipeline_result) = self.motion_detection.lock().unwrap().motion_recently()? {
+            if pipeline_result.motion {
+                let frame = pipeline_result.thumbnail;
+                let data = frame.rgb_data.unwrap().to_vec();
+                let img = RgbImage::from_raw(frame.width as u32, frame.height as u32, data).expect("Failed to convert RGB data into RgbImage");
+
+                // TODO: We have to manually map these until we connect the IP camera to motion_ai
+                let mut detections: Vec<GeneralDetectionType> = Vec::new();
+                for detection in pipeline_result.detections {
+                    if detection == DetectionType::Animal {
+                        detections.push(GeneralDetectionType::Pet);
+                    } else if detection == DetectionType::Human {
+                        detections.push(GeneralDetectionType::Human);
+                    } else if detection == DetectionType::Car {
+                        detections.push(GeneralDetectionType::Car);
+                    }
+                }
+
+                return Ok(MotionResult {
+                    motion: true,
+                    detections,
+                    thumbnail: Some(img as RgbImage),
+                });
+            }
+        }
+        return Ok(MotionResult {
+            motion: false,
+            thumbnail: None,
+            detections: vec![],
+        });
     }
 
     fn record_motion_video(&self, info: &VideoInfo, duration: u64) -> io::Result<()> {
@@ -389,7 +422,7 @@ impl Camera for RaspberryPiCamera {
         self.video_dir.clone()
     }
 
-    fn get_thumbnail_dir(&self) -> String {self.thumbnail_dir.clone() }
+    fn get_thumbnail_dir(&self) -> String { self.thumbnail_dir.clone() }
 }
 
 struct RpiCameraVideoParameters {

@@ -15,17 +15,26 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use crate::delivery_monitor::{DeliveryMonitor, ThumbnailInfo, VideoInfo};
+use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
 use privastead_client_lib::mls_client::MlsClient;
 use privastead_client_lib::mls_clients::{MlsClients, MOTION, FCM, THUMBNAIL, MAX_OFFLINE_WINDOW};
 use privastead_client_lib::http_client::HttpClient;
 use privastead_client_lib::video_net_info::VideoNetInfo;
+use privastead_client_lib::thumbnail_meta_info::{GeneralDetectionType, ThumbnailMetaInfo};
 use std::fs;
 use std::fs::File;
 use std::io;
 use std::io::{BufRead, BufReader, Write, Read};
+use image::RgbImage;
 use regex::Regex;
 use crate::traits::Camera;
+
+// Used to contain data returned from motion detection from IP + Raspberry cameras
+pub struct MotionResult {
+    pub motion: bool,
+    pub detections: Vec<GeneralDetectionType>,
+    pub thumbnail: Option<RgbImage>,
+}
 
 fn append_to_file(mut file: &File, msg: Vec<u8>) {
     let msg_len: u32 = msg.len().try_into().unwrap();
@@ -40,7 +49,7 @@ pub fn upload_pending_enc_thumbnails(
     http_client: &HttpClient,
 ) -> io::Result<()> {
     // Send pending thumbnails
-    let send_list_thumbnails: Vec<ThumbnailInfo> = delivery_monitor.thumbnails_to_send();
+    let send_list_thumbnails: Vec<ThumbnailMetaInfo> = delivery_monitor.thumbnails_to_send();
     for enc_thumbnail in &send_list_thumbnails {
         let enc_video_file_path = delivery_monitor.get_enc_thumbnail_file_path(enc_thumbnail);
         match http_client.upload_enc_file(group_name, &*enc_video_file_path) {
@@ -99,7 +108,7 @@ pub fn upload_pending_enc_videos(
 
 pub fn prepare_motion_thumbnail(
     mls_client: &mut MlsClient,
-    mut thumbnail_info: ThumbnailInfo,
+    mut thumbnail_info: ThumbnailMetaInfo,
     delivery_monitor: &mut DeliveryMonitor,
 ) -> io::Result<()> {
     if mls_client.offline_period() > MAX_OFFLINE_WINDOW {
@@ -124,7 +133,7 @@ pub fn prepare_motion_thumbnail(
 
     // We need to store the timestamp to match against the video's, as otherwise we only have epoch-level info (which can vary between videos and timestamps easily)
     let msg = mls_client
-        .encrypt(&bincode::serialize(&thumbnail_info.timestamp).unwrap())
+        .encrypt(&bincode::serialize(&thumbnail_info).unwrap())
         .map_err(|e| {
             error!("encrypt() returned error:");
             e
@@ -353,7 +362,10 @@ pub fn send_pending_thumbnails(
         }
 
         println!("Recovered pending thumbnail {:?}", *timestamp);
-        prepare_motion_thumbnail(&mut clients[THUMBNAIL], ThumbnailInfo::new(timestamp.clone(), 0), delivery_monitor)?;
+        let thumbnail_meta = delivery_monitor.get_thumbnail_meta_by_timestamp(timestamp);
+
+        // We clone the thumbnail meta here, which modifies the epoch. This doesn't matter as it's re-entered into the HashMap in the DeliveryMonitor at the end.
+        prepare_motion_thumbnail(&mut clients[THUMBNAIL], thumbnail_meta.clone(), delivery_monitor)?;
 
         let _ = upload_pending_enc_thumbnails(
             &clients[THUMBNAIL].get_group_name().unwrap(),

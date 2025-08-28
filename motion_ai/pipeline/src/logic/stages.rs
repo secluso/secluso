@@ -1,11 +1,13 @@
+use std::collections::HashSet;
 use crate::frame::RawFrame;
 use crate::logic::context::StateContext;
 use crate::logic::telemetry::{TelemetryPacket, TelemetryRun};
 use crate::ml::models::DetectionType;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use log::debug;
+use crate::logic::pipeline::PipelineResult;
 
 /// Describes the type of stage within the pipeline (e.g., motion, inference).
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize, Hash, Eq)]
@@ -199,6 +201,22 @@ impl PipelineStage for InferenceStage {
 
         const REQUIRED_LABEL: DetectionType = DetectionType::Human;
         if result.results.iter().any(|b| b.det_type == REQUIRED_LABEL) {
+            let mut detection_results = HashSet::new();
+            for box_data in result.results {
+                match box_data.det_type {
+                    DetectionType::Human | DetectionType::Car | DetectionType::Animal => {
+                        detection_results.insert(box_data.det_type);
+                    }
+                    _ => {}
+                }
+            }
+            ctx.last_detection = Some(PipelineResult {
+                time: Instant::now(),
+                motion: true,
+                detections: detection_results.clone().into_iter().collect(),
+                thumbnail: frame.clone(),
+            });
+            debug!("Updating detection results: {}", detection_results.len());
             Ok(StageResult::Continue)
         } else {
             let ts = SystemTime::now()

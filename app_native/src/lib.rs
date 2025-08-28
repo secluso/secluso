@@ -2,7 +2,7 @@ use rand::Rng;
 use std::fs;
 use std::fs::File;
 use std::io;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufWriter, BufReader, Read, Write};
 use std::net::SocketAddr;
 use std::net::TcpStream;
 use std::str::FromStr;
@@ -16,10 +16,11 @@ use privastead_client_lib::pairing;
 use privastead_client_lib::mls_client::{Contact, KeyPackages, MlsClient};
 use privastead_client_lib::mls_clients::MlsClients;
 use privastead_client_lib::video_net_info::{VideoNetInfo, VIDEONETINFO_SANITY};
+use privastead_client_lib::thumbnail_meta_info::{ThumbnailMetaInfo, THUMBNAIL_SANITY};
 use privastead_client_lib::mls_clients::{NUM_MLS_CLIENTS, MLS_CLIENT_TAGS,
-    MOTION, LIVESTREAM, FCM, CONFIG, THUMBNAIL};
+                                         MOTION, LIVESTREAM, FCM, CONFIG, THUMBNAIL};
 use privastead_client_lib::config::{HeartbeatResult, Heartbeat, HeartbeatRequest,
-    OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE};
+                                    OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE};
 use serde_json::json;
 
 // Used to generate random names.
@@ -499,6 +500,7 @@ pub fn decrypt_video(
 pub fn decrypt_thumbnail(
     clients: &mut Option<Box<Clients>>,
     encrypted_filename: String,
+    pending_meta_directory: String,
 ) -> io::Result<String> {
     if clients.is_none() {
         return Err(io::Error::new(
@@ -530,15 +532,31 @@ pub fn decrypt_thumbnail(
         .mls_clients[THUMBNAIL]
         .decrypt(enc_msg, true)?;
 
-    let timestamp: u64 = bincode::deserialize(&dec_msg)
+    let thumbnail_meta_info: ThumbnailMetaInfo = bincode::deserialize(&dec_msg)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
-    let dec_filename = format!("{}.png", timestamp);
+    if thumbnail_meta_info.sanity != *THUMBNAIL_SANITY {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Error: Corrupt ThumbalMetaInfo message.",
+        ));
+    }
+
+    let dec_filename: String = thumbnail_meta_info.filename;
     let dec_pathname: String = file_dir.to_owned() + "/" + &dec_filename;
 
     if Path::new(&dec_pathname).exists() {
+        // TODO: Should this be an error?
         return Ok("Duplicate".to_string());
     }
+
+    // Write a metadata file for the thumbnail, which will be deleted later and stored in the database via the pending processor.
+    let dec_meta_file_path: String = format!("{}/meta_{}.txt", pending_meta_directory, thumbnail_meta_info.timestamp);
+    let meta_file = File::create(&dec_meta_file_path)?;
+    let mut meta_file_writer = BufWriter::new(meta_file);
+
+    // Write JSON data to file.
+    serde_json::to_writer(&mut meta_file_writer, &thumbnail_meta_info.detections).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
     let mut dec_file = fs::File::create(&dec_pathname).expect("Could not create decrypted file");
 

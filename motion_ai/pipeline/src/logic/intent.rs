@@ -5,8 +5,7 @@ use crate::logic::stages::{StageResult, StageType};
 use crate::logic::telemetry::TelemetryPacket;
 use crate::ml::models::ModelKind;
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use log::debug;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Represents actions or commands that can be issued within the pipeline to modify behavior, log transitions, or trigger processing stages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,7 +37,6 @@ pub enum Intent {
         triggered_by: Option<PipelineEvent>,
         reason: String,
     },
-    ConcludePipeline,
 }
 
 /// Dispatches and executes intents, modifying pipeline state or context as needed.
@@ -184,13 +182,6 @@ impl IntentBus {
                     health: health_s.as_str(),
                 })?;
             }
-
-            Intent::ConcludePipeline => {
-                debug!("Updating last detection to now!");
-                host_data.ctx.last_detection = Some(Instant::now());
-                host_data.ctx.last_detection_frame = host_data.frame_buffer.active.take();
-            }
-
             _ => {}
         }
 

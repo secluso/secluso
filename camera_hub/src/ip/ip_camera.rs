@@ -39,6 +39,7 @@
 //! https://standards.iso.org/ittf/PubliclyAvailableStandards/c068960_ISO_IEC_14496-12_2015.zip
 
 use crate::delivery_monitor::VideoInfo;
+use crate::motion::MotionResult;
 use crate::fmp4::Fmp4Writer;
 use crate::livestream::LivestreamWriter;
 use crate::mp4::Mp4Writer;
@@ -698,7 +699,7 @@ impl Camera for IpCamera {
         Ok(())
     }
 
-    fn is_there_motion(&mut self) -> Result<(bool, Option<image::RgbImage>), Error> {
+    fn is_there_motion(&mut self) -> Result<MotionResult, Error> {
         self.motion_detection.handle_motion_event()
     }
 

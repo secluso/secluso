@@ -4,6 +4,7 @@ pub mod pairing;
 pub mod tests;
 pub mod mls_client;
 pub mod video_net_info;
+pub mod thumbnail_meta_info;
 pub mod config;
 pub mod mls_clients;
 

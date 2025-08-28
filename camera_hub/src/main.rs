@@ -39,10 +39,11 @@ use std::panic;
 use std::thread::sleep;
 use std::time::SystemTime;
 use std::{thread, time::Duration};
+use privastead_client_lib::thumbnail_meta_info::ThumbnailMetaInfo;
 
 mod delivery_monitor;
 
-use crate::delivery_monitor::{DeliveryMonitor, ThumbnailInfo, VideoInfo};
+use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
 
 mod motion;
 
@@ -440,7 +441,7 @@ fn core(
         //debug!("Motion event: {}", motion_event.0);
 
         // Send motion events only if we haven't sent one in the past minute
-        if (motion_event.0 || test_mode)
+        if (motion_event.motion || test_mode)
             && (locked_motion_check_time.is_none()
             || locked_motion_check_time.unwrap().le(&SystemTime::now()))
         {
@@ -448,9 +449,9 @@ fn core(
             println!("Detected motion.");
 
             // We send the thumbnail BEFORE the FCM notification, to ensure that when the mobile app receives it, it can download it.
-            if let Some(thumbnail_image) = motion_event.1 {
+            if let Some(thumbnail_image) = motion_event.thumbnail {
                 info!("Starting to save and send video thumbnail");
-                let thumbnail_info = ThumbnailInfo::new(video_info.timestamp, 0); //0 = unset
+                let thumbnail_info = ThumbnailMetaInfo::new(video_info.timestamp, 0, motion_event.detections); //0 epoch = unset
                 let thumbnail_file = camera.get_thumbnail_dir() + "/" + &*thumbnail_info.filename.clone();
                 thumbnail_image.save(thumbnail_file).expect("Failed to save thumbnail PNG file");
 

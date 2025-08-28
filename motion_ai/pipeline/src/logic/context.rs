@@ -1,12 +1,10 @@
 //! Shared, mutable runtime context the FSM and stages read/write during a run
 use crate::logic::activity_states::ActivityState;
 use crate::logic::health_states::HealthState;
-use crate::logic::pipeline::RunId;
+use crate::logic::pipeline::{PipelineResult, RunId};
 use crate::ml::models::ModelKind;
 use crate::motion::detector::MotionDetection;
 use std::collections::HashMap;
-use std::time::Instant;
-use crate::frame::RawFrame;
 
 /// Per-run, in-memory state updated by the FSM and stages
 pub struct StateContext {
@@ -29,8 +27,7 @@ pub struct StateContext {
     // pub metadata: HashMap<String, String>,
     /// Per stage counters and last-latency samples.
     pub stats: HashMap<String, StageStats>,
-    pub last_detection: Option<Instant>,
-    pub last_detection_frame: Option<RawFrame>
+    pub last_detection: Option<PipelineResult>,
 }
 
 impl StateContext {
@@ -50,7 +47,6 @@ impl StateContext {
             // metadata: Default::default(),
             stats: Default::default(),
             last_detection: None,
-            last_detection_frame: None,
         }
     }
 }

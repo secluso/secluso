@@ -23,28 +23,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct ThumbnailInfo {
-    pub timestamp: u64,
-    pub epoch: u64,
-    pub filename: String,
-}
-
-impl ThumbnailInfo {
-    pub fn new(video_timestamp: u64, thumbnail_epoch: u64) -> Self {
-        Self {
-            timestamp: video_timestamp,
-            epoch: thumbnail_epoch,
-            filename: Self::get_filename_from_timestamp(video_timestamp),
-        }
-    }
-
-    pub fn get_filename_from_timestamp(timestamp: u64) -> String {
-        "thumbnail_".to_owned() + &timestamp.to_string() + ".png"
-    }
-}
-
+use privastead_client_lib::thumbnail_meta_info::{ThumbnailMetaInfo};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct VideoInfo {
@@ -88,8 +67,8 @@ pub struct DeliveryMonitor {
     // A video is only removed from this list if a heartbeat signal with an equal or larger
     // motion epoch is received.
     video_pending_list: HashMap<u64, VideoInfo>, //<video epoch, video info>
-    thumbnail_watch_list: HashMap<u64, ThumbnailInfo>, // <video timestamp, thumbnail info>
-    thumbnail_pending_list: HashMap<u64, ThumbnailInfo>, //<thumbnail epoch, thumbnail info>
+    thumbnail_watch_list: HashMap<u64, ThumbnailMetaInfo>, // <video timestamp, thumbnail info>
+    thumbnail_pending_list: HashMap<u64, ThumbnailMetaInfo>, //<thumbnail epoch, thumbnail info>
     video_dir: String,
     thumbnail_dir: String,
     state_dir: String,
@@ -153,14 +132,14 @@ impl DeliveryMonitor {
         self.save_state();
     }
 
-    pub fn enqueue_thumbnail(&mut self, thumbnail_info: ThumbnailInfo) {
+    pub fn enqueue_thumbnail(&mut self, thumbnail_info: ThumbnailMetaInfo) {
         info!("enqueue_thumbnail_event: {}", thumbnail_info.timestamp);
         let _ = self.thumbnail_watch_list.insert(thumbnail_info.timestamp, thumbnail_info.clone());
         let _ = self.thumbnail_pending_list.insert(thumbnail_info.epoch, thumbnail_info);
 
         self.save_state();
     }
-    pub fn dequeue_thumbnail(&mut self, thumbnail_info: &ThumbnailInfo) {
+    pub fn dequeue_thumbnail(&mut self, thumbnail_info: &ThumbnailMetaInfo) {
         info!("dequeue_thumbnail_event: {}", thumbnail_info.timestamp);
 
         let _ = self.thumbnail_watch_list.remove(&thumbnail_info.timestamp);
@@ -230,6 +209,10 @@ impl DeliveryMonitor {
             .collect()
     }
 
+    pub fn get_thumbnail_meta_by_timestamp(&self, timestamp: &u64) -> &ThumbnailMetaInfo {
+        self.thumbnail_pending_list.get(&timestamp).unwrap()
+    }
+
     pub fn videos_to_send(&self) -> Vec<VideoInfo> {
         let mut send_list: Vec<VideoInfo> = Vec::new();
 
@@ -242,8 +225,8 @@ impl DeliveryMonitor {
         send_list
     }
 
-    pub fn thumbnails_to_send(&self) -> Vec<ThumbnailInfo> {
-        let mut send_list: Vec<ThumbnailInfo> = Vec::new();
+    pub fn thumbnails_to_send(&self) -> Vec<ThumbnailMetaInfo> {
+        let mut send_list: Vec<ThumbnailMetaInfo> = Vec::new();
 
         for info in self.thumbnail_watch_list.values() {
             send_list.push(info.clone());
@@ -275,7 +258,7 @@ impl DeliveryMonitor {
         video_dir_path.join(&info.filename)
     }
 
-    pub fn get_thumbnail_file_path(&self, info: &ThumbnailInfo) -> PathBuf {
+    pub fn get_thumbnail_file_path(&self, info: &ThumbnailMetaInfo) -> PathBuf {
         let video_dir_path = Path::new(&self.thumbnail_dir);
         video_dir_path.join(&info.filename)
     }
@@ -286,7 +269,7 @@ impl DeliveryMonitor {
         video_dir_path.join(&enc_filename)
     }
 
-    pub fn get_enc_thumbnail_file_path(&self, info: &ThumbnailInfo) -> PathBuf {
+    pub fn get_enc_thumbnail_file_path(&self, info: &ThumbnailMetaInfo) -> PathBuf {
         let video_dir_path = Path::new(&self.thumbnail_dir);
         let enc_filename = format!("{}", info.epoch);
         video_dir_path.join(&enc_filename)
