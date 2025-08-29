@@ -292,6 +292,7 @@ pub fn send_pending_motion_videos(
     }
 
     let delivery_monitor_pending_timestamps = delivery_monitor.get_all_pending_video_timestamps();
+    let mut num_recovered = 0;
 
     for timestamp in &pending_timestamps {
         // Check to make sure the video is not already tracked by the delivery monitor
@@ -308,9 +309,11 @@ pub fn send_pending_motion_videos(
             delivery_monitor,
             http_client,
         );
+
+        num_recovered += 1;
     }
 
-    if pending_timestamps.len() > 0 {
+    if num_recovered > 0 {
         //Timestamp of 0 tells the app it's time to start downloading.
         let dummy_timestamp: u64 = 0;
         let notification_msg = clients[FCM].encrypt(
@@ -354,6 +357,7 @@ pub fn send_pending_thumbnails(
     }
 
     let delivery_monitor_pending_timestamps = delivery_monitor.get_all_pending_thumbnail_timestamps();
+    let mut num_recovered = 0;
 
     for timestamp in &pending_timestamps {
         // Check to make sure the thumbnail is not already tracked by the delivery monitor
@@ -372,9 +376,11 @@ pub fn send_pending_thumbnails(
             delivery_monitor,
             http_client,
         );
+
+        num_recovered += 1;
     }
 
-    if pending_timestamps.len() > 0 {
+    if num_recovered > 0 {
         //Timestamp of 0 tells the app it's time to start downloading.
         let dummy_timestamp: u64 = 0;
         let notification_msg = clients[FCM].encrypt(

@@ -540,9 +540,11 @@ fn core(
             ) {
                 // After sending all the pending encrypted videos, we might still have
                 // some pending videos that are not encrypted. This could happen if we
-                // previously failed to encrypt them, e.g., as a result of enforcing PCS.
-                // We'll try to send them here.
-                let _ = send_pending_motion_videos(camera, &mut clients, &mut delivery_monitor, &http_client);
+                // previously failed to encrypt them, e.g., as a result of enforcing a
+                // max offline priod for the app. We'll try to send them here.
+                // FIXME: since we're not yet enforcing the max offline period,
+                // this is not needed for now.
+                //let _ = send_pending_motion_videos(camera, &mut clients, &mut delivery_monitor, &http_client);
             }
 
             if let Ok(_) = upload_pending_enc_thumbnails(
@@ -550,7 +552,9 @@ fn core(
                 &mut delivery_monitor,
                 &http_client,
             ) {
-                let _ = send_pending_thumbnails(camera, &mut clients, &mut delivery_monitor, &http_client);
+                // FIXME: since we're not yet enforcing the max offline period,
+                // this is not needed for now.
+                //let _ = send_pending_thumbnails(camera, &mut clients, &mut delivery_monitor, &http_client);
             }
 
             locked_delivery_check_time = Some(SystemTime::now().add(Duration::from_secs(60)));
