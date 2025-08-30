@@ -405,7 +405,7 @@ async fn delete_camera(camera: &str, auth: BasicAuth) -> io::Result<()> {
 async fn upload_fcm_token(data: Data<'_>, auth: BasicAuth) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
     let token_path = root.join("fcm_token");
-    check_path_sandboxed(&Path::new("data"), &token_path)?;
+    check_path_sandboxed(&root, &token_path)?;
 
     let mut file = fs::File::create(&token_path).await?;
     // FIXME: hardcoded max size
@@ -814,6 +814,22 @@ async fn retrieve_config_response(
     None
 }
 
+#[post("/debug_logs", data = "<data>")]
+async fn upload_debug_logs(data: Data<'_>, auth: BasicAuth) -> io::Result<String> {
+    let root = Path::new("data").join(&auth.username);
+    let logs_path = root.join("debug_logs");
+    check_path_sandboxed(&root, &logs_path)?;
+
+    let mut file = fs::File::create(&logs_path).await?;
+    // FIXME: hardcoded max size
+    let mut stream = data.open(5.mebibytes());
+    tokio::io::copy(&mut stream, &mut file).await?;
+    // Flush the file to disk
+    file.sync_all().await?;
+
+    Ok("ok".to_string())
+}
+
 #[launch]
 fn rocket() -> _ {
     let all_event_state: AllEventState = Arc::new(DashMap::new());
@@ -849,6 +865,7 @@ fn rocket() -> _ {
                 config_check,
                 config_response,
                 retrieve_config_response,
+                upload_debug_logs,
             ],
         )
 }

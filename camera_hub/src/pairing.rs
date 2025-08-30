@@ -262,7 +262,7 @@ fn attempt_wifi_connection(ssid: String, password: String) -> io::Result<()> {
     thread::sleep(Duration::from_secs(3));
 
     for n in 1..=3 {
-        println!("[Pairing] Attempt {n} to connect to Wi-Fi '{}'", ssid);
+        println!("[Pairing] Attempt {n} to connect to Wi-Fi");
 
         // Rescan and wait for SSID to appear
         let _ = Command::new("nmcli")
