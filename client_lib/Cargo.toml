@@ -11,7 +11,7 @@ http_client = ["dep:reqwest", "dep:base64"]
 
 [dependencies]
 docopt = "~1.1"
-env_logger = "0.9.0" # 0.10 requires an MSRV bump to 1.60
+env_logger = "0.11.8"
 log = { version = "0.4.4", optional = true }
 mio = { version = "0.8", features = ["net", "os-poll"] }
 serde = "1.0"
