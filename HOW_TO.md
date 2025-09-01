@@ -226,23 +226,23 @@ You are now done configuring the camera. Make sure to connect the machine to the
 
 ## Step 5 (standalone camera): Configuring and running camera hub
 
-Access a terminal within the Raspberry Pi board (either via SSH or a graphical interface). Run:
+Instead of building the hub directly with `cargo`, we strongly recommend using our
+deterministic reproducible build system. This ensures that the binaries you run
+are verifiable against source and match our official releases.
 
-```
-cd /path-to-privastead/camera_hub
-cargo run --release --features raspberry
-```
+See [releases/README.md](releases/README.md) for full details on the build pipeline.
 
-Note that this assumes your Raspberry Pi board is powerful enough to build the hub in a reasonable amount of time.
-If you want to build it on a powerful board and transfer it to a weaker board for execution, Run the following on the powerful board:
+In short:
 
+1. On your development machine (not directly on the Raspberry Pi), cd into the releases folder and run:
 ```
-cd /path-to-privastead/camera_hub
-cargo build --release --features raspberry
-# transfer the executable (target/release/privastead-camera-hub) to the weaker board
+./build.sh --target raspberry --profile camerahub
 ```
 
-Then simply execute the executable on the weaker board.
+3. Copy the relevant binary `builds/time/aarch64-unknown-linux-gnu/privastead-raspberry-camera-hub` onto your device. Time resembles your current system time and will be replaced with a long number (you can ignore this)
+4. Run it directly on the device:
+```./privastead-raspberry-camera-hub```
+
 
 ## Step 5 (IP camera): Configuring and running camera hub
 
@@ -285,8 +285,8 @@ Therefore, it is recommended to either use a service to run it (see the instruct
 Clone the Repository:
 
 ```
-git clone https://github.com/privastead/privastead.git  
-cd privastead
+git clone https://github.com/privastead/mobile_app.git  
+cd mobile_app
 ```
 
 ---
@@ -294,7 +294,7 @@ cd privastead
 Open the Project in Visual Studio Code:
 
 - Launch Visual Studio Code
-- Open the privastead/ folder  
+- Open the mobile_app/ folder  
 - Install any recommended extensions (Flutter, Rust, Dart)
 
 ---

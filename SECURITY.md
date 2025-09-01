@@ -7,6 +7,7 @@
   - [Forward Secrecy and Post-Compromise Security](#forward-secrecy-and-post-compromise-security)
     - [Analysis](#analysis)
 - [Pairing](#pairing)
+- [Reproducible Builds](#reproducible-builds)
 
 ## Threat Model and Guarantees
 
@@ -21,10 +22,10 @@ It then provides the following guarantees:
 
 * It guarantees that only the hub and the mobile app have access to unecrypted videos.
 * It guarantees that the server cannot decrypt the videos.
-* It provides forward secrecy and post-comproise security through MLS.
+* It provides forward secrecy and post-compromise security through MLS.
 * It does NOT currently hide the timing of events and livestreams from the adversary (who we assume is in control of the server and/or FCM channel).
 
-## End-to_End Encryption
+## End-to-End Encryption
 
 Privastead uses end-to-end encryption between the camera and the app.
 That is, the camera always encrypts the videos (either event-triggered videos and their thumbnails or livestream videos) using keys only available to the camera and the app.
@@ -67,7 +68,7 @@ Every once in a while, fresh group secrets are shared between the group members.
 At this point, we say that a new epoch has started.
 Assuming the attacker cannot receive the new secrets, it will not be able to decrypt messages in the new epoch.
 To make sure this assumption is correct, group members need to update their *encryption keys*, i.e., public/private key pairs used for sharing new secrets.
-This is also called *self-update* in the MLS teminology.
+This is also called *self-update* in the MLS terminology.
 
 An MLS group always starts in epoch 1 and advances to new epochs by exchanging fresh secrets.
 MLS does not automatically advance the epoch and leaves it to the program to decide when to do that.
@@ -86,7 +87,7 @@ Currently, the app is programmed to send a heartbeat message every time the app 
 The camera then includes this proposal in the next commit message used for the next video.
 
 Post-compromise security by advancing the epochs creates a challenge: if the commit message is lost, the camera and app will not be able to communicate anymore since they are in different epochs.
-Privastead uses various techniues to reduce the likelihood of losing a message.
+Privastead uses various techniques to reduce the likelihood of losing a message.
 For example, we systematically look for and fix what we call "fatal crash points."
 These are code locations within the camera or app that if a crash occurs, the camera and the app will end up in different epochs.
 For example, imagine what happens if the camera generates the commit message, merges it, persists the new keys in storage, deletes the old keys, and then crashes before sending the commit message to the app.
@@ -96,7 +97,7 @@ This example fatal crash point can then be fixed by making sure that a copy of t
 
 We note that OpenMLS can be configured to allow decryption of messages of certain number of epochs in the past.
 While useful to mitigate some of the issues mentioned in the last paragraph, we opted against using this feature since it weakens forward secrecy.
-More specifically, this feature maintains keys used in the previous epochs and does not immediately deletes them when epoch changes.
+More specifically, this feature maintains keys used in the previous epochs and does not immediately delete them when epoch changes.
 This will then enable an attacker than manages to compromise a group member to decrypts videos from previous epochs.
 
 #### Analysis
@@ -140,12 +141,21 @@ During the pairing process, the owner needs to scan this QR code.
 The owner is required to keep this secret confidential.
 
 How is the secret used to secure the pairing process? Privastead uses a feature of MLS called "external pre-shared key (psk)." Both the camera and the app need to inject this secret into their key schedule via an external psk.
-If either fails to do so, the app cannot succesfully join the MLS group created by the camera.
+If either fails to do so, the app cannot successfully join the MLS group created by the camera.
 
-Using the aforementioned techniques, Privastead guarantess that for an app to be able to successfuly pair with the camera, it needs to be on a smartphone in physical proximity of the camera and it needs to have access to the secret.
+Using the aforementioned techniques, Privastead guarantees that for an app to be able to successfully pair with the camera, it needs to be on a smartphone in physical proximity of the camera, and it needs to have access to the secret.
 We assume that the attacker does not have access to the secret and/or cannot be in physical proximity of the camera.
 
 It is important to note that the MLS standard defines an "authentication service."
-This service needs to be implemented by a program using MLS and its role is enable members of a group to authenticate each other.
+This service needs to be implemented by a program using MLS and its role is to enable members of a group to authenticate each other.
 Privastead's secure pairing process plays this role.
 In other words, the camera and the app authenticate each other using the secret available only to them.
+
+## Reproducible Builds
+
+Privastead supports reproducible builds for all distributed binaries.  
+This ensures that the code you see in this repository can be independently verified against the binaries we publish.  
+
+To avoid duplication, we do not repeat the full technical details here.  
+Instead, please see [releases/README.md](releases/README.md) for a complete description of our reproducible build pipeline,  
+including step-by-step instructions on how to rebuild and verify our releases yourself.
