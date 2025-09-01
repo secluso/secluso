@@ -62,6 +62,11 @@ fn reset_action() {
     run_command_to_completion("sudo systemctl stop privastead.service");
     // Second, reset privastead camera hub
     run_command_to_completion("sudo LD_LIBRARY_PATH=/usr/local/lib/aarch64-linux-gnu/:${LD_LIBRARY_PATH:-} /home/privastead/privastead/camera_hub/target/release/privastead-camera-hub --reset-full");
+    // The previous command, if run successfully, will delete the following three directories.
+    // But we'll try to delete them again in case that command failed for some reason.
+    run_command_to_completion("sudo rm -r /home/privastead/privastead/camera_hub/state");
+    run_command_to_completion("sudo rm -r /home/privastead/privastead/camera_hub/pending_videos");
+    run_command_to_completion("sudo rm -r /home/privastead/privastead/camera_hub/pending_thumbnails");
     // Finally, start the privastead service
     run_command_to_completion("sudo systemctl start privastead.service");
 }
