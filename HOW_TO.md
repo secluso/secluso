@@ -10,9 +10,10 @@ The other steps however are customized for each setup.
 - [Step 1: Generating Privastead credentials](#step-1-generating-privastead-credentials)
 - [Step 2: Generating FCM credentials](#step-2-generating-fcm-credentials)
 - [Step 3: Running the server](#step-3-running-the-server)
+- [Step 4 (standalone camera only): Install rpicam-apps](#step-4-standalone-camera-only-install-rpicam-apps)
 - [Step 4 (IP camera only): Configuring the IP camera and connecting it to your local machine](#step-4-ip-camera-only-configuring-the-ip-camera-and-connecting-it-to-your-local-machine)
-- [Step 5 (standalone camera): Configuring and running camera hub](#step-5-standalone-camera-configuring-and-running-camera-hub)
-- [Step 5 (IP camera): Configuring and running camera hub](#step-5-ip-camera-configuring-and-running-camera-hub)
+- [Step 5 (standalone camera only): Configuring and running camera hub](#step-5-standalone-camera-only-configuring-and-running-camera-hub)
+- [Step 5 (IP camera only): Configuring and running camera hub](#step-5-ip-camera-only-configuring-and-running-camera-hub)
 - [Step 6: Building and installing the app](#step-6-building-and-installing-the-app)
 - [Step 7: Pairing the app with the hub](#step-7-pairing-the-app-with-the-hub)
 
@@ -167,6 +168,28 @@ to
 address: "0.0.0.0".parse().unwrap(),
 ```
 
+## Step 4 (standalone camera only): Install rpicam-apps
+
+We need to install rpicam-apps inside the Raspberry Pi in order to use a camera connected to it.
+Do the following within the Raspberry Pi:
+
+```
+### install all the packages needed in the process
+sudo apt install git
+sudo apt install -y libcamera-dev libepoxy-dev libjpeg-dev libtiff5-dev libpng-dev
+sudo apt install -y cmake libboost-program-options-dev libdrm-dev libexif-dev
+sudo apt install -y meson ninja-build
+
+### download the rpicam-apps source code
+git clone https://github.com/privastead/rpicam-apps.git
+
+### build and install it
+cd rpicam-apps
+meson setup build -Denable_libav=disabled -Denable_drm=enabled -Denable_egl=disabled -Denable_qt=disabled -Denable_opencv=disabled -Denable_tflite=disabled -Denable_hailo=disabled
+meson compile -C build -j 1
+meson install -C build
+```
+
 ## Step 4 (IP camera only): Configuring the IP camera and connecting it to your local machine
 
 Our goal is to connect the camera to your local machine (aka machine) without giving the IP camera Internet access.
@@ -224,7 +247,7 @@ In the camera's web interface, do the following (note that these instructions ar
 
 You are now done configuring the camera. Make sure to connect the machine to the Internet using WiFi.
 
-## Step 5 (standalone camera): Configuring and running camera hub
+## Step 5 (standalone camera only): Configuring and running camera hub
 
 Instead of building the hub directly with `cargo`, we strongly recommend using our
 deterministic reproducible build system. This ensures that the binaries you run
@@ -243,8 +266,30 @@ In short:
 4. Run it directly on the device:
 ```./privastead-raspberry-camera-hub```
 
+The camera hub is designed so that it can be resumed if it stops either intentionally or due to an error/panic.
+Therefore, it is recommended to either use a service to run it (see the instructions for configuring a service for the server) or use a script to run it again when it terminates.
+Here's an example service file to have the camera hub be launched at boot time and after every termination:
 
-## Step 5 (IP camera): Configuring and running camera hub
+```
+[Unit]
+Description=privastead_camera_hub
+RequiresMountsFor=/home
+
+[Service]
+User=root
+WorkingDirectory=/absolute-path-to-privastead-binary/
+Environment="RUST_LOG=info"
+Environment="LD_LIBRARY_PATH=/usr/local/lib/aarch64-linux-gnu/:${LD_LIBRARY_PATH:-}"
+ExecStartPre=/usr/bin/test -w /absolute-path-to-privastead-binary/
+ExecStart=/absolute-path-to-privastead-binary/privastead-raspberry-camera-hub
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
+```
+
+## Step 5 (IP camera only): Configuring and running camera hub
 
 Copy over the example_cameras.yaml file into cameras.yaml
 ```
@@ -275,9 +320,6 @@ cargo run --release --features ip
 The Privastead hub will now run and ask you for the username and password for each IP camera if not provided originally in the configuration file. 
 After providing them, it will create a QR code containing a secret needed for pairing (camera_hub/camera_name_secret_qrcode.png).
 Each camera then waits to be paired with the app.
-
-The camera hub is designed so that it can be resumed if it stops either intentionally or due to an error/panic.
-Therefore, it is recommended to either use a service to run it (see the instructions for configuring a service for the server) or use a script to run it again when it terminates.
 
 ## Step 6: Building and installing the app
 
