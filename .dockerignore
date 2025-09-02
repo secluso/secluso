@@ -1,0 +1,9 @@
+# Prevent docker from loading files it doesn't need into the context
+
+.git/
+camera_hub/pending_videos/
+camera_hub/state/
+releases/builds/
+motion_ai/cli/output
+camera_hub/output
+**/target

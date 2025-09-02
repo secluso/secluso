@@ -371,6 +371,10 @@ fi
 # pin the BuildKit image version, and run inside a containerized BuildKit
 # backend rather than relying on the host Docker daemon.
 BUILDER="privastead-builds"
+
+# Take care of any leftover builder from a prior session that wasn't cleaned up properly (e.g. power cord removed from desktop computer)
+docker buildx rm -f "$BUILDER" >/dev/null 2>&1 || true
+
 docker buildx create \
   --name "$BUILDER" \
   --driver docker-container \
