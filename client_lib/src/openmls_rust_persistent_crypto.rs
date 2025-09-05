@@ -1,4 +1,4 @@
-//! Privastead crypto provider
+//! Secluso crypto provider
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani
 //!

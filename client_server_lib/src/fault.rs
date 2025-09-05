@@ -1,4 +1,4 @@
-//! Privastead fault injection code.
+//! Secluso fault injection code.
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani
 //!

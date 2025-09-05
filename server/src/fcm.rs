@@ -1,4 +1,4 @@
-//! Privastead FCM.
+//! Secluso FCM.
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani
 //!

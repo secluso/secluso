@@ -1,5 +1,5 @@
 [package]
-name = "privastead-server"
+name = "secluso-server"
 version = "0.1.0"
 edition = "2021"
 authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
@@ -7,7 +7,7 @@ authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
 [dependencies]
 rocket = { version="0.5.1" , features= ["json"] }
 base64 = "0.22.1"
-privastead-client-server-lib = { path = "../client_server_lib" }
+secluso-client-server-lib = { path = "../client_server_lib" }
 serde = "1.0"
 serde_json = "1.0"
 jsonwebtoken = "9.3.1"

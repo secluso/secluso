@@ -1,4 +1,4 @@
-//! Privastead config tool.
+//! Secluso config tool.
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani
 //!
@@ -28,7 +28,7 @@ use std::fs;
 use std::io;
 use std::io::Write;
 use url::Url;
-use privastead_client_server_lib::auth::create_user_credentials;
+use secluso_client_server_lib::auth::create_user_credentials;
 
 // FIXME: these constants should match the ones in rest of the code.
 // Consolidate the constants in one place.
@@ -36,13 +36,13 @@ use privastead_client_server_lib::auth::create_user_credentials;
 pub const NUM_SECRET_BYTES: usize = 72;
 
 const USAGE: &str = "
-Helps configure the Privastead server, camera, and app.
+Helps configure the Secluso server, camera, and app.
 
 Usage:
-  privastead-config-tool --generate-user-credentials --server-addr ADDR --dir DIR
-  privastead-config-tool --generate-camera-secret --dir DIR
-  privastead-config-tool (--version | -v)
-  privastead-config-tool (--help | -h)
+  secluso-config-tool --generate-user-credentials --server-addr ADDR --dir DIR
+  secluso-config-tool --generate-camera-secret --dir DIR
+  secluso-config-tool (--version | -v)
+  secluso-config-tool (--help | -h)
 
 Options:
     --generate-user-credentials     Generate a random username and a random key to be used to authenticate with the server.

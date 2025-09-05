@@ -1,4 +1,4 @@
-//! Privastead user authentication
+//! Secluso user authentication
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani
 //!

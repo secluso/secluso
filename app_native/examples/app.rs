@@ -1,4 +1,4 @@
-//! Simple app to use Privastead's native API
+//! Simple app to use Secluso's native API
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani
 //!
@@ -15,13 +15,13 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use privastead_app_native::{
+use secluso_app_native::{
     add_camera, decrypt_video, deregister, get_group_name,
     initialize, livestream_decrypt, livestream_update, Clients,
     generate_heartbeat_request_config_command, process_heartbeat_config_response,
 };
-use privastead_client_lib::http_client::HttpClient;
-use privastead_client_server_lib::auth::parse_user_credentials_full;
+use secluso_client_lib::http_client::HttpClient;
+use secluso_client_server_lib::auth::parse_user_credentials_full;
 use std::fs;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
@@ -32,7 +32,7 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::env;
 
-// This is a simple app that pairs with the Privastead camera, receives motion videos,
+// This is a simple app that pairs with the Secluso camera, receives motion videos,
 // and launches livestream sessions.
 // To use it, place the user_credentials and camera_secret file in the app root directory.
 // It assumes that the camera and the server run in the same machine.

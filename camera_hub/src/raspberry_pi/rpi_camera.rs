@@ -28,11 +28,11 @@ use anyhow::{Context, Error};
 use bytes::{BufMut, BytesMut};
 use crossbeam_channel::unbounded;
 use image::RgbImage;
-use privastead_client_lib::thumbnail_meta_info::GeneralDetectionType;
-use privastead_motion_ai::pipeline;
+use secluso_client_lib::thumbnail_meta_info::GeneralDetectionType;
+use secluso_motion_ai::pipeline;
 use tokio::runtime::Runtime;
-use privastead_motion_ai::logic::pipeline::PipelineController;
-use privastead_motion_ai::ml::models::DetectionType;
+use secluso_motion_ai::logic::pipeline::PipelineController;
+use secluso_motion_ai::ml::models::DetectionType;
 use crate::raspberry_pi::rpi_dual_stream;
 use crate::traits::Mp4;
 use crate::{
@@ -101,8 +101,8 @@ impl RaspberryPiCamera {
 
         // Start motion detection using raw frames from the shared stream.
         let pipeline = pipeline![
-            privastead_motion_ai::logic::stages::MotionStage,
-            privastead_motion_ai::logic::stages::InferenceStage,
+            secluso_motion_ai::logic::stages::MotionStage,
+            secluso_motion_ai::logic::stages::InferenceStage,
         ];
 
         let write_logs = cfg!(feature = "telemetry");

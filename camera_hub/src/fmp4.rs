@@ -1,4 +1,4 @@
-//! Privastead fMP4 Writer, used for livestreaming.
+//! Secluso fMP4 Writer, used for livestreaming.
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani
 //!

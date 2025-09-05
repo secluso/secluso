@@ -1,13 +1,13 @@
 # Instructions
 
-Privastead is fully open source and hence can be used by anyone interested in it.
+Secluso is fully open source and hence can be used by anyone interested in it.
 Below are the instructions.
 Note that some of the steps are shared between the standalone camera setup and the IP camera setup.
 The other steps however are customized for each setup.
 
 ## Table of Contents
 - [Requirements](#requirements)
-- [Step 1: Generating Privastead credentials](#step-1-generating-privastead-credentials)
+- [Step 1: Generating Secluso credentials](#step-1-generating-secluso-credentials)
 - [Step 2: Generating FCM credentials](#step-2-generating-fcm-credentials)
 - [Step 3: Running the server](#step-3-running-the-server)
 - [Step 4 (standalone camera only): Install rpicam-apps](#step-4-standalone-camera-only-install-rpicam-apps)
@@ -21,7 +21,7 @@ The other steps however are customized for each setup.
 
 You will need the following:
 
-- A smartphone (see [here](README.md) for the list of smartphones tested with Privastead).
+- A smartphone (see [here](README.md) for the list of smartphones tested with Secluso).
 - A server. The server needs to be accessible by the hub and the mobile app on the smartphone. Given that the smartphone could be connected to various networks, the server should have a public IP address. We refer to this address as the server IP address going forward.
 - A Google account to set up the FCM project. (Create a new account. Don't use your personal account.)
 
@@ -31,16 +31,16 @@ In the case of a standalone camera, you also need:
 
 In the case of an IP camera, you also need:
 
-- An IP camera (see [here](README.md) for the list of IP cameras tested with Privastead).
+- An IP camera (see [here](README.md) for the list of IP cameras tested with Secluso).
 - A local machine (e.g., a laptop or desktop). The local machine will be connected to the IP camera and to the Internet.
 
-Fetch the Privastead source code in the Raspberry Pi where you'll build the hub (for the standalone camera), in the local machine (for the IP camera), and in the server:
+Fetch the Secluso source code in the Raspberry Pi where you'll build the hub (for the standalone camera), in the local machine (for the IP camera), and in the server:
 
 ```
-git clone https://github.com/privastead/privastead.git
+git clone https://github.com/secluso/secluso.git
 ```
 
-## Step 1: Generating Privastead credentials
+## Step 1: Generating Secluso credentials
 
 The server is fully untrusted and cannot decrypt videos.
 Yet, we have a simple authentication protocol between the hub/app and the server in order to prevent unauthorized access to the server (since servers cost money and you may not want others to use your server.)
@@ -48,7 +48,7 @@ Yet, we have a simple authentication protocol between the hub/app and the server
 To generate credentials, do the following (preferrably in the local machine):
 
 ```
-cd privastead/config_tool
+cd secluso/config_tool
 cargo run -- --generate-user-credentials --server-addr <SERVER_URL> --dir .
 ```
 
@@ -58,7 +58,7 @@ Keep these files in mind and we will come back to using them in the following st
 
 ## Step 2: Generating FCM credentials
 
-Privastead uses FCM to send notifications to the android/ios app.
+Secluso uses FCM to send notifications to the android/ios app.
 We need to set up an FCM project and then generate two credential files, one for the server to be able to send notifications via FCM and one for the app to be able to receive them.
 
 Go to: https://console.firebase.google.com/
@@ -67,7 +67,7 @@ Go to: https://console.firebase.google.com/
 
 Click on "Create a project."
 
-Enter the project name, e.g.: Privastead
+Enter the project name, e.g.: Secluso
 
 Disable Google Analytics (unless you want it).
 
@@ -75,7 +75,7 @@ The project is now created and you will be redirected to its dashboard.
 
 Click on "Add app" and then on the Android or iOS icon.
 
-Now you need to register our app. For the package name, add: privastead.camera
+Now you need to register our app. For the package name, add: com.secluso.mobile
 
 Then click on Register App. 
 
@@ -91,22 +91,22 @@ Hold on to the file for now. We'll use it in the next step.
 
 ## Step 3: Running the server
 
-The server needs to be able to send notification requests to FCM. Therefore, copy the service_account_key.json file generated in the last step in the Privastead server directory.
+The server needs to be able to send notification requests to FCM. Therefore, copy the service_account_key.json file generated in the last step in the Secluso server directory.
 
 ```
-mv /path-to-json-file/service_account_key.json /path-to-privastead/server/
+mv /path-to-json-file/service_account_key.json /path-to-secluso/server/
 ```
 
 Also, copy the user_credentials file we generated in step 1 to the user_credentials directory in the server.
 
 ```
-mv /path-to-user-credentials/user_credentials /path-to-privastead/server/user_credentials/
+mv /path-to-user-credentials/user_credentials /path-to-secluso/server/user_credentials/
 ```
 
 To run the server, you need to execute this command:
 
 ```
-cd /path-to-privastead/server/
+cd /path-to-secluso/server/
 cargo run --release
 ```
 
@@ -119,11 +119,11 @@ Here is an example of what the service file could look like:
 
 ```
 [Unit]
-Description=privastead_server
+Description=secluso_server
 
 [Service]
 User=your-username
-WorkingDirectory=/absolute-path-to-privastead-source/server/
+WorkingDirectory=/absolute-path-to-secluso-source/server/
 ExecStart=/absolute-path-to-cargo-executable/cargo run --release
 Restart=always
 RestartSec=1
@@ -132,24 +132,24 @@ RestartSec=1
 WantedBy=multi-user.target
 ```
 
-Put these inside the file "/etc/systemd/system/privastead.service".
+Put these inside the file "/etc/systemd/system/secluso.service".
 Then do the following
 
 ```
 sudo systemctl daemon-reload
-sudo systemctl start privastead.service
+sudo systemctl start secluso.service
 ```
 
 Then, check to make sure it's correctly started:
 
 ```
-sudo systemctl status privastead.service
+sudo systemctl status secluso.service
 ```
 
 Finally, enable it so that it runs on every reboot:
 
 ```
-sudo systemctl enable privastead.service
+sudo systemctl enable secluso.service
 ```
 
 Note: running our server launches an HTTP server on the local IP address.
@@ -181,7 +181,7 @@ sudo apt install -y cmake libboost-program-options-dev libdrm-dev libexif-dev
 sudo apt install -y meson ninja-build
 
 ### download the rpicam-apps source code
-git clone https://github.com/privastead/rpicam-apps.git
+git clone https://github.com/secluso/rpicam-apps.git
 
 ### build and install it
 cd rpicam-apps
@@ -193,7 +193,7 @@ meson install -C build
 ## Step 4 (IP camera only): Configuring the IP camera and connecting it to your local machine
 
 Our goal is to connect the camera to your local machine (aka machine) without giving the IP camera Internet access.
-You will use this local machine later to run the Privastead camera hub software.
+You will use this local machine later to run the Secluso camera hub software.
 To achieve this, we will use two network interfaces of the machine.
 One will be used for Internet access for the machine and the other will be used to create a local network to connect the IP camera to the machine.
 For example, assume the machine has Ethernet and WiFi interfaces.
@@ -229,7 +229,7 @@ nmap -sP 192.168.1.1/24
 ```
 
 You'll see 192.168.1.1 (which is the machine) and another one (let's say 192.168.1.108) for the IP camera.
-Record the IP camera's IP address. You will use it in the next steps and also later for configuring the Privastead camera hub software.
+Record the IP camera's IP address. You will use it in the next steps and also later for configuring the Secluso camera hub software.
 
 Now open a browser in the local machine and put the IP camera's address there.
 You'll see the camera's web interface.
@@ -239,7 +239,7 @@ Choose a strong password.
 
 In the camera's web interface, do the following (note that these instructions are for the aforementioned Amcrest camera):
 
-1) **Go Setup -> Camera -> Video -> Main Stream**. Set the Encode Mode to H.264, Smart Codec to Off, resolution to 1280x720(720P), framerate to 10, Bit Rate Type to CBR, and Bit Rate to Customized. Then uncheck Watermark Settings, and ensure Sub stream is enabled. We suggest using the following parameters for substream: Encode Mode: MJPEG, Resolution: VGA, frame rate: 10, bit rate: 1024. Make sure to press Save. These suggestions (and the ones below for audio) are simply based on my experience. With these, the videos have adequate quality and Privastead achieves good performance. You might need to change these based on your network connection's bandwidth.
+1) **Go Setup -> Camera -> Video -> Main Stream**. Set the Encode Mode to H.264, Smart Codec to Off, resolution to 1280x720(720P), framerate to 10, Bit Rate Type to CBR, and Bit Rate to Customized. Then uncheck Watermark Settings, and ensure Sub stream is enabled. We suggest using the following parameters for substream: Encode Mode: MJPEG, Resolution: VGA, frame rate: 10, bit rate: 1024. Make sure to press Save. These suggestions (and the ones below for audio) are simply based on my experience. With these, the videos have adequate quality and Secluso achieves good performance. You might need to change these based on your network connection's bandwidth.
 
 2) **Go to Setup -> Camera -> Audio**. Under Main Stream, set Encode Mode to AAC and sampling frequency to 8000. Disable Sub Stream. Press Save.
 
@@ -262,9 +262,9 @@ In short:
 ./build.sh --target raspberry --profile camerahub
 ```
 
-3. Copy the relevant binary `builds/time/aarch64-unknown-linux-gnu/privastead-raspberry-camera-hub` onto your device. Time resembles your current system time and will be replaced with a long number (you can ignore this)
+3. Copy the relevant binary `builds/time/aarch64-unknown-linux-gnu/secluso-raspberry-camera-hub` onto your device. Time resembles your current system time and will be replaced with a long number (you can ignore this)
 4. Run it directly on the device:
-```./privastead-raspberry-camera-hub```
+```./secluso-raspberry-camera-hub```
 
 The camera hub is designed so that it can be resumed if it stops either intentionally or due to an error/panic.
 Therefore, it is recommended to either use a service to run it (see the instructions for configuring a service for the server) or use a script to run it again when it terminates.
@@ -272,16 +272,16 @@ Here's an example service file to have the camera hub be launched at boot time a
 
 ```
 [Unit]
-Description=privastead_camera_hub
+Description=secluso_camera_hub
 RequiresMountsFor=/home
 
 [Service]
 User=root
-WorkingDirectory=/absolute-path-to-privastead-binary/
+WorkingDirectory=/absolute-path-to-secluso-binary/
 Environment="RUST_LOG=info"
 Environment="LD_LIBRARY_PATH=/usr/local/lib/aarch64-linux-gnu/:${LD_LIBRARY_PATH:-}"
-ExecStartPre=/usr/bin/test -w /absolute-path-to-privastead-binary/
-ExecStart=/absolute-path-to-privastead-binary/privastead-raspberry-camera-hub
+ExecStartPre=/usr/bin/test -w /absolute-path-to-secluso-binary/
+ExecStart=/absolute-path-to-secluso-binary/secluso-raspberry-camera-hub
 Restart=always
 RestartSec=1
 
@@ -313,11 +313,11 @@ The RTSP port is usually 554, but may vary depending on your camera.
 Motion FPS is the amount of times per second that we run our motion detection algorithm against the most recent frame.
 
 ```
-cd /path-to-privastead/camera_hub
+cd /path-to-secluso/camera_hub
 cargo run --release --features ip
 ```
 
-The Privastead hub will now run and ask you for the username and password for each IP camera if not provided originally in the configuration file. 
+The Secluso hub will now run and ask you for the username and password for each IP camera if not provided originally in the configuration file. 
 After providing them, it will create a QR code containing a secret needed for pairing (camera_hub/camera_name_secret_qrcode.png).
 Each camera then waits to be paired with the app.
 
@@ -327,7 +327,7 @@ Each camera then waits to be paired with the app.
 Clone the Repository:
 
 ```
-git clone https://github.com/privastead/mobile_app.git  
+git clone https://github.com/secluso/mobile_app.git  
 cd mobile_app
 ```
 
@@ -419,7 +419,7 @@ For the secret QR code, you need to generate it and provide a copy for the camer
 More specifically, you can use the config tool:
 
 ```
-cd privastead/config_tool
+cd secluso/config_tool
 cargo run -- --generate-camera-secret --dir .
 ```
 

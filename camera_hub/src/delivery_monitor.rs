@@ -16,14 +16,14 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use privastead_client_lib::mls_client::MlsClient;
+use secluso_client_lib::mls_client::MlsClient;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use privastead_client_lib::thumbnail_meta_info::{ThumbnailMetaInfo};
+use secluso_client_lib::thumbnail_meta_info::{ThumbnailMetaInfo};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct VideoInfo {

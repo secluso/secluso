@@ -1,12 +1,12 @@
 [package]
-name = "privastead-app-native"
+name = "secluso-app-native"
 version = "0.1.0"
 edition = "2021"
 authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
 
 [dependencies]
-privastead-client-lib = { path = "../client_lib" }
-privastead-client-server-lib = { path = "../client_server_lib" }
+secluso-client-lib = { path = "../client_lib" }
+secluso-client-server-lib = { path = "../client_server_lib" }
 bincode = "1.2.1"
 rand="0.8"
 lazy_static = "1.4"
@@ -19,7 +19,7 @@ serde_derive = "1.0"
 
 [features]
 default = []
-for-example = ["privastead-client-lib/http_client"]
+for-example = ["secluso-client-lib/http_client"]
 
 [[example]]
 name = "app"

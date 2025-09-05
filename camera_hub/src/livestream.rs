@@ -17,9 +17,9 @@
 
 use crate::delivery_monitor::DeliveryMonitor;
 use crate::Camera;
-use privastead_client_lib::mls_client::MlsClient;
-use privastead_client_lib::mls_clients::MAX_OFFLINE_WINDOW;
-use privastead_client_lib::http_client::HttpClient;
+use secluso_client_lib::mls_client::MlsClient;
+use secluso_client_lib::mls_clients::MAX_OFFLINE_WINDOW;
+use secluso_client_lib::http_client::HttpClient;
 use std::io;
 use std::pin::Pin;
 use std::sync::mpsc;

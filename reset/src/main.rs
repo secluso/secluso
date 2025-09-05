@@ -1,4 +1,4 @@
-//! Privastead reset button listener.
+//! Secluso reset button listener.
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani
 //!
@@ -31,7 +31,7 @@ use std::io::BufReader;
 use reqwest::blocking::{Client, Body};
 use base64::{engine::general_purpose, Engine as _};
 
-use privastead_client_server_lib::auth::parse_user_credentials_full;
+use secluso_client_server_lib::auth::parse_user_credentials_full;
 
 const MULTI_PRESS_WINDOW: Duration = Duration::from_millis(5000);
 const DEBUG_LOGS_FILENAME: &str = "debug_logs.txt";
@@ -39,7 +39,7 @@ const DEBUG_LOGS_FILENAME: &str = "debug_logs.txt";
 fn run_command_to_completion(command: &str) {
     let output = Command::new("sh")
         .arg("-c")
-        .current_dir("/home/privastead/privastead/camera_hub")
+        .current_dir("/home/secluso/secluso/camera_hub")
         .arg(command)
         .output()
         .expect("failed to execute process");
@@ -58,24 +58,24 @@ fn run_command_to_completion(command: &str) {
 }
 
 fn reset_action() {
-    // First, stop the privastead service
-    run_command_to_completion("sudo systemctl stop privastead.service");
-    // Second, reset privastead camera hub
-    run_command_to_completion("sudo LD_LIBRARY_PATH=/usr/local/lib/aarch64-linux-gnu/:${LD_LIBRARY_PATH:-} /home/privastead/privastead/camera_hub/target/release/privastead-camera-hub --reset-full");
+    // First, stop the secluso service
+    run_command_to_completion("sudo systemctl stop secluso.service");
+    // Second, reset secluso camera hub
+    run_command_to_completion("sudo LD_LIBRARY_PATH=/usr/local/lib/aarch64-linux-gnu/:${LD_LIBRARY_PATH:-} /home/secluso/secluso/camera_hub/target/release/secluso-camera-hub --reset-full");
     // The previous command, if run successfully, will delete the following three directories.
     // But we'll try to delete them again in case that command failed for some reason.
-    run_command_to_completion("sudo rm -r /home/privastead/privastead/camera_hub/state");
-    run_command_to_completion("sudo rm -r /home/privastead/privastead/camera_hub/pending_videos");
-    run_command_to_completion("sudo rm -r /home/privastead/privastead/camera_hub/pending_thumbnails");
-    // Finally, start the privastead service
-    run_command_to_completion("sudo systemctl start privastead.service");
+    run_command_to_completion("sudo rm -r /home/secluso/secluso/camera_hub/state");
+    run_command_to_completion("sudo rm -r /home/secluso/secluso/camera_hub/pending_videos");
+    run_command_to_completion("sudo rm -r /home/secluso/secluso/camera_hub/pending_thumbnails");
+    // Finally, start the secluso service
+    run_command_to_completion("sudo systemctl start secluso.service");
 }
 
 fn save_logs_to_file() -> io::Result<()> {
     let mut cmd = Command::new("journalctl");
     cmd.arg("--no-pager")
         .arg("--output=short-iso")
-        .arg("-u").arg("privastead.service")
+        .arg("-u").arg("secluso.service")
         .arg("-n").arg("10000"); // number of lines
 
     let out = cmd.output()?;

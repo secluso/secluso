@@ -16,11 +16,11 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
-use privastead_client_lib::mls_client::MlsClient;
-use privastead_client_lib::mls_clients::{MlsClients, MOTION, FCM, THUMBNAIL, MAX_OFFLINE_WINDOW};
-use privastead_client_lib::http_client::HttpClient;
-use privastead_client_lib::video_net_info::VideoNetInfo;
-use privastead_client_lib::thumbnail_meta_info::{GeneralDetectionType, ThumbnailMetaInfo};
+use secluso_client_lib::mls_client::MlsClient;
+use secluso_client_lib::mls_clients::{MlsClients, MOTION, FCM, THUMBNAIL, MAX_OFFLINE_WINDOW};
+use secluso_client_lib::http_client::HttpClient;
+use secluso_client_lib::video_net_info::VideoNetInfo;
+use secluso_client_lib::thumbnail_meta_info::{GeneralDetectionType, ThumbnailMetaInfo};
 use std::fs;
 use std::fs::File;
 use std::io;

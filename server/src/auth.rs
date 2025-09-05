@@ -1,4 +1,4 @@
-//! Privastead DS Authentication.
+//! Secluso DS Authentication.
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani
 //!
@@ -16,7 +16,7 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use base64::{engine::general_purpose, Engine as _};
-use privastead_client_server_lib::auth::parse_user_credentials;
+use secluso_client_server_lib::auth::parse_user_credentials;
 use rocket::http::Status;
 use rocket::request::{FromRequest, Outcome, Request};
 use rocket::State;

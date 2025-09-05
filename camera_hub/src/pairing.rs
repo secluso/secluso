@@ -20,11 +20,11 @@ use image::Luma;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::random::OpenMlsRand;
 use openmls_traits::OpenMlsProvider;
-use privastead_client_lib::http_client::HttpClient;
-use privastead_client_lib::pairing;
-use privastead_client_lib::mls_client::{KeyPackages, MlsClient};
-use privastead_client_lib::mls_clients::{MlsClients, MLS_CLIENT_TAGS, CONFIG};
-use privastead_client_server_lib::auth::parse_user_credentials_full;
+use secluso_client_lib::http_client::HttpClient;
+use secluso_client_lib::pairing;
+use secluso_client_lib::mls_client::{KeyPackages, MlsClient};
+use secluso_client_lib::mls_clients::{MlsClients, MLS_CLIENT_TAGS, CONFIG};
+use secluso_client_server_lib::auth::parse_user_credentials_full;
 use qrcode::QrCode;
 use rand::Rng;
 use serde_json::{Value};
@@ -347,7 +347,7 @@ fn bring_hotspot_back_up() -> io::Result<()> {
 pub fn create_wifi_hotspot() {
     let _ = Command::new("sh")
         .arg("-c")
-        .arg("nmcli device wifi hotspot ssid Privastead password \"12345678\"")
+        .arg("nmcli device wifi hotspot ssid Secluso password \"12345678\"")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

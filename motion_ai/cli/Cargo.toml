@@ -1,5 +1,5 @@
 [package]
-name = "privastead-motion-ai-cli"
+name = "secluso-motion-ai-cli"
 version = "0.1.0"
 edition = "2024"
 
@@ -11,5 +11,5 @@ raspberry = ["ffmpeg-next/rpi"]
 ffmpeg-next = { version = "7.1.0", default-features = false, optional = false }
 
 video-rs= { version = "0.10.3", features = ["ndarray"] }
-privastead-motion-ai = { path = "../pipeline", features=["mp4_player"] }
+secluso-motion-ai = { path = "../pipeline", features=["mp4_player"] }
 anyhow = "1.0.41"

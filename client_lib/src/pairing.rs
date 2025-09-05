@@ -1,4 +1,4 @@
-//! Privastead app-camera pairing protocol.
+//! Secluso app-camera pairing protocol.
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani
 //!

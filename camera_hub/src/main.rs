@@ -1,4 +1,4 @@
-//! Privastead camera hub.
+//! Secluso camera hub.
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani
 //!
@@ -23,9 +23,9 @@ extern crate serde_derive;
 
 use cfg_if::cfg_if;
 use docopt::Docopt;
-use privastead_client_lib::http_client::HttpClient;
-use privastead_client_lib::mls_client::MlsClient;
-use privastead_client_lib::mls_clients::{NUM_MLS_CLIENTS, MLS_CLIENT_TAGS,
+use secluso_client_lib::http_client::HttpClient;
+use secluso_client_lib::mls_client::MlsClient;
+use secluso_client_lib::mls_clients::{NUM_MLS_CLIENTS, MLS_CLIENT_TAGS,
     MOTION, LIVESTREAM, FCM, CONFIG, THUMBNAIL, MlsClients};
 use std::array;
 use std::fs;
@@ -39,7 +39,7 @@ use std::panic;
 use std::thread::sleep;
 use std::time::SystemTime;
 use std::{thread, time::Duration};
-use privastead_client_lib::thumbnail_meta_info::ThumbnailMetaInfo;
+use secluso_client_lib::thumbnail_meta_info::ThumbnailMetaInfo;
 
 mod delivery_monitor;
 
@@ -92,16 +92,16 @@ const THUMBNAIL_DIR_GENERAL: &str = "pending_thumbnails";
 static GLOBAL_THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 const USAGE: &str = "
-Privastead camera hub: connects to an IP camera and send videos to the privastead app end-to-end encrypted (through an untrusted server).
+Secluso camera hub: connects to an IP camera and send videos to the secluso app end-to-end encrypted (through an untrusted server).
 
 Usage:
-  privastead-camera-hub
-  privastead-camera-hub --reset
-  privastead-camera-hub --reset-full
-  privastead-camera-hub --test-motion
-  privastead-camera-hub --test-livestream
-  privastead-camera-hub (--version | -v)
-  privastead-camera-hub (--help | -h)
+  secluso-camera-hub
+  secluso-camera-hub --reset
+  secluso-camera-hub --reset-full
+  secluso-camera-hub --test-motion
+  secluso-camera-hub --test-livestream
+  secluso-camera-hub (--version | -v)
+  secluso-camera-hub (--help | -h)
 
 Options:
     --reset             Wipe all the state, but not pending videos

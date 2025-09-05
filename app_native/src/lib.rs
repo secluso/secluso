@@ -12,14 +12,14 @@ use std::path::Path;
 use log::{info, debug, error};
 use anyhow::Context;
 use anyhow::anyhow;
-use privastead_client_lib::pairing;
-use privastead_client_lib::mls_client::{Contact, KeyPackages, MlsClient};
-use privastead_client_lib::mls_clients::MlsClients;
-use privastead_client_lib::video_net_info::{VideoNetInfo, VIDEONETINFO_SANITY};
-use privastead_client_lib::thumbnail_meta_info::{ThumbnailMetaInfo, THUMBNAIL_SANITY};
-use privastead_client_lib::mls_clients::{NUM_MLS_CLIENTS, MLS_CLIENT_TAGS,
+use secluso_client_lib::pairing;
+use secluso_client_lib::mls_client::{Contact, KeyPackages, MlsClient};
+use secluso_client_lib::mls_clients::MlsClients;
+use secluso_client_lib::video_net_info::{VideoNetInfo, VIDEONETINFO_SANITY};
+use secluso_client_lib::thumbnail_meta_info::{ThumbnailMetaInfo, THUMBNAIL_SANITY};
+use secluso_client_lib::mls_clients::{NUM_MLS_CLIENTS, MLS_CLIENT_TAGS,
                                          MOTION, LIVESTREAM, FCM, CONFIG, THUMBNAIL};
-use privastead_client_lib::config::{HeartbeatResult, Heartbeat, HeartbeatRequest,
+use secluso_client_lib::config::{HeartbeatResult, Heartbeat, HeartbeatRequest,
                                     OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE};
 use serde_json::json;
 

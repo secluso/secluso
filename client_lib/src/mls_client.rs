@@ -1,4 +1,4 @@
-//! Privastead client.
+//! Secluso client.
 //!
 //! Copyright (C) 2024  Ardalan Amiri Sani
 //!
@@ -53,7 +53,7 @@ impl Contact {
 
 pub struct Group {
     // Group name is a shared name for the group used by all members.
-    // It is used by the Privastead framework, but not by OpenMLS.
+    // It is used by the Secluso framework, but not by OpenMLS.
     // OpenMLS uses group_id.
     // We keep these two separate because according to OpenMLS:
     // "Group IDs should be random and not be misused as, e.g., a group name."

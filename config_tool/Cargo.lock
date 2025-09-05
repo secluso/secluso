@@ -1521,29 +1521,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "privastead-client-server-lib"
-version = "0.1.0"
-dependencies = [
- "rand 0.8.5",
-]
-
-[[package]]
-name = "privastead-config-tool"
-version = "0.1.0"
-dependencies = [
- "docopt",
- "image",
- "openmls_rust_crypto",
- "openmls_traits",
- "privastead-client-server-lib",
- "qrcode",
- "rand 0.8.5",
- "serde",
- "serde_derive",
- "url",
-]
-
-[[package]]
 name = "proc-macro-error-attr2"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1839,6 +1816,29 @@ dependencies = [
  "pkcs8",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "secluso-client-server-lib"
+version = "0.1.0"
+dependencies = [
+ "rand 0.8.5",
+]
+
+[[package]]
+name = "secluso-config-tool"
+version = "0.1.0"
+dependencies = [
+ "docopt",
+ "image",
+ "openmls_rust_crypto",
+ "openmls_traits",
+ "qrcode",
+ "rand 0.8.5",
+ "secluso-client-server-lib",
+ "serde",
+ "serde_derive",
+ "url",
 ]
 
 [[package]]

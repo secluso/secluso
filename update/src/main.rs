@@ -1,4 +1,4 @@
-//! Privastead camera hub update code.
+//! Secluso camera hub update code.
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani
 //!
@@ -30,9 +30,9 @@ use p384::elliptic_curve::pkcs8::DecodePublicKey;
 use ecdsa::signature::Verifier;
 use bytes::Bytes;
 
-const BIN_NAME: &str = "privastead-camera-hub-aarch64-unknown-linux-gnu";
-const SIGNATURE1_NAME: &str = "privastead-camera-hub-aarch64-unknown-linux-gnu-signer1.sig";
-const SIGNATURE2_NAME: &str = "privastead-camera-hub-aarch64-unknown-linux-gnu-signer2.sig";
+const BIN_NAME: &str = "secluso-camera-hub-aarch64-unknown-linux-gnu";
+const SIGNATURE1_NAME: &str = "secluso-camera-hub-aarch64-unknown-linux-gnu-signer1.sig";
+const SIGNATURE2_NAME: &str = "secluso-camera-hub-aarch64-unknown-linux-gnu-signer2.sig";
 
 pub fn check_update(server_addr: &str) -> Result<()> {
     let current_version = match get_current_version() {
@@ -46,7 +46,7 @@ pub fn check_update(server_addr: &str) -> Result<()> {
     let _ = fs::remove_file(SIGNATURE2_NAME);
 
     let client = Client::builder()
-        .user_agent("privastead-updater")
+        .user_agent("secluso-updater")
         .redirect(reqwest::redirect::Policy::limited(10))
         .build()?;
 
@@ -73,8 +73,8 @@ pub fn check_update(server_addr: &str) -> Result<()> {
     println!("Signatures verified. Updating...");
 
     // Replace current executable
-    let tmp_path = "../camera_hub/target/release/privastead-camera-hub-tmp";
-    let final_path = "../camera_hub/target/release/privastead-camera-hub";
+    let tmp_path = "../camera_hub/target/release/secluso-camera-hub-tmp";
+    let final_path = "../camera_hub/target/release/secluso-camera-hub";
 
     fs::write(&tmp_path, &bin_bytes)?;
     fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o755))?;
@@ -82,7 +82,7 @@ pub fn check_update(server_addr: &str) -> Result<()> {
     // Stop the service
     let status = Command::new("sh")
         .arg("-c")
-        .arg("sudo systemctl stop privastead.service")
+        .arg("sudo systemctl stop secluso.service")
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?
@@ -100,7 +100,7 @@ pub fn check_update(server_addr: &str) -> Result<()> {
     // Start the service
     let status = Command::new("sh")
         .arg("-c")
-        .arg("sudo systemctl start privastead.service")
+        .arg("sudo systemctl start secluso.service")
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?
@@ -181,9 +181,9 @@ const USAGE: &str = "
 Helps update camera_hub.
 
 Usage:
-  privastead-update --server-addr ADDR
-  privastead-config-tool (--version | -v)
-  privastead-config-tool (--help | -h)
+  secluso-update --server-addr ADDR
+  secluso-config-tool (--version | -v)
+  secluso-config-tool (--help | -h)
 
 Options:
     --server-addr ADDR              Address of the server.

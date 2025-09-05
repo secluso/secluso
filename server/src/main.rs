@@ -1,4 +1,4 @@
-//! Privastead Delivery Service (DS).
+//! Secluso Delivery Service (DS).
 //! The DS is implemented as an HTTP server.
 //! The DS is fully untrusted.
 //!

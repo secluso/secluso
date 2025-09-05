@@ -1,4 +1,4 @@
-//! Privastead client identity.
+//! Secluso client identity.
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani
 //!

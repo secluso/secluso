@@ -1,4 +1,4 @@
-//! Privastead Config commands
+//! Secluso Config commands
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani
 //!

@@ -1,36 +1,36 @@
 <p align="center">
-  <img src="https://github.com/privastead/images/blob/main/banner.svg" alt="Privastead" />
+  <img src="https://github.com/secluso/images/blob/main/banner.svg" alt="Secluso" />
 </p>
 
-# Privastead
+# Secluso
 
-Privastead is a privacy-preserving home security camera solution that uses end-to-end encryption.
-In Privastead, the camera encrypts the videos end-to-end for the app on the user's smartphone.
+Secluso is a privacy-preserving home security camera solution that uses end-to-end encryption.
+In Secluso, the camera encrypts the videos end-to-end for the app on the user's smartphone.
 Videos are relayed by a server, but the server cannot decrypt them.
 
-Privastead has two key benefits:
+Secluso has two key benefits:
 
 * **End-to-end encryption** using the OpenMLS implementation of the Messaging Layer Security (MLS) protocol.
 * **Rust** implementation.
 
 ## Components
 
-Privastead has three components:
+Secluso has three components:
 
 * A **camera hub** that records, encrypts, and sends videos.
 * A **mobile app** that allows one to receive event notifications (e.g., person or motion) from the camera as well as livestream the camera remotely.
-* An **untrusted server** that relays (encrypted) messages between the hub and the app. In addition, Privastead uses the Google Firebase Cloud Messaging (FCM) for notifications. Similar to the server, FCM is untrusted.
+* An **untrusted server** that relays (encrypted) messages between the hub and the app. In addition, Secluso uses the Google Firebase Cloud Messaging (FCM) for notifications. Similar to the server, FCM is untrusted.
 
 ## Camera types
 
-Privastead supports two types of cameras.
+Secluso supports two types of cameras.
 
 * **Standalone camera** using a Raspberry Pi. In this case, the camera hub runs directly on the Raspberry Pi.
 * Commercial **IP cameras**. In this case, the camera hub runs on another machine and works with existing IP cameras with minimal trust assumptions about these cameras.
 
 ## Security
 
-Privastead has been carefully designed to strongly protect the user's videos against an attacker that might try to access and view them.
+Secluso has been carefully designed to strongly protect the user's videos against an attacker that might try to access and view them.
 It provides advanced encryption guarantees, namely **forward secrecy** and **post-compromise security**.
 For a more accurate and detailed discussion of its security guarantees, please see [here](SECURITY.md).
 
@@ -44,13 +44,13 @@ The camera hub is capable of detecting various events and sending a notification
 
 ## Supported Cameras
 
-* Standalone camera: Privastead should be able to run on any Raspberry Pi boards that is capable of running its event detection pipeline.
+* Standalone camera: Secluso should be able to run on any Raspberry Pi boards that is capable of running its event detection pipeline.
 So far, the following boards have been successfully tested:
 
   * Raspberry Pi Zero 2W
   * Raspberry Pi 4
 
-* IP camera: Privastead camera can theoretically support any IP camera (or any other camera that has an open interface).
+* IP camera: Secluso camera can theoretically support any IP camera (or any other camera that has an open interface).
 The current prototype relies on RTSP and MJPEG support by the camera.
 The former is used for streaming videos from the camera and the latter is used for a custom motion detection implementation.
 So far, the following cameras have been tested:
@@ -78,17 +78,17 @@ So far, the following cameras have been tested:
 
 ## Instructions
 
-See [here](HOW_TO.md) for instructions for setting up Privastead.
+See [here](HOW_TO.md) for instructions for setting up Secluso.
 
 ## Mailing list
 
-If you are interested in receiving email updates on progress on Privastead, sign up using this [form](https://forms.gle/ZNbTZ9QpaG1z9X2S6).
+If you are interested in receiving email updates on progress on Secluso, sign up using this [form](https://forms.gle/ZNbTZ9QpaG1z9X2S6).
 
 ## Contributions
 
-We welcome contributions to the project. Before working on a contribution, please check with us via email: privastead@proton.me
+We welcome contributions to the project. Before working on a contribution, please check with us via email: secluso@proton.me
 
-Contributions are made under Privastead's [license](LICENSE).
+Contributions are made under Secluso's [license](LICENSE).
 
 
 ## Project members

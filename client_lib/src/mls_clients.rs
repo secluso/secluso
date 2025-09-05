@@ -1,4 +1,4 @@
-//! Privastead list of MLS clients/users
+//! Secluso list of MLS clients/users
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani
 //!

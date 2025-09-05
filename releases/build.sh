@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# A general build tool as well as a reproducibility tester for Privastead.
+# A general build tool as well as a reproducibility tester for Secluso.
 
 # Quick check to ensure necessary tools installed
 for tool in cargo jq sha256sum; do
@@ -89,7 +89,7 @@ build_and_manifest() {
       local CRATE_LOCK_SHA="$(sha256sum "$CRATE_LOCK" | awk '{print $1}')"
 
       # Bin name convention
-      local BIN="privastead-$(tr '_' '-' <<<"$CRATE_NAME")"
+      local BIN="secluso-$(tr '_' '-' <<<"$CRATE_NAME")"
 
       # Per-arch output dir
       local ART_DIR="$OUTDIR/${TRIPLE}"
@@ -128,12 +128,12 @@ build_and_manifest() {
       # Rename IP vs Raspberry camera hub to avoid collisions on ARM64
       case "$PKG" in
         raspberry_camera_hub)
-          NEW_BIN="privastead-raspberry-camera-hub"
+          NEW_BIN="secluso-raspberry-camera-hub"
           mv "$ART_DIR/$BIN" "$ART_DIR/$NEW_BIN"
           BIN="$NEW_BIN"
           ;;
         ip_camera_hub)
-          NEW_BIN="privastead-ip-camera-hub"
+          NEW_BIN="secluso-ip-camera-hub"
           mv "$ART_DIR/$BIN" "$ART_DIR/$NEW_BIN"
           BIN="$NEW_BIN"
           ;;
@@ -370,7 +370,7 @@ fi
 # Allows us to destroy after usage, prevent mass storage usage from multiple builds,
 # pin the BuildKit image version, and run inside a containerized BuildKit
 # backend rather than relying on the host Docker daemon.
-BUILDER="privastead-builds"
+BUILDER="secluso-builds"
 
 # Take care of any leftover builder from a prior session that wasn't cleaned up properly (e.g. power cord removed from desktop computer)
 docker buildx rm -f "$BUILDER" >/dev/null 2>&1 || true

@@ -5,10 +5,10 @@ use std::thread;
 use std::time::Duration;
 use std::path::PathBuf;
 
-use privastead_motion_ai::backend::spawn_replay_server;
-use privastead_motion_ai::logic::pipeline::PipelineController;
-use privastead_motion_ai::frame::RawFrame;
-use privastead_motion_ai::pipeline;
+use secluso_motion_ai::backend::spawn_replay_server;
+use secluso_motion_ai::logic::pipeline::PipelineController;
+use secluso_motion_ai::frame::RawFrame;
+use secluso_motion_ai::pipeline;
 
 use video_rs::*;
 
@@ -79,8 +79,8 @@ fn use_from_video(video_path: &str) -> std::result::Result<(), anyhow::Error> {
 
     // Build pipeline with motion and inference stages
     let pipeline = pipeline![
-        privastead_motion_ai::logic::stages::MotionStage,
-        privastead_motion_ai::logic::stages::InferenceStage,
+        secluso_motion_ai::logic::stages::MotionStage,
+        secluso_motion_ai::logic::stages::InferenceStage,
     ];
 
     // Create and start controller

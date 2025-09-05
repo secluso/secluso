@@ -1,5 +1,5 @@
 [package]
-name = "privastead-camera-hub"
+name = "secluso-camera-hub"
 version = "0.1.0"
 edition = "2021"
 authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
@@ -8,7 +8,7 @@ authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
 default = ["logging"]
 logging = ["log"]
 ip = ["dep:rpassword", "dep:reqwest", "dep:http-auth", "dep:linfa", "dep:linfa-clustering"]
-raspberry = ["dep:privastead-motion-ai"]
+raspberry = ["dep:secluso-motion-ai"]
 telemetry = [] # todo: dep on the motion_ai crate
 
 [dependencies]
@@ -19,8 +19,8 @@ serde = "1.0"
 serde_derive = "1.0"
 rand="0.8"
 bincode = "1.2.1"
-privastead-client-lib = { path = "../client_lib", features = ["http_client"] }
-privastead-client-server-lib = { path = "../client_server_lib" }
+secluso-client-lib = { path = "../client_lib", features = ["http_client"] }
+secluso-client-server-lib = { path = "../client_server_lib" }
 chrono = "0.4"
 base64 = "0.22.1"
 serde-xml-rs = "0.5"
@@ -50,4 +50,4 @@ linfa = { version = "0.7.1", optional = true }
 linfa-clustering = { version = "0.7.1", optional = true }
 
 # Raspberry Specific Dependencies
-privastead-motion-ai = { path = "../motion_ai/pipeline", optional = true }
+secluso-motion-ai = { path = "../motion_ai/pipeline", optional = true }

@@ -561,23 +561,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "privastead-client-server-lib"
-version = "0.1.0"
-dependencies = [
- "rand",
-]
-
-[[package]]
-name = "privastead-reset"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "privastead-client-server-lib",
- "reqwest",
- "rppal",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.101"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -746,6 +729,23 @@ checksum = "da046153aa2352493d6cb7da4b6e5c0c057d8a1d0a9aa8560baffdd945acd414"
 dependencies = [
  "ring",
  "untrusted",
+]
+
+[[package]]
+name = "secluso-client-server-lib"
+version = "0.1.0"
+dependencies = [
+ "rand",
+]
+
+[[package]]
+name = "secluso-reset"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "reqwest",
+ "rppal",
+ "secluso-client-server-lib",
 ]
 
 [[package]]

@@ -1158,28 +1158,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "privastead-client-server-lib"
-version = "0.1.0"
-dependencies = [
- "rand",
-]
-
-[[package]]
-name = "privastead-server"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "dashmap",
- "jsonwebtoken",
- "privastead-client-server-lib",
- "reqwest",
- "rocket",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.101"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1488,6 +1466,28 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "secluso-client-server-lib"
+version = "0.1.0"
+dependencies = [
+ "rand",
+]
+
+[[package]]
+name = "secluso-server"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "dashmap",
+ "jsonwebtoken",
+ "reqwest",
+ "rocket",
+ "secluso-client-server-lib",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "security-framework"

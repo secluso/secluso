@@ -1,4 +1,4 @@
-//! Privastead HTTP client for using the delivery service (DS).
+//! Secluso HTTP client for using the delivery service (DS).
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani
 //!

@@ -1,4 +1,4 @@
-//! Privastead camera traits.
+//! Secluso camera traits.
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani
 //!

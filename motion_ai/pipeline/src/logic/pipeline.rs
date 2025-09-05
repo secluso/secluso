@@ -619,7 +619,7 @@ impl Default for PipelineController {
 #[macro_export]
 macro_rules! pipeline {
     ( $($stage:expr), * $(,)? ) => {{
-        let mut builder = privastead_motion_ai::logic::pipeline::PipelineBuilder::new();
+        let mut builder = secluso_motion_ai::logic::pipeline::PipelineBuilder::new();
         $(
         builder = builder.then($stage);
         )*

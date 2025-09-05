@@ -1,5 +1,5 @@
 [package]
-name = "privastead-config-tool"
+name = "secluso-config-tool"
 version = "0.1.0"
 edition = "2021"
 authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
@@ -14,4 +14,4 @@ qrcode = "0.14.0"
 image = "0.25.1"
 rand = "0.8"
 url = "2"
-privastead-client-server-lib = { path = "../client_server_lib" }
+secluso-client-server-lib = { path = "../client_server_lib" }

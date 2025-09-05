@@ -16,9 +16,9 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use std::io;
-use privastead_client_lib::config::{OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE, HeartbeatRequest, Heartbeat};
-use privastead_client_lib::mls_clients::{CONFIG, MlsClients};
-use privastead_client_lib::http_client::HttpClient;
+use secluso_client_lib::config::{OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE, HeartbeatRequest, Heartbeat};
+use secluso_client_lib::mls_clients::{CONFIG, MlsClients};
+use secluso_client_lib::http_client::HttpClient;
 use crate::DeliveryMonitor;
 
 pub fn process_config_command(

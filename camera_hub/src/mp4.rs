@@ -1,4 +1,4 @@
-//! Privastead MP4 Writer.
+//! Secluso MP4 Writer.
 //! FIXME: shares a lot of code with fmp4.rs
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani

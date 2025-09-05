@@ -32,8 +32,8 @@ use crate::raspberry_pi::rpi_camera::{VideoFrame, VideoFrameKind};
 use anyhow::anyhow;
 use bytes::BytesMut;
 use crossbeam_channel::Sender;
-use privastead_motion_ai::frame::RawFrame;
-use privastead_motion_ai::logic::pipeline::PipelineController;
+use secluso_motion_ai::frame::RawFrame;
+use secluso_motion_ai::logic::pipeline::PipelineController;
 
 
 /// Provides two channels: one for raw YUV420 frames from rpicam‑vid (for motion detection), one for H.264 frames converted by rpicam-vid.
@@ -123,7 +123,7 @@ pub fn start(
         thread::spawn(move || {
             let stream_attempt: Option<UnixStream> = connect_to_socket();
             if stream_attempt.is_none() {
-                panic!("Was unable to connect to the rpicam-vid socket. Are you using the built rpicam-apps privastead fork?");
+                panic!("Was unable to connect to the rpicam-vid socket. Are you using the built rpicam-apps secluso fork?");
             }
 
             let mut stream = stream_attempt.unwrap(); // Unwrap will work since we checked is_none()

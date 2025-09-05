@@ -1,11 +1,11 @@
 [package]
-name = "privastead-reset"
+name = "secluso-reset"
 version = "0.1.0"
 edition = "2021"
 authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
 
 [dependencies]
 rppal = "0.22.1"
-privastead-client-server-lib = { path = "../client_server_lib" }
+secluso-client-server-lib = { path = "../client_server_lib" }
 reqwest = { version = "0.11", default-features = false, features = ["blocking", "rustls-tls"] }
 base64 = { version = "0.22.1" }

@@ -795,23 +795,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "privastead-update"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64",
- "bytes",
- "docopt",
- "ecdsa",
- "p384",
- "pem",
- "reqwest",
- "semver",
- "serde",
- "sha2",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.101"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1092,6 +1075,23 @@ dependencies = [
  "pkcs8",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "secluso-update"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "bytes",
+ "docopt",
+ "ecdsa",
+ "p384",
+ "pem",
+ "reqwest",
+ "semver",
+ "serde",
+ "sha2",
 ]
 
 [[package]]
