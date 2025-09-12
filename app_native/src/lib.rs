@@ -413,7 +413,7 @@ pub fn decrypt_video(
 
     let file_dir = clients.as_mut().unwrap().mls_clients[MOTION].get_file_dir();
     info!("File dir: {}", file_dir);
-    let enc_pathname: String = format!("{}/{}", file_dir, encrypted_filename);
+    let enc_pathname: String = format!("{}/videos/{}", file_dir, encrypted_filename);
 
     let mut enc_file = fs::File::open(enc_pathname).expect("Could not open encrypted file");
 
@@ -452,7 +452,7 @@ pub fn decrypt_video(
     //We should use the timestamp in the decrypted filename going forward
     //and discard the encrypted filename.
     let dec_filename = format!("video_{}.mp4", info.timestamp);
-    let dec_pathname: String = file_dir.to_owned() + "/" + &dec_filename;
+    let dec_pathname: String = format!("{}/videos/{}", file_dir, dec_filename);
 
     if Path::new(&dec_pathname).exists() {
         return Ok("Duplicate".to_string());
@@ -511,7 +511,7 @@ pub fn decrypt_thumbnail(
 
     let file_dir = clients.as_mut().unwrap().mls_clients[THUMBNAIL].get_file_dir();
     info!("File dir: {}", file_dir);
-    let enc_pathname: String = format!("{}/{}", file_dir, encrypted_filename);
+    let enc_pathname: String = format!("{}/videos/{}", file_dir, encrypted_filename);
 
     let mut enc_file = fs::File::open(enc_pathname).expect("Could not open encrypted file");
 
@@ -543,7 +543,7 @@ pub fn decrypt_thumbnail(
     }
 
     let dec_filename: String = thumbnail_meta_info.filename;
-    let dec_pathname: String = file_dir.to_owned() + "/" + &dec_filename;
+    let dec_pathname: String = format!("{}/videos/{}", file_dir, dec_filename);
 
     if Path::new(&dec_pathname).exists() {
         // TODO: Should this be an error?

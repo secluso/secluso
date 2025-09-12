@@ -78,7 +78,7 @@ fn main() -> io::Result<()> {
         BufReader::with_capacity(file2.metadata().unwrap().len().try_into().unwrap(), file2);
     let secret_vec = reader2.fill_buf().unwrap();
 
-    fs::create_dir_all(DATA_DIR).unwrap();
+    fs::create_dir_all(format!("{}/videos", DATA_DIR)).unwrap();
 
     let first_time_path = Path::new(DATA_DIR).join("first_time_done");
     let first_time: bool = !first_time_path.exists();
@@ -287,7 +287,7 @@ fn fetch_motion_video(
     let group_name = get_group_name(&mut clients_locked, "motion")?;
     
     let enc_filename = format!("{}", epoch);
-    let enc_filepath = Path::new(DATA_DIR).join(&enc_filename);
+    let enc_filepath = Path::new(DATA_DIR).join("videos").join(&enc_filename);
     match http_client.fetch_enc_video(&group_name, &enc_filepath) {
         Ok(_) => {
             let dec_filename = decrypt_video(&mut clients_locked, enc_filename).unwrap();
