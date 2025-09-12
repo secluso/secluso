@@ -3,6 +3,8 @@
 Secluso ships software for many different device classes (Raspberry Pi, IP cameras, x86 servers, ..).  
 This repo includes a **deterministic build pipeline** with a **reproducibility checker** so anyone can verify that released artifacts correspond to source.
 
+Note: You must have an ARM64 machine in order to build it yourself with this system. 
+
 ---
 
 ## Why Reproducible Builds?

@@ -249,6 +249,13 @@ You are now done configuring the camera. Make sure to connect the machine to the
 
 ## Step 5 (standalone camera only): Configuring and running camera hub
 
+We recommend using one of our **pre-built releases** from the
+releases page. Download the appropriate binary for your Raspberry Pi and run it directly on the device.
+
+<details>
+<summary><strong>Build it yourself</strong></summary>
+Note: You must have an ARM64 machine in order to build it yourself with this system. 
+
 Instead of building the hub directly with `cargo`, we strongly recommend using our
 deterministic reproducible build system. This ensures that the binaries you run
 are verifiable against source and match our official releases.
@@ -265,6 +272,7 @@ In short:
 3. Copy the relevant binary `builds/time/aarch64-unknown-linux-gnu/secluso-raspberry-camera-hub` onto your device. Time resembles your current system time and will be replaced with a long number (you can ignore this)
 4. Run it directly on the device:
 ```./secluso-raspberry-camera-hub```
+</details>
 
 The camera hub is designed so that it can be resumed if it stops either intentionally or due to an error/panic.
 Therefore, it is recommended to either use a service to run it (see the instructions for configuring a service for the server) or use a script to run it again when it terminates.
