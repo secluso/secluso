@@ -1,6 +1,6 @@
-# Privastead — Deterministic, Reproducible Builds
+# Secluso — Deterministic, Reproducible Builds
 
-Privastead ships software for many different device classes (Raspberry Pi, IP cameras, x86 servers, ..).  
+Secluso ships software for many different device classes (Raspberry Pi, IP cameras, x86 servers, ..).  
 This repo includes a **deterministic build pipeline** with a **reproducibility checker** so anyone can verify that released artifacts correspond to source.
 
 ---
@@ -9,7 +9,7 @@ This repo includes a **deterministic build pipeline** with a **reproducibility c
 
 - **Trust & security**  
   Reproducible builds allow you (or anyone else) to independently verify that the binaries we distribute are *exactly* what you’d get if you built from the source code in this repository.  
-  - Without reproducibility, you’d have to take our word that the binaries match the source. In privacy-sensitive software like Privastead, that’s a big leap of faith: hidden code or malicious alterations could be introduced between source and release without easy detection.  
+  - Without reproducibility, you’d have to take our word that the binaries match the source. In privacy-sensitive software like Secluso, that’s a big leap of faith: hidden code or malicious alterations could be introduced between source and release without easy detection.  
   - With reproducibility, you don’t need to trust our build environment, our release process, or even us as maintainers. You can rebuild on your own machine, compare the results, and **cryptographically confirm** the binaries are bit-for-bit identical.  
   - This is especially critical for privacy-related devices (like cameras). Verifying reproducibility ensures that the binaries you’re running to protect your home or workplace are free from backdoors, hidden telemetry, or any other logic not visible in the public source.
 
@@ -94,10 +94,10 @@ Note that you only need to build what you want checked; it'll just check the fil
 - builds/1725160000/
   - manifest.json
   - aarch64-unknown-linux-gnu/
-    - privastead-raspberry-camera-hub
-    - privastead-ip-camera-hub
+    - secluso-raspberry-camera-hub
+    - secluso-ip-camera-hub
   - x86_64-unknown-linux-gnu/
-    - privastead-ip-camera-hub
+    - secluso-ip-camera-hub
 
 ---
 
@@ -145,7 +145,7 @@ Rust **target triples** identify the compilation target: `arch-vendor-os-abi`.
 - `aarch64-unknown-linux-gnu`: ARM64, Linux, GNU libc  
 - `x86_64-unknown-linux-gnu`: x86_64, Linux, GNU libc
 
-Privastead currently uses:
+Secluso currently uses:
 
 | Target | Triples                                   |
 |--------|-------------------------------------------|

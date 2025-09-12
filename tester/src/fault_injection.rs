@@ -75,7 +75,7 @@ impl VisitMut for FaultInjector {
 }
 
 fn insert_use_statement(mut code: String) -> String {
-    let use_stmt = "use privastead_client_server_lib::inject_fault;";
+    let use_stmt = "use secluso_client_server_lib::inject_fault;";
     let mut insert_pos = 0;
 
     for (_i, line) in code.lines().enumerate() {

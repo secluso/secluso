@@ -1,5 +1,5 @@
 [package]
-name = "privastead-tester"
+name = "secluso-tester"
 version = "0.1.0"
 edition = "2021"
 authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]

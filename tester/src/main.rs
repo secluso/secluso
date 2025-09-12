@@ -1,4 +1,4 @@
-//! Tester to test the reliability of Privastead components.
+//! Tester to test the reliability of Secluso components.
 //!
 //! Copyright (C) 2025  Ardalan Amiri Sani
 //!
@@ -96,7 +96,7 @@ fn compile_all() -> io::Result<()> {
 fn spawn_server(test_type: &TestType) -> io::Result<Child> {
     let (arg, fault_tag) = parse_test_type(test_type, FaultComponent::Server)?;
 
-    Command::new("../../../server/target/debug/privastead-server")
+    Command::new("../../../server/target/debug/secluso-server")
         .arg(arg)
         .current_dir("./data/server")
         .env(INJECT_FAULT_ENV_VAR, fault_tag)
@@ -108,7 +108,7 @@ fn spawn_server(test_type: &TestType) -> io::Result<Child> {
 fn spawn_camera_hub(test_type: &TestType) -> io::Result<Child> {
     let (arg, fault_tag) = parse_test_type(test_type, FaultComponent::CameraHub)?;
 
-    Command::new("../../../camera_hub/target/debug/privastead-camera-hub")
+    Command::new("../../../camera_hub/target/debug/secluso-camera-hub")
         .arg(arg)
         .current_dir("./data/camera_hub")
         .env(INJECT_FAULT_ENV_VAR, fault_tag)
