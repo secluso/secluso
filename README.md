@@ -80,9 +80,9 @@ So far, the following cameras have been tested:
 
 See [here](HOW_TO.md) for instructions for setting up Secluso.
 
-## Mailing list
+## Website and mailing list
 
-If you are interested in receiving email updates on progress on Secluso, sign up using this [form](https://forms.gle/ZNbTZ9QpaG1z9X2S6).
+Check our website [here](https://secluso.com) and join our mailing list there if you are interested in receiving email updates on our progress on Secluso.
 
 ## Contributions
 
