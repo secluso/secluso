@@ -29,7 +29,7 @@ done
 
 if [[ -z "$COMPARE_DIR1" && ( -z "${TARGET}" || -z "${PROFILE}" ) ]]; then
   echo "Usage:" >&2
-  echo "  $0 --target {raspberry|ipcamera|all} --profile {all|core|camerahub} [--test-reproduce]" >&2
+  echo "  $0 --target {raspberry|ipcamera|all} --profile {all|core|camerahub|release} [--test-reproduce]" >&2
   echo "  $0 --compare <build_dir_run1> <build_dir_run2>" >&2
   exit 1
 fi
@@ -343,7 +343,11 @@ elif [[ "$TARGET" == "ipcamera" ]]; then
   esac
 elif [[ "$TARGET" == "all" ]]; then
   TRIPLES=( "aarch64-unknown-linux-gnu" "x86_64-unknown-linux-gnu" )
-  PKGS=( "update" "reset" "raspberry_camera_hub" "ip_camera_hub" "config_tool" "server" )
+  case "$PROFILE" in
+    all)      PKGS=( "update" "reset" "raspberry_camera_hub" "ip_camera_hub" "config_tool" "server" ) ;;
+    release)  PKGS=( "raspberry_camera_hub" "ip_camera_hub" "config_tool" "server" ) ;;
+    *) echo "Invalid profile for all: $PROFILE" >&2; exit 1 ;;
+  esac
 else
   echo "Unknown target: $TARGET" >&2
   exit 1

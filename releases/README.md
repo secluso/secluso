@@ -73,6 +73,9 @@ Note that you only need to build what you want checked; it'll just check the fil
 
 - **Rebuild everything for all devices**  
   `./build.sh --target all --profile all`
+- 
+- **Rebuild everything for our releases**  
+  `./build.sh --target all --profile release`
 
 - **Run a reproducibility self-test (two fresh local builds)**  
   `./build.sh --target raspberry --profile core --test-reproduce`
@@ -168,6 +171,10 @@ Secluso currently uses:
 - ipcamera
   - `all`: ip_camera_hub, config_tool, server
   - `camerahub`: ip_camera_hub
+  
+- all
+  - `all`: all of the above for both architectures
+  - `release`: only the packages that we distribute in releases
 
 **Package -> crate/feature mapping** (done in the script):
 
