@@ -28,6 +28,14 @@ Secluso supports two types of cameras.
 * **Standalone camera** using a Raspberry Pi. In this case, the camera hub runs directly on the Raspberry Pi.
 * Commercial **IP cameras**. In this case, the camera hub runs on another machine and works with existing IP cameras with minimal trust assumptions about these cameras.
 
+### Plug-and-play camera
+
+We are also working on a plug-and-play camera based on our Raspberry Pi prototype. The goal is to make our camera more accessible to people who need a private camera but don't have time to set up our open-source project. Below is a photo of this plug-and-play camera. If you're interested, check out our website [here](https://secluso.com) and join our mailing list on the website. We will be sending updates on our plug-and-play camera as well as our progress on our open source software.
+
+<p align="center">
+  <img src="https://secluso.com/images/Group-5.png" alt="Secluso plug-and-play camera" />
+</p>
+
 ## Security
 
 Secluso has been carefully designed to strongly protect the user's videos against an attacker that might try to access and view them.
@@ -79,10 +87,6 @@ So far, the following cameras have been tested:
 ## Instructions
 
 See [here](HOW_TO.md) for instructions for setting up Secluso.
-
-## Website and mailing list
-
-Check our website [here](https://secluso.com) and join our mailing list there if you are interested in receiving email updates on our progress on Secluso.
 
 ## Contributions
 
