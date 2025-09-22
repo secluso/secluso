@@ -74,10 +74,7 @@ use std::sync::{
 };
 use std::time::{Duration, SystemTime};
 use rpassword::read_password;
-use serde_yml::Value;
 use std::collections::HashMap;
-
-
 
 pub struct IpCamera {
     name: String,
@@ -96,6 +93,23 @@ struct Frame {
     timestamp: SystemTime, // timestamp used to manage frames in the queue
     is_video: bool,
     is_random_access_point: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct Config {
+    cameras: Vec<CameraConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CameraConfig {
+    name: String,
+    motion_fps: u64,
+    ip: String,
+    rtsp_port: u16,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
 }
 
 impl IpCamera {
@@ -170,8 +184,8 @@ impl IpCamera {
     /// Parses cameras.yaml file and returns a list of all cameras.
     pub fn get_all_cameras_info() -> io::Result<Vec<Box<dyn Camera + Send>>> {
         // Retrieve the cameras.yaml file. If it doesn't exist, print an error message for the user.
-        let cameras_file = match File::open("cameras.yaml") {
-            Ok(file) => file,
+        let content = match fs::read_to_string("cameras.yaml") {
+            Ok(c) => c,
 
             Err(_error) => {
                 println!("Error retrieving cameras.yaml file, see the example_cameras.yaml for an example configuration.");
@@ -179,100 +193,64 @@ impl IpCamera {
             }
         };
 
-        // Load the yml file in for analysis
-        let loaded_cameras: HashMap<String, Value> = serde_yml::from_reader(cameras_file)
+        // Load the yml file in for analysis    
+        let cfg: Config = serde_yaml2::from_str(&content)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-        // Extract cameras
-        let cameras_section = loaded_cameras
-            .get("cameras")
-            .expect("Cameras section is missing from cameras.yaml");
 
         let mut camera_list: Vec<Box<dyn Camera + Send>> = Vec::new();
 
         // Iterate through every camera in the cameras.yaml file, accumulating structs representing their data
-        if let Value::Sequence(cameras) = cameras_section {
-            for camera in cameras {
-                if let Value::Mapping(map) = camera {
-                    let camera_name = map
-                        .get(&Value::String("name".to_string()))
-                        .expect("Missing camera name")
-                        .as_str()
-                        .unwrap();
-                    let camera_motion_fps = map
-                        .get(&Value::String("motion_fps".to_string()))
-                        .expect("Missing Motion FPS")
-                        .as_u64()
-                        .unwrap();
+        for c in cfg.cameras {
+            let mut camera_username = c.username.unwrap_or_default();
+            let mut camera_password = c.password.unwrap_or_default();
+            
 
-                    let camera_ip = map
-                        .get(&Value::String("ip".to_string()))
-                        .expect("Missing IP for camera")
-                        .as_str()
-                        .unwrap();
-                    let camera_rtsp_port = map
-                        .get(&Value::String("rtsp_port".to_string()))
-                        .expect("Missing RTSP port")
-                        .as_u64()
-                        .unwrap() as u16;
-                    let mut camera_username = map
-                        .get(&Value::String("username".to_string()))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let mut camera_password = map
-                        .get(&Value::String("password".to_string()))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
+            if camera_username.is_empty() {
+                camera_username = Self::ask_user(format!(
+                    "Enter the username for the IP camera {:?}: ",
+                    c.name
+                ))
+                    .unwrap();
+            }
 
-                    if camera_username.is_empty() {
-                        camera_username = Self::ask_user(format!(
-                            "Enter the username for the IP camera {:?}: ",
-                            camera_name
-                        ))
-                            .unwrap();
-                    }
+            if camera_password.is_empty() {
+                camera_password = Self::ask_user_password(format!(
+                    "Enter the password for the IP camera {:?}: ",
+                    c.name
+                ))
+                    .unwrap();
+            }
 
-                    if camera_password.is_empty() {
-                        camera_password = Self::ask_user_password(format!(
-                            "Enter the password for the IP camera {:?}: ",
-                            camera_name
-                        ))
-                            .unwrap();
-                    }
+            let ip_camera_result = IpCamera::new(
+                c.name.clone(),
+                c.ip,
+                c.rtsp_port,
+                camera_username,
+                camera_password,
+                format!(
+                    "{}/{}",
+                    STATE_DIR_GENERAL,
+                    c.name.replace(" ", "_").to_lowercase()
+                ),
+                format!(
+                    "{}/{}",
+                    VIDEO_DIR_GENERAL,
+                    c.name.replace(" ", "_").to_lowercase()
+                ),
+                format!(
+                    "{}/{}",
+                    THUMBNAIL_DIR_GENERAL,
+                    c.name.replace(" ", "_").to_lowercase()
+                ),
+                c.motion_fps,
+            );
 
-                    let ip_camera_result = IpCamera::new(
-                        camera_name.parse().unwrap(),
-                        camera_ip.parse().unwrap(),
-                        camera_rtsp_port,
-                        camera_username.parse().unwrap(),
-                        camera_password.parse().unwrap(),
-                        format!(
-                            "{}/{}",
-                            STATE_DIR_GENERAL,
-                            camera_name.replace(" ", "_").to_lowercase()
-                        ),
-                        format!(
-                            "{}/{}",
-                            VIDEO_DIR_GENERAL,
-                            camera_name.replace(" ", "_").to_lowercase()
-                        ),
-                        format!(
-                            "{}/{}",
-                            THUMBNAIL_DIR_GENERAL,
-                            camera_name.replace(" ", "_").to_lowercase()
-                        ),
-                        camera_motion_fps,
-                    );
-                    match ip_camera_result {
-                        Ok(camera) => {
-                            camera_list.push(Box::new(camera));
-                        }
-                        Err(err) => {
-                            panic!("Failed to initialize the IP camera object. Consider resetting the camera. (Error: {err})");
-                        }
-                    }
+            match ip_camera_result {
+                Ok(camera) => {
+                    camera_list.push(Box::new(camera));
+                }
+                Err(err) => {
+                    panic!("Failed to initialize the IP camera object. Consider resetting the camera. (Error: {err})");
                 }
             }
         }
