@@ -3,12 +3,18 @@
 # A general build tool as well as a reproducibility tester for Secluso.
 
 # Quick check to ensure necessary tools installed
-for tool in cargo jq sha256sum; do
+for tool in cargo jq sha256sum docker; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "Required tool missing: $tool" >&2
     exit 1
   fi
 done
+
+# Buildx does not always come by default in Docker. Separate check for it.
+if ! docker buildx version >/dev/null 2>&1; then
+  echo "Docker Buildx is not available" >&2
+  exit 1
+fi
 
 # Arg parse the user input
 TARGET=""

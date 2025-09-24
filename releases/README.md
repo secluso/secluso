@@ -5,6 +5,33 @@ This repo includes a **deterministic build pipeline** with a **reproducibility c
 
 Note: You must have an ARM64 machine in order to build it yourself with this system. 
 
+<details>
+<summary><strong>Don't have an ARM64 machine? Click here.</strong></summary>
+Unfortunately, not everyone has an ARM64 machine. We wanted to provide a guide for people who don't, so that you're able to verify our builds as well.
+
+There are a couple of ARM64 VPS providers. Most of them require that you do identity verification. One that doesn't, that I've personally tested, is https://servers.guru/arm-vps/. You can get a 2-core 4GB ARM VPS for $7/mo. Note that we are not affiliated with servers.guru whatsoever, and that is not an affiliate link. We like that they provide anonymous payment options and seem to try to respect your privacy. Any ARM64 VPS will work. Another option that's more popular is https://www.hetzner.com/cloud (Ampere option), but they'll likely require you to upload identity verification documents (such as your passport).
+
+Below is a guide instructing how to get everything setup on the VPS and run from scratch.
+
+1. Provision with Ubuntu 24.04
+2. Use the credentials from the email to log in. Change your password to something secure after logging in (you will be prompted on the first login)
+3. Install the latest Rust (https://www.rust-lang.org/tools/install)
+4. Install Docker (https://docs.docker.com/engine/install/ubuntu/)
+5. Update the list of available software packages by running `sudo apt-get update`
+6. Install the command line utility jq (used for parsing JSON) by running `apt-get install jq`
+
+The following steps assume you are using version v0.1.0. If we have a release after this and have not updated the version number here, please change the version number accordingly.
+1. Acquire the code from our latest release: `wget https://github.com/secluso/secluso/archive/refs/tags/v0.1.0.zip` 
+2. Unzip the zip file `apt install unzip` then `unzip v0.1.0.zip` (unzips into folder secluso-0.1.0) 
+3. Change your directory into the releases folder in the secluso-0.1.0 directory: `cd secluso-0.1.0/releases`
+4. Run the build.sh script: `./build.sh` with your preferred arguments, which are detailed in the description below.
+5. Fetch our latest release's binary/manifest ZIP file via wget, `wget https://github.com/secluso/secluso/releases/download/v0.1.0/secluso-v0.1.0.zip`  
+6. Unzip the zip file: `unzip secluso-v0.1.0.zip -d official-binaries` (unzips into folder official-binaries)
+7. Run the compare check: `./build.sh --compare builds/<TIMESTAMP> official-binaries` (replace <TIMESTAMP> with the folder in the builds/ directory that contains the binaries you built)
+
+If you see `REPRODUCIBILITY CHECK PASSED`, then you're all set! We do not recommend casually building with this in case your server is compromised, we only recommend using it as a verification against our released binaries.
+</details>
+
 ---
 
 ## Why Reproducible Builds?

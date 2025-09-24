@@ -95,10 +95,10 @@ We welcome contributions to the project. Before working on a contribution, pleas
 Contributions are made under Secluso's [license](LICENSE).
 
 
-## Project members
+## Project Founders
 
-* Project Founder: Ardalan Amiri Sani (Ph.D., Computer Science professor at UC Irvine with expertise in computer security and privacy)
-* John Kaczman (Computer Science Student interested in security and ML/DL applications)
+* Ardalan Amiri Sani (Ph.D., Computer Science professor at UC Irvine with expertise in computer security and privacy)
+* John Kaczman (Open source and privacy enthusiast. Experienced in automation, systems and AI)
 
 Note: this is a side project of Ardalan Amiri Sani and John Kaczman, who work on it in their spare time.
 
