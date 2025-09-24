@@ -51,7 +51,7 @@ mod auth;
 mod fcm;
 mod security;
 
-use crate::auth::{initialize_users, BasicAuth};
+use crate::auth::{initialize_users, FailStore, BasicAuth};
 use crate::fcm::send_notification;
 use crate::security::check_path_sandboxed;
 
@@ -834,6 +834,7 @@ async fn upload_debug_logs(data: Data<'_>, auth: BasicAuth) -> io::Result<String
 fn rocket() -> _ {
     let all_event_state: AllEventState = Arc::new(DashMap::new());
     let pairing_state: SharedPairingState = Arc::new(Mutex::new(HashMap::new()));
+    let failure_store: FailStore = Arc::new(DashMap::new());
 
     let config = rocket::Config {
         port: 8000,
@@ -844,6 +845,7 @@ fn rocket() -> _ {
     rocket::custom(config)
         .manage(all_event_state)
         .manage(initialize_users())
+        .manage(failure_store)
         .manage(pairing_state)
         .mount(
             "/",

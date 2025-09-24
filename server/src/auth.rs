@@ -20,6 +20,11 @@ use secluso_client_server_lib::auth::{parse_user_credentials, NUM_USERNAME_CHARS
 use rocket::http::Status;
 use rocket::request::{FromRequest, Outcome, Request};
 use rocket::State;
+use std::time::Duration;
+use dashmap::DashMap;
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::time::Instant;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
@@ -31,11 +36,72 @@ use subtle::{Choice, ConstantTimeEq};
 
 const DUMMY_PASSWORD: [u8; NUM_PASSWORD_CHARS] = [0u8; NUM_PASSWORD_CHARS];
 
+// Temporal window of which we examine the amount of fails a user makes
+const FAIL_WINDOW: Duration = Duration::from_secs(5 * 60);
+
+// The amount of times we allow authentication fails within the FAIL_WINDOW.
+const MAX_FAILS: usize = 5;
+
+// The length at which a person with a given IP is locked out if they perform MAX_FAILS fails within the FAIL_WINDOW.
+const LOCKOUT: Duration = Duration::from_secs(15 * 60);
+
 pub struct BasicAuth {
     pub username: String,
 }
 
+// Store for each IP the amount of invalid attempts of logging in to prevent bruteforcing.
+#[derive(Default)]
+pub struct FailEntry {
+    pub attempts: VecDeque<Instant>,
+    pub locked_until: Option<Instant>,
+}
+
+// DashMap helps avoid normal user issues in cases of brute-forcing from lots of different IPs at once.
+pub type FailStore = Arc<DashMap<String, FailEntry>>;
+
 type UserStore = Mutex<HashMap<String, String>>;
+
+
+// Check and see if the given IP (key) is in lock-mode.
+fn is_locked(store: &FailStore, key: &str) -> bool {
+    if let Some(mut state) = store.get_mut(key) {
+        if let Some(until) = state.locked_until {
+            if Instant::now() < until {
+                return true;
+            } else {
+                state.locked_until = None; // No longer in a lock.
+            }
+        }
+    }
+    false
+}
+
+// Records a failure for the given IP (key). If the key has now reached the point of locking, this will return true.
+fn record_failure(store: &FailStore, key: &str) -> bool {
+    let mut state = store.entry(key.to_string()).or_default();
+    let now = Instant::now();
+
+    // Discard attempts not within the FAIL_WINDOW, allows us to count easily and get rid of excess memory
+    while let Some(&t) = state.attempts.front() {
+        if now.duration_since(t) > FAIL_WINDOW {
+            state.attempts.pop_front();
+        } else {
+            break;
+        }
+    }
+
+    // Add the current time.
+    state.attempts.push_back(now);
+
+    // If we reached MAX_FAILS, set the locked_until field and return true.
+    if state.attempts.len() >= MAX_FAILS {
+        state.locked_until = Some(now + LOCKOUT);
+        true
+    } else {
+        false
+    }
+}
+
 
 /// Convert &str to fixed-length bytes for constant-time comparison.
 /// Assumes passwords are ASCII (or otherwise 1 byte per char) and always NUM_PASSWORD_CHARS long.
@@ -56,6 +122,17 @@ impl<'r> FromRequest<'r> for BasicAuth {
     async fn from_request(req: &'r Request<'_>) -> Outcome<Self, Self::Error> {
         let auth_header = req.headers().get_one("Authorization");
         let user_store = req.guard::<&State<UserStore>>().await.unwrap();
+        let fail_store = req.guard::<&State<FailStore>>().await.unwrap();
+
+        let ip = req.client_ip()
+            .map(|ip| ip.to_string())
+            .unwrap_or_else(|| "unknown".into());
+
+        {
+            if is_locked(&fail_store, &ip) {
+                return Outcome::Error((Status::TooManyRequests, ()));
+            }
+        }
 
         if let Some(auth_value) = auth_header {
             if let Some((username, password)) = decode_basic_auth(auth_value) {
@@ -75,6 +152,14 @@ impl<'r> FromRequest<'r> for BasicAuth {
             }
         }
 
+        // Failed to authenticate, so we accumulate the internal counter to guard against brute-forcing attempts.
+        {
+            let now_locked = record_failure(fail_store, &ip);
+            if now_locked {
+                return Outcome::Error((Status::TooManyRequests, ()));
+            }
+        }
+
         Outcome::Error((Status::Unauthorized, ()))
     }
 }
@@ -90,7 +175,6 @@ fn decode_basic_auth(auth_value: &str) -> Option<(String, String)> {
 
         if username.len() != NUM_USERNAME_CHARS ||
             password.len() != NUM_PASSWORD_CHARS {
-
             return None;
         }
 
