@@ -17,7 +17,7 @@
 
 use std::fs;
 use std::io;
-use syn::{parse_file, visit_mut::VisitMut, Stmt, File, Block, Expr};
+use syn::{parse_file, visit_mut::VisitMut, Block, Expr, File, Stmt};
 
 struct FaultInjector {
     tag_counter: usize,
@@ -46,7 +46,7 @@ impl FaultInjector {
             _ => false,
         }
     }
-    
+
     fn is_tail_expression(stmt: &Stmt, block: &syn::Block) -> bool {
         if let Stmt::Expr(_, None) = stmt {
             std::ptr::eq(stmt, block.stmts.last().unwrap_or(stmt))
@@ -78,7 +78,7 @@ fn insert_use_statement(mut code: String) -> String {
     let use_stmt = "use secluso_client_server_lib::inject_fault;";
     let mut insert_pos = 0;
 
-    for (_i, line) in code.lines().enumerate() {
+    for line in code.lines() {
         let trimmed = line.trim_start();
         if trimmed.starts_with("//!") || trimmed.is_empty() {
             insert_pos += line.len() + 1;
@@ -93,8 +93,8 @@ fn insert_use_statement(mut code: String) -> String {
 
 pub fn inject_faults(file_path: &str) -> io::Result<usize> {
     let code = fs::read_to_string(file_path)?;
-    let mut syntax: File = parse_file(&code)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Parse error: {e}")))?;
+    let mut syntax: File =
+        parse_file(&code).map_err(|e| io::Error::other(format!("Parse error: {e}")))?;
 
     let mut injector = FaultInjector {
         tag_counter: 0,
@@ -113,4 +113,3 @@ pub fn inject_faults(file_path: &str) -> io::Result<usize> {
     println!("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%");
     Ok(injector.num_injected_faults)
 }
-

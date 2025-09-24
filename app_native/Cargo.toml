@@ -24,3 +24,6 @@ for-example = ["secluso-client-lib/http_client"]
 [[example]]
 name = "app"
 path = "examples/app.rs"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

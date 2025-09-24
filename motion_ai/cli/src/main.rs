@@ -1,13 +1,13 @@
 use std::io::*;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use std::path::PathBuf;
 
 use secluso_motion_ai::backend::spawn_replay_server;
-use secluso_motion_ai::logic::pipeline::PipelineController;
 use secluso_motion_ai::frame::RawFrame;
+use secluso_motion_ai::logic::pipeline::PipelineController;
 use secluso_motion_ai::pipeline;
 
 use video_rs::*;
@@ -98,11 +98,11 @@ fn use_from_video(video_path: &str) -> std::result::Result<(), anyhow::Error> {
             if let Err(e) = result {
                 println!("Encountered error: {e}");
                 break;
-            } else if let Ok(accepted) = result {
-                if !accepted {
-                    println!("Not accepted");
-                    break;
-                }
+            } else if let Ok(accepted) = result
+                && !accepted
+            {
+                println!("Not accepted");
+                break;
             }
             thread::sleep(Duration::from_millis(100));
         }
@@ -112,7 +112,6 @@ fn use_from_video(video_path: &str) -> std::result::Result<(), anyhow::Error> {
 
     let mut decoder = Decoder::new(Path::new(video_path)).expect("failed to create decoder");
 
-    let mut frame_num = 1;
     let fps = 3;
     let mut last_frame_time: f32 = 0f32;
     for frame in decoder.decode_iter() {
@@ -129,8 +128,6 @@ fn use_from_video(video_path: &str) -> std::result::Result<(), anyhow::Error> {
         } else {
             break; // Stop decoding on failure
         }
-
-        frame_num = frame_num + 1;
     }
 
     Ok(())

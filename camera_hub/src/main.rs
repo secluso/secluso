@@ -25,21 +25,22 @@ use cfg_if::cfg_if;
 use docopt::Docopt;
 use secluso_client_lib::http_client::HttpClient;
 use secluso_client_lib::mls_client::MlsClient;
-use secluso_client_lib::mls_clients::{NUM_MLS_CLIENTS, MLS_CLIENT_TAGS,
-    MOTION, LIVESTREAM, FCM, CONFIG, THUMBNAIL, MlsClients};
+use secluso_client_lib::mls_clients::{
+    MlsClients, CONFIG, FCM, LIVESTREAM, MLS_CLIENT_TAGS, MOTION, NUM_MLS_CLIENTS, THUMBNAIL,
+};
+use secluso_client_lib::thumbnail_meta_info::ThumbnailMetaInfo;
 use std::array;
 use std::fs;
 use std::fs::File;
 use std::io;
 use std::ops::Add;
+use std::panic;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::panic;
 use std::thread::sleep;
 use std::time::SystemTime;
 use std::{thread, time::Duration};
-use secluso_client_lib::thumbnail_meta_info::ThumbnailMetaInfo;
 
 mod delivery_monitor;
 
@@ -47,8 +48,10 @@ use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
 
 mod motion;
 
-use crate::motion::{prepare_motion_thumbnail, prepare_motion_video, upload_pending_enc_thumbnails,
-    upload_pending_enc_videos, send_pending_motion_videos, send_pending_thumbnails};
+use crate::motion::{
+    prepare_motion_thumbnail, prepare_motion_video, send_pending_motion_videos,
+    send_pending_thumbnails, upload_pending_enc_thumbnails, upload_pending_enc_videos,
+};
 
 mod livestream;
 
@@ -61,8 +64,7 @@ use crate::traits::Camera;
 mod pairing;
 
 use crate::pairing::{
-    pair_all, create_wifi_hotspot, get_input_camera_secret, get_names,
-    read_parse_full_credentials,
+    create_wifi_hotspot, get_input_camera_secret, get_names, pair_all, read_parse_full_credentials,
 };
 
 mod config;
@@ -78,7 +80,7 @@ cfg_if! {
         use crate::raspberry_pi::rpi_camera::RaspberryPiCamera;
     } else if #[cfg(feature = "ip")] {
         mod ip;
-        use crate::ip::ip_camera::IpCamera; 
+        use crate::ip::ip_camera::IpCamera;
     } else {
         compile_error!("One of the features 'raspberry' or 'ip' must be enabled.");
     }
@@ -148,7 +150,7 @@ fn main() -> io::Result<()> {
                 THUMBNAIL_DIR_GENERAL.to_string(),
                 1,
             );
-        
+
             let camera_list: Vec<Box<dyn Camera + Send>> = vec![Box::new(camera)];
 
             // This means that the secret will be provided to the hub in the camera_secret file.
@@ -206,7 +208,6 @@ fn main() -> io::Result<()> {
 
                 // Deduct one from our thread count for main thread to know when to exit (when all are finished)
                 GLOBAL_THREAD_COUNT.fetch_sub(1, Ordering::SeqCst);
-                return;
             } else {
                 match core(
                     camera.as_mut(),
@@ -231,10 +232,7 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-fn reset(
-    camera: &dyn Camera,
-    reset_full: bool,
-) -> io::Result<()> {
+fn reset(camera: &dyn Camera, reset_full: bool) -> io::Result<()> {
     // FIXME: has some code copy/pasted from core()
     let state_dir = camera.get_state_dir();
     let state_dir_path = Path::new(&state_dir);
@@ -247,31 +245,26 @@ fn reset(
         return Ok(());
     }
 
-    for i in 0..NUM_MLS_CLIENTS {
+    for tag in MLS_CLIENT_TAGS.iter().take(NUM_MLS_CLIENTS) {
         let (camera_name, group_name) = get_names(
             camera,
             first_time,
-            format!("camera_{}_name", MLS_CLIENT_TAGS[i]),
-            format!("group_{}_name", MLS_CLIENT_TAGS[i]),
+            format!("camera_{}_name", tag),
+            format!("group_{}_name", tag),
         );
 
         // First, clean up MLS users
-        match MlsClient::new(
-            camera_name,
-            first_time,
-            state_dir.clone(),
-            MLS_CLIENT_TAGS[i].to_string(),
-        ) {
+        match MlsClient::new(camera_name, first_time, state_dir.clone(), tag.to_string()) {
             Ok(mut client) => match client.clean() {
                 Ok(_) => {
-                    info!("{} client cleaned successfully.", MLS_CLIENT_TAGS[i])
+                    info!("{} client cleaned successfully.", tag)
                 }
                 Err(e) => {
-                    error!("Error: Cleaning client_{} failed: {e}", MLS_CLIENT_TAGS[i]);
+                    error!("Error: Cleaning client_{} failed: {e}", tag);
                 }
             },
             Err(e) => {
-                error!("Error: Creating client_{} failed: {e}", MLS_CLIENT_TAGS[i]);
+                error!("Error: Creating client_{} failed: {e}", tag);
             }
         };
 
@@ -281,14 +274,14 @@ fn reset(
 
         match http_client.deregister(&group_name) {
             Ok(_) => {
-                info!("{} data on server deleted successfully.", MLS_CLIENT_TAGS[i])
+                info!("{} data on server deleted successfully.", tag)
             }
             Err(e) => {
                 error!(
                     "Error: Deleting {} data from server failed: {e}.\
                     Sometimes, this error is okay since the app might have deleted the data already\
                     or no data existed in the first place.",
-                    MLS_CLIENT_TAGS[i]
+                    tag
                 );
             }
         }
@@ -343,7 +336,7 @@ fn core(
             state_dir.clone(),
             MLS_CLIENT_TAGS[i].to_string(),
         )
-            .expect("MlsClient::new() for returned error.");
+        .expect("MlsClient::new() for returned error.");
 
         if first_time {
             mls_client.create_group(&group_name).unwrap();
@@ -362,12 +355,7 @@ fn core(
             "[{}] Waiting to be paired with the mobile app.",
             camera_name
         );
-        pair_all(
-            camera,
-            &mut clients,
-            input_camera_secret,
-            connect_to_wifi,
-        )?;
+        pair_all(camera, &mut clients, input_camera_secret, connect_to_wifi)?;
 
         File::create(camera.get_state_dir() + "/first_time_done").expect("Could not create file");
 
@@ -385,7 +373,8 @@ fn core(
     let mut locked_config_check_time: Option<SystemTime> = None;
     let video_dir = camera.get_video_dir();
     let thumbnail_dir = camera.get_thumbnail_dir();
-    let mut delivery_monitor = DeliveryMonitor::from_file_or_new(video_dir, thumbnail_dir, state_dir);
+    let mut delivery_monitor =
+        DeliveryMonitor::from_file_or_new(video_dir, thumbnail_dir, state_dir);
     let livestream_request = Arc::new(Mutex::new(false));
     let livestream_request_clone = Arc::clone(&livestream_request);
     let group_livestream_name_clone = clients[LIVESTREAM].get_group_name().unwrap();
@@ -408,8 +397,7 @@ fn core(
     });
 
     thread::spawn(move || loop {
-        if let Ok(enc_command) = http_client_clone_2
-            .config_check(&group_config_name_clone) {
+        if let Ok(enc_command) = http_client_clone_2.config_check(&group_config_name_clone) {
             let mut config_enc_commands = config_enc_commands_clone.lock().unwrap();
             config_enc_commands.push(enc_command);
         } else {
@@ -423,7 +411,8 @@ fn core(
         // This is needed after re-pairing.
         // For now, re-pairing is done manually and needs physical proximity.
         // Hence, it is safe to send pending videos to the app that is paired with the camera.
-        let _ = send_pending_motion_videos(camera, &mut clients, &mut delivery_monitor, &http_client);
+        let _ =
+            send_pending_motion_videos(camera, &mut clients, &mut delivery_monitor, &http_client);
         let _ = send_pending_thumbnails(camera, &mut clients, &mut delivery_monitor, &http_client);
     }
 
@@ -443,7 +432,7 @@ fn core(
         // Send motion events only if we haven't sent one in the past minute
         if (motion_event.motion || test_mode)
             && (locked_motion_check_time.is_none()
-            || locked_motion_check_time.unwrap().le(&SystemTime::now()))
+                || locked_motion_check_time.unwrap().le(&SystemTime::now()))
         {
             let video_info = VideoInfo::new();
             println!("Detected motion.");
@@ -451,11 +440,19 @@ fn core(
             // We send the thumbnail BEFORE the FCM notification, to ensure that when the mobile app receives it, it can download it.
             if let Some(thumbnail_image) = motion_event.thumbnail {
                 info!("Starting to save and send video thumbnail");
-                let thumbnail_info = ThumbnailMetaInfo::new(video_info.timestamp, 0, motion_event.detections); //0 epoch = unset
-                let thumbnail_file = camera.get_thumbnail_dir() + "/" + &*thumbnail_info.filename.clone();
-                thumbnail_image.save(thumbnail_file).expect("Failed to save thumbnail PNG file");
+                let thumbnail_info =
+                    ThumbnailMetaInfo::new(video_info.timestamp, 0, motion_event.detections); //0 epoch = unset
+                let thumbnail_file =
+                    camera.get_thumbnail_dir() + "/" + &*thumbnail_info.filename.clone();
+                thumbnail_image
+                    .save(thumbnail_file)
+                    .expect("Failed to save thumbnail PNG file");
 
-                prepare_motion_thumbnail(&mut clients[THUMBNAIL], thumbnail_info, &mut delivery_monitor)?;
+                prepare_motion_thumbnail(
+                    &mut clients[THUMBNAIL],
+                    thumbnail_info,
+                    &mut delivery_monitor,
+                )?;
 
                 info!("Uploading the encrypted thumbnail.");
                 let _ = upload_pending_enc_thumbnails(
@@ -467,8 +464,8 @@ fn core(
 
             if !test_mode {
                 info!("Sending the FCM notification with timestamp.");
-                let notification_msg = clients[FCM].encrypt(
-                    &bincode::serialize(&video_info.timestamp).unwrap())?;
+                let notification_msg =
+                    clients[FCM].encrypt(&bincode::serialize(&video_info.timestamp).unwrap())?;
                 clients[FCM].save_group_state();
                 match http_client.send_fcm_notification(notification_msg) {
                     Ok(_) => {}
@@ -495,8 +492,8 @@ fn core(
                 info!("Sending the FCM notification to start downloading.");
                 //Timestamp of 0 tells the app it's time to start downloading.
                 let dummy_timestamp: u64 = 0;
-                let notification_msg = clients[FCM].encrypt(
-                    &bincode::serialize(&dummy_timestamp).unwrap())?;
+                let notification_msg =
+                    clients[FCM].encrypt(&bincode::serialize(&dummy_timestamp).unwrap())?;
                 clients[FCM].save_group_state();
                 match http_client.send_fcm_notification(notification_msg) {
                     Ok(_) => {}
@@ -515,7 +512,7 @@ fn core(
         {
             // Livestream request? Start it.
             let mut check = livestream_request.lock().unwrap();
-            if *check == true {
+            if *check {
                 info!("Livestream start detected");
                 *check = false;
                 livestream(
@@ -533,11 +530,13 @@ fn core(
         if locked_delivery_check_time.is_none()
             || locked_delivery_check_time.unwrap().le(&SystemTime::now())
         {
-            if let Ok(_) = upload_pending_enc_videos(
+            if upload_pending_enc_videos(
                 &clients[MOTION].get_group_name().unwrap(),
                 &mut delivery_monitor,
                 &http_client,
-            ) {
+            )
+            .is_ok()
+            {
                 // After sending all the pending encrypted videos, we might still have
                 // some pending videos that are not encrypted. This could happen if we
                 // previously failed to encrypt them, e.g., as a result of enforcing a
@@ -547,11 +546,13 @@ fn core(
                 //let _ = send_pending_motion_videos(camera, &mut clients, &mut delivery_monitor, &http_client);
             }
 
-            if let Ok(_) = upload_pending_enc_thumbnails(
+            if upload_pending_enc_thumbnails(
                 &clients[THUMBNAIL].get_group_name().unwrap(),
                 &mut delivery_monitor,
                 &http_client,
-            ) {
+            )
+            .is_ok()
+            {
                 // FIXME: since we're not yet enforcing the max offline period,
                 // this is not needed for now.
                 //let _ = send_pending_thumbnails(camera, &mut clients, &mut delivery_monitor, &http_client);
@@ -566,7 +567,12 @@ fn core(
         {
             let mut enc_commands = config_enc_commands.lock().unwrap();
             for enc_command in &*enc_commands {
-                if let Err(e) = process_config_command(&mut clients, enc_command, &http_client, &mut delivery_monitor) {
+                if let Err(e) = process_config_command(
+                    &mut clients,
+                    enc_command,
+                    &http_client,
+                    &mut delivery_monitor,
+                ) {
                     info!("process_confg_command returned error - {e}");
                 }
             }

@@ -51,9 +51,14 @@ impl ModelRunner for NanodetRunner {
         let img = RgbImage::from_raw(
             old_w,
             old_h,
-            frame.rgb_data.as_ref().expect("Missing RGB").as_ref().clone(),
+            frame
+                .rgb_data
+                .as_ref()
+                .expect("Missing RGB")
+                .as_ref()
+                .clone(),
         )
-            .expect("Failed to create RGB image from raw data");
+        .expect("Failed to create RGB image from raw data");
 
         // todo: replace with fast image resize
         // Resize the original RGB image to the model’s expected input resolution (416x416).
@@ -87,7 +92,7 @@ impl ModelRunner for NanodetRunner {
         image_data.extend(&r_data);
 
         // Construct CHW-ordered ONNX input tensor.
-        let input_tensor = Array4::from_shape_vec((1, 3, H as usize, W as usize), image_data)?;
+        let input_tensor = Array4::from_shape_vec((1, 3, H, W), image_data)?;
         let start = Instant::now();
 
         let input_value = TensorRef::from_array_view((
@@ -150,10 +155,7 @@ impl ModelRunner for NanodetRunner {
 
             // Group confidences by label
             for det in &all_boxes {
-                grouped
-                    .entry(det.label.clone())
-                    .or_default()
-                    .push(det.confidence);
+                grouped.entry(det.label).or_default().push(det.confidence);
             }
 
             // Build (label, count, avg_conf, max_conf) list
@@ -251,8 +253,7 @@ fn decode_infer(
         std::iter::repeat_with(Vec::new).take(NUM_CLASSES).collect(); // one Vec per class
 
     let mut total_idx: i32 = 0;
-    for stage_idx in 0..STRIDES.len() {
-        let stride = STRIDES[stage_idx];
+    for stride in STRIDES {
         let feature_h = (input_size_ as f32 / stride as f32).ceil() as i32;
         let feature_w = (input_size_ as f32 / stride as f32).ceil() as i32;
 
@@ -301,19 +302,20 @@ fn dis_pred2bbox(
 ) -> BoxInfo {
     let ct_x = (x as f32 + 0.5) * stride as f32;
     let ct_y = (y as f32 + 0.5) * stride as f32;
-    let mut dis_pred = vec![0.0f32; 4];
+    let mut dis_pred = [0.0f32; 4];
 
-    for i in 0..4 {
+    for (i, dis_slot) in dis_pred.iter_mut().enumerate() {
         let offset = i * (REG_MAX + 1);
         let side_logits = &dfl_det[offset..offset + REG_MAX + 1];
         let mut dis = 0f32;
         let mut dis_after_sm = vec![0.0f32; REG_MAX + 1];
         activation_function_softmax(side_logits, &mut dis_after_sm);
-        for j in 0..=REG_MAX {
-            dis += (j as f32) * dis_after_sm[j];
+        for (j, &p) in dis_after_sm.iter().enumerate().take(REG_MAX + 1) {
+            dis += (j as f32) * p;
         }
+
         dis *= stride as f32;
-        dis_pred[i] = dis;
+        *dis_slot = dis;
     }
 
     let x_min = f32::max(ct_x - dis_pred[0], 0.0);
@@ -321,7 +323,7 @@ fn dis_pred2bbox(
     let x_max = f32::min(ct_x + dis_pred[2], input_size_ as f32);
     let y_max = f32::min(ct_y + dis_pred[3], input_size_ as f32);
 
-    return BoxInfo {
+    BoxInfo {
         x1: x_min,
         y1: y_min,
         x2: x_max,
@@ -330,7 +332,7 @@ fn dis_pred2bbox(
         label,
         det_type: decode_label(label),
         confidence: score,
-    };
+    }
 }
 
 /// Source of COCO 2017 labels: https://github.com/amikelive/coco-labels/blob/master/coco-labels-2014_2017.txt

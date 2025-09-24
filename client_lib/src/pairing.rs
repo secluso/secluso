@@ -43,9 +43,7 @@ pub struct App {
 
 impl App {
     pub fn new(key_packages: KeyPackages) -> Self {
-        Self {
-            key_packages,
-        }
+        Self { key_packages }
     }
 
     pub fn generate_msg_to_camera(&self) -> Vec<u8> {
@@ -65,8 +63,7 @@ impl App {
     pub fn process_camera_msg(&self, camera_msg_vec: Vec<u8>) -> anyhow::Result<KeyPackages> {
         let camera_msg: PairingMsg = bincode::deserialize(&camera_msg_vec)?;
 
-        let camera_msg_content: PairingMsgContent =
-            bincode::deserialize(&camera_msg.content_vec)?;
+        let camera_msg_content: PairingMsgContent = bincode::deserialize(&camera_msg.content_vec)?;
         // Check the message type
         if camera_msg_content.msg_type != PairingMsgType::CameraToAppMsg {
             panic!("Received invalid pairing message!");
@@ -83,9 +80,7 @@ pub struct Camera {
 impl Camera {
     // FIXME: identical to App::new()
     pub fn new(key_packages: KeyPackages) -> Self {
-        Self {
-            key_packages,
-        }
+        Self { key_packages }
     }
 
     pub fn process_app_msg_and_generate_msg_to_app(

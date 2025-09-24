@@ -52,7 +52,7 @@ pub fn check_update(server_addr: &str) -> Result<()> {
 
     let latest = fetch_latest_release(server_addr, &client)?;
 
-    let latest_version = Version::parse(&latest.trim_start_matches('v'))?;
+    let latest_version = Version::parse(latest.trim_start_matches('v'))?;
     if latest_version <= current_version {
         println!("Already on latest version ({current_version}).");
         return Ok(());
@@ -76,8 +76,8 @@ pub fn check_update(server_addr: &str) -> Result<()> {
     let tmp_path = "../camera_hub/target/release/secluso-camera-hub-tmp";
     let final_path = "../camera_hub/target/release/secluso-camera-hub";
 
-    fs::write(&tmp_path, &bin_bytes)?;
-    fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o755))?;
+    fs::write(tmp_path, &bin_bytes)?;
+    fs::set_permissions(tmp_path, fs::Permissions::from_mode(0o755))?;
 
     // Stop the service
     let status = Command::new("sh")
@@ -146,7 +146,7 @@ fn fetch_file(server_addr: &str, client: &Client, latest: &str, filename: &str) 
 
 fn get_current_version() -> Result<Version> {
     let version_string = fs::read_to_string("../camera_hub/current_version")?;
-    let version = Version::parse(&version_string.trim_start_matches('v'))?;
+    let version = Version::parse(version_string.trim_start_matches('v'))?;
     Ok(version)
 }
 
@@ -170,9 +170,9 @@ fn check_signature(bin_bytes: &Bytes, sig_bytes: &Bytes, pubkey_filename: String
     // Load VerifyingKey from PEM contents
     let verifying_key = VerifyingKey::from_public_key_pem(&pem_str)?;
 
-    let signature = Signature::from_der(&sig_bytes)?;
+    let signature = Signature::from_der(sig_bytes)?;
 
-    verifying_key.verify(&bin_bytes, &signature)?;
+    verifying_key.verify(bin_bytes, &signature)?;
 
     Ok(())
 }

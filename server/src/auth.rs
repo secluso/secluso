@@ -16,22 +16,24 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use base64::{engine::general_purpose, Engine as _};
-use secluso_client_server_lib::auth::{parse_user_credentials, NUM_USERNAME_CHARS, NUM_PASSWORD_CHARS};
+use dashmap::DashMap;
 use rocket::http::Status;
 use rocket::request::{FromRequest, Outcome, Request};
 use rocket::State;
-use std::time::Duration;
-use dashmap::DashMap;
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::time::Instant;
+use secluso_client_server_lib::auth::{
+    parse_user_credentials, NUM_PASSWORD_CHARS, NUM_USERNAME_CHARS,
+};
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::str;
+use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
+use std::time::Instant;
 use subtle::{Choice, ConstantTimeEq};
 
 const DUMMY_PASSWORD: [u8; NUM_PASSWORD_CHARS] = [0u8; NUM_PASSWORD_CHARS];
@@ -60,7 +62,6 @@ pub struct FailEntry {
 pub type FailStore = Arc<DashMap<String, FailEntry>>;
 
 type UserStore = Mutex<HashMap<String, String>>;
-
 
 // Check and see if the given IP (key) is in lock-mode.
 fn is_locked(store: &FailStore, key: &str) -> bool {
@@ -102,7 +103,6 @@ fn record_failure(store: &FailStore, key: &str) -> bool {
     }
 }
 
-
 /// Convert &str to fixed-length bytes for constant-time comparison.
 /// Assumes passwords are ASCII (or otherwise 1 byte per char) and always NUM_PASSWORD_CHARS long.
 /// If the length differs, we still produce a fixed-size array (zero-padded/truncated),
@@ -124,12 +124,13 @@ impl<'r> FromRequest<'r> for BasicAuth {
         let user_store = req.guard::<&State<UserStore>>().await.unwrap();
         let fail_store = req.guard::<&State<FailStore>>().await.unwrap();
 
-        let ip = req.client_ip()
+        let ip = req
+            .client_ip()
             .map(|ip| ip.to_string())
             .unwrap_or_else(|| "unknown".into());
 
         {
-            if is_locked(&fail_store, &ip) {
+            if is_locked(fail_store, &ip) {
                 return Outcome::Error((Status::TooManyRequests, ()));
             }
         }
@@ -139,10 +140,11 @@ impl<'r> FromRequest<'r> for BasicAuth {
                 let password_bytes: [u8; NUM_PASSWORD_CHARS] = to_fixed_bytes(&password);
 
                 let users = user_store.lock().unwrap();
-                let (stored_password_bytes, user_exists): ([u8; NUM_PASSWORD_CHARS], bool) = match users.get(&username) {
-                    Some(stored_password) => (to_fixed_bytes(stored_password), true),
-                    None => (DUMMY_PASSWORD, false),
-                };
+                let (stored_password_bytes, user_exists): ([u8; NUM_PASSWORD_CHARS], bool) =
+                    match users.get(&username) {
+                        Some(stored_password) => (to_fixed_bytes(stored_password), true),
+                        None => (DUMMY_PASSWORD, false),
+                    };
 
                 let eq: Choice = stored_password_bytes.ct_eq(&password_bytes);
 
@@ -165,16 +167,15 @@ impl<'r> FromRequest<'r> for BasicAuth {
 }
 
 fn decode_basic_auth(auth_value: &str) -> Option<(String, String)> {
-    if auth_value.starts_with("Basic ") {
-        let encoded = &auth_value[6..]; // Remove "Basic " prefix
+    if let Some(encoded) = auth_value.strip_prefix("Basic ") {
+        // Remove "Basic " prefix
         let decoded = general_purpose::STANDARD.decode(encoded).ok()?;
         let decoded_str = str::from_utf8(&decoded).ok()?;
         let mut parts = decoded_str.splitn(2, ':');
         let username = parts.next()?.to_string();
         let password = parts.next()?.to_string();
 
-        if username.len() != NUM_USERNAME_CHARS ||
-            password.len() != NUM_PASSWORD_CHARS {
+        if username.len() != NUM_USERNAME_CHARS || password.len() != NUM_PASSWORD_CHARS {
             return None;
         }
 

@@ -5,7 +5,7 @@ use crate::motion::{clahe, detector};
 use anyhow::anyhow;
 use fast_image_resize::images::Image;
 use fast_image_resize::{PixelType, ResizeAlg, ResizeOptions, Resizer};
-use image::{GrayImage, ImageBuffer, Luma};
+use image::GrayImage;
 use libblur::{
     BlurImage, BlurImageMut, ConvolutionMode, EdgeMode, FastBlurChannels, ThreadingPolicy,
 };
@@ -23,7 +23,7 @@ pub fn preprocess(
     run_id: &RunId,
     total_width: usize,
     total_height: usize,
-) -> Result<(ImageBuffer<Luma<u8>, Vec<u8>>, f32), anyhow::Error> {
+) -> Result<(GrayImage, f32), anyhow::Error> {
     // Convert the raw frame (YUV420) to grayscale via YUV420 -> RGB -> adaptive grayscale thresholding
     let grayscale_conversion_time = SystemTime::now();
     let (w_b, grayscale) = adaptive_grayscale(&raw_frame, total_width, total_height)?;
@@ -103,12 +103,7 @@ pub fn preprocess(
         RawFrame::save_gray_image(&processed, telemetry.run_id.as_str(), run_id, "clahe")?;
     }
 
-    let src = BlurImage::borrow(
-        &mut ImageBuffer::as_raw(&processed),
-        w,
-        h,
-        FastBlurChannels::Plane,
-    );
+    let src = BlurImage::borrow(processed.as_raw(), w, h, FastBlurChannels::Plane);
 
     let mut dst = BlurImageMut::alloc(w, h, FastBlurChannels::Plane);
 
@@ -127,7 +122,7 @@ pub fn preprocess(
         ),
         ConvolutionMode::Exact,
     )
-        .map_err(|e| anyhow!("Gaussian blur failed: {:?}", e))?;
+    .map_err(|e| anyhow!("Gaussian blur failed: {:?}", e))?;
 
     let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
     let blur_ms = blur_t0.elapsed().as_millis();
@@ -147,7 +142,7 @@ pub fn preprocess(
 
     RawFrame::save_gray_image(&blurred_image, telemetry.run_id.as_str(), run_id, "blurred")?;
 
-    return Ok((blurred_image, w_b));
+    Ok((blurred_image, w_b))
 }
 
 /** This method takes a YUV420 raw image and performs a parallel YUV420->RGB conversion,
@@ -250,11 +245,11 @@ pub(crate) fn adaptive_grayscale(
             }
         });
 
-    return Ok((
+    Ok((
         w_b,
         GrayImage::from_raw(rgb_width as u32, rgb_height as u32, gray_pixels)
             .ok_or_else(|| anyhow!("GrayImage::from_raw failed: pixel buffer size mismatch"))?,
-    ));
+    ))
 }
 
 pub fn downscale_with_fast_image_resize(

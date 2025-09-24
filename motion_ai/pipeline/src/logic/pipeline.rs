@@ -1,4 +1,3 @@
-use std::cmp::Reverse;
 use crate::frame::RawFrame;
 use crate::logic::activity_states::{
     ActivityState, CooldownState, DetectingState, IdleState, PrimedState,
@@ -9,17 +8,18 @@ use crate::logic::health_states::HealthState;
 use crate::logic::health_states::{
     CriticalTempState, HighTempState, NormalState, ResourceLowState,
 };
-use crate::logic::intent::{Intent, IntentBus};
+use crate::logic::intent::{Intent, execute_intent};
 use crate::logic::stages::{PipelineStage, StageResult, StageType};
 use crate::logic::telemetry::{TelemetryPacket, TelemetryRun};
 use crate::logic::timer::{Timer, TimerManager};
 use crate::ml::models::{DetectionType, init_model_paths};
 use anyhow::{Context, Error};
+use log::debug;
 use serde::{Deserialize, Serialize};
-use std::collections::{BinaryHeap, BTreeMap, HashMap, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 use std::default::Default;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use log::debug;
 
 /// The main sequential container for executing image processing stages.
 /// Each stage handles a specific task (e.g., motion, detection, inference).
@@ -35,6 +35,12 @@ pub struct RunId(pub String);
 impl RunId {
     pub fn new() -> Self {
         RunId(uuid::Uuid::new_v4().to_string())
+    }
+}
+
+impl Default for RunId {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -96,11 +102,7 @@ impl Pipeline {
     /// Returns the next stage after the current one, or `None` if at the end.
     pub(crate) fn next_stage(&self, current: StageType) -> Option<StageType> {
         let idx = self.stages.iter().position(|s| s.kind() == current)?;
-        if let Some(event) = self.stages.get(idx + 1) {
-            Some(event.kind())
-        } else {
-            None
-        }
+        self.stages.get(idx + 1).map(|event| event.kind())
     }
 }
 
@@ -146,6 +148,12 @@ impl PipelineBuilder {
     }
 }
 
+impl Default for PipelineBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Defines all possible events that can occur in the pipeline.
 /// These drive transitions in the FSM and trigger telemetry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,7 +177,6 @@ pub enum PipelineEvent {
 /// Top-level controller that manages event queue processing, FSM transitions,
 /// intent execution, and telemetry emission.
 pub struct PipelineController {
-    intent_bus: IntentBus,
     host_data: PipelineHostData,
     pub activity_registry: FsmRegistry<ActivityState>,
     pub health_registry: FsmRegistry<HealthState>,
@@ -204,7 +211,6 @@ pub struct PipelineResult {
     pub thumbnail: RawFrame,
 }
 
-
 /// Implements pipeline orchestration logic including ticking, pushing frames,
 /// and reacting to state transitions.
 impl PipelineController {
@@ -231,21 +237,17 @@ impl PipelineController {
             handlers: HashMap::new(),
         };
 
-        health_registry.register(HealthState::Normal.into(), Box::new(NormalState));
+        health_registry.register(HealthState::Normal, Box::new(NormalState));
 
-        health_registry.register(HealthState::HighTemp.into(), Box::new(HighTempState));
+        health_registry.register(HealthState::HighTemp, Box::new(HighTempState));
 
-        health_registry.register(HealthState::ResourceLow.into(), Box::new(ResourceLowState));
+        health_registry.register(HealthState::ResourceLow, Box::new(ResourceLowState));
 
-        health_registry.register(
-            HealthState::CriticalTemp.into(),
-            Box::new(CriticalTempState),
-        );
+        health_registry.register(HealthState::CriticalTemp, Box::new(CriticalTempState));
 
         init_model_paths()?; // We should occasionally query this to hot-reload. But for this purpose, initializing and checking everything is OK is good enough
 
         Ok(Self {
-            intent_bus: IntentBus {}, // todo: new()
             activity_registry,
             health_registry,
             last_health_change: None,
@@ -269,15 +271,13 @@ impl PipelineController {
     // Was there a positive motion event in the last 30 seconds? TODO: Adjust 30 accordingly
     pub fn motion_recently(&mut self) -> Result<Option<PipelineResult>, Error> {
         match &self.host_data.ctx.last_detection {
-            None => {
-                Ok(None)
-            }
+            None => Ok(None),
             Some(last_detection) => {
                 let elapsed = last_detection.time.elapsed();
                 let secs = elapsed.as_secs();
                 if elapsed <= Duration::from_secs(30) {
                     debug!("Motion detected {} seconds ago (within 30s window).", secs);
-                    return Ok(Some(last_detection.clone()))
+                    Ok(Some(last_detection.clone()))
                 } else {
                     debug!("Motion detected {} seconds ago (outside 30s window).", secs);
                     Ok(None)
@@ -384,7 +384,7 @@ impl PipelineController {
             // record_event
             {
                 let t0 = Instant::now();
-                t_record_event += t0.elapsed().as_millis() as u128;
+                t_record_event += t0.elapsed().as_millis();
             }
 
             // activity.handle(...)
@@ -396,7 +396,7 @@ impl PipelineController {
                     &event,
                     |ctx| &ctx.activity,
                 );
-                t_activity_handle += t0.elapsed().as_millis() as u128;
+                t_activity_handle += t0.elapsed().as_millis();
                 out
             };
 
@@ -406,19 +406,21 @@ impl PipelineController {
                     if let Some((prev, t0inst)) = self.last_activity_change.take() {
                         let elapsed = t0inst.elapsed().as_millis();
                         let t0 = Instant::now();
-                        self.host_data.telemetry.write(&TelemetryPacket::StateDuration {
-                            run_id: self.host_data.ctx.run_id.clone(),
-                            ts: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
-                            fsm: "activity",
-                            state: prev.as_str(),
-                            duration_ms: elapsed,
-                        })?;
-                        t_state_telemetry += t0.elapsed().as_millis() as u128;
+                        self.host_data
+                            .telemetry
+                            .write(&TelemetryPacket::StateDuration {
+                                run_id: self.host_data.ctx.run_id.clone(),
+                                ts: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
+                                fsm: "activity",
+                                state: prev.as_str(),
+                                duration_ms: elapsed,
+                            })?;
+                        t_state_telemetry += t0.elapsed().as_millis();
                     }
-                    self.last_activity_change = Some((new_activity_state.clone(), Instant::now()));
+                    self.last_activity_change = Some((new_activity_state, Instant::now()));
                 }
                 None => {
-                    self.last_activity_change = Some((new_activity_state.clone(), Instant::now()));
+                    self.last_activity_change = Some((new_activity_state, Instant::now()));
                 }
                 _ => {}
             }
@@ -432,7 +434,7 @@ impl PipelineController {
                     &event,
                     |ctx| &ctx.health,
                 );
-                t_health_handle += t0.elapsed().as_millis() as u128;
+                t_health_handle += t0.elapsed().as_millis();
                 out
             };
 
@@ -442,19 +444,21 @@ impl PipelineController {
                     if let Some((prev, t0inst)) = self.last_health_change.take() {
                         let elapsed = t0inst.elapsed().as_millis();
                         let t0 = Instant::now();
-                        self.host_data.telemetry.write(&TelemetryPacket::StateDuration {
-                            run_id: self.host_data.ctx.run_id.clone(),
-                            ts: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
-                            fsm: "health",
-                            state: prev.as_str(),
-                            duration_ms: elapsed,
-                        })?;
-                        t_state_telemetry += t0.elapsed().as_millis() as u128;
+                        self.host_data
+                            .telemetry
+                            .write(&TelemetryPacket::StateDuration {
+                                run_id: self.host_data.ctx.run_id.clone(),
+                                ts: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
+                                fsm: "health",
+                                state: prev.as_str(),
+                                duration_ms: elapsed,
+                            })?;
+                        t_state_telemetry += t0.elapsed().as_millis();
                     }
-                    self.last_health_change = Some((new_health_state.clone(), Instant::now()));
+                    self.last_health_change = Some((new_health_state, Instant::now()));
                 }
                 None => {
-                    self.last_health_change = Some((new_health_state.clone(), Instant::now()));
+                    self.last_health_change = Some((new_health_state, Instant::now()));
                 }
                 _ => {}
             }
@@ -471,7 +475,7 @@ impl PipelineController {
                 }
 
                 let exec_t0 = Instant::now();
-                self.intent_bus.execute(&mut self.host_data, &intent)?;
+                execute_intent(&mut self.host_data, &intent)?;
                 let exec_ms = exec_t0.elapsed().as_millis();
 
                 t_intent_execute += exec_ms;
@@ -484,10 +488,10 @@ impl PipelineController {
                 let t0 = Instant::now();
                 self.host_data.ctx.health = new_health_state;
                 self.host_data.ctx.activity = new_activity_state;
-                t_ctx_assign += t0.elapsed().as_millis() as u128;
+                t_ctx_assign += t0.elapsed().as_millis();
             }
 
-            let ev_ms = ev_t0.elapsed().as_millis() as u128;
+            let ev_ms = ev_t0.elapsed().as_millis();
             event_samples.push((ev_label, ev_ms));
             events_processed += 1;
         }
@@ -502,9 +506,13 @@ impl PipelineController {
             println!("Event run time: {}ms", event_run_time.as_millis());
 
             // phase breakdown
-            let ert = event_run_time.as_millis() as u128;
+            let ert = event_run_time.as_millis();
             let print_item = |label: &str, ms: u128| {
-                let pct = if ert > 0 { (ms as f64 * 100.0) / ert as f64 } else { 0.0 };
+                let pct = if ert > 0 {
+                    (ms as f64 * 100.0) / ert as f64
+                } else {
+                    0.0
+                };
                 println!("{:<22} {:>8} ms  ({:>5.1}%)", label, ms, pct);
             };
             println!("-- Event-time breakdown --");
@@ -515,7 +523,9 @@ impl PipelineController {
             print_item("record_intent", t_record_intent);
             print_item("intent_execute", t_intent_execute);
             print_item("ctx_assign", t_ctx_assign);
-            println!("events_processed: {events_processed}, intents_processed: {intents_processed}");
+            println!(
+                "events_processed: {events_processed}, intents_processed: {intents_processed}"
+            );
 
             // per-intent aggregation
             if !intent_samples.is_empty() {
@@ -526,7 +536,9 @@ impl PipelineController {
                     let e = agg.entry(label.clone()).or_insert((0, 0, 0));
                     e.0 += 1;
                     e.1 += *ms;
-                    if *ms > e.2 { e.2 = *ms; }
+                    if *ms > e.2 {
+                        e.2 = *ms;
+                    }
                 }
 
                 println!("-- Intents by label (count / total / avg / max ms) --");
@@ -534,17 +546,26 @@ impl PipelineController {
                 let mut rows: Vec<_> = agg.into_iter().collect();
                 rows.sort_by_key(|(_, v)| Reverse(v.1)); // total desc
 
-                for (label, (count, total, maxv)) in rows.iter().take(50) { // cap rows
-                    let avg = if *count > 0 { (*total as f64) / (*count as f64) } else { 0.0 };
-                    println!("{:<40} {:>5}  {:>8}  {:>7.2}  {:>8}",
-                             label, count, total, avg, maxv);
+                for (label, (count, total, maxv)) in rows.iter().take(50) {
+                    // cap rows
+                    let avg = if *count > 0 {
+                        (*total as f64) / (*count as f64)
+                    } else {
+                        0.0
+                    };
+                    println!(
+                        "{:<40} {:>5}  {:>8}  {:>7.2}  {:>8}",
+                        label, count, total, avg, maxv
+                    );
                 }
 
                 // Top-N slowest single intent executions
                 let mut topk: BinaryHeap<(u128, String)> = BinaryHeap::new();
                 for (label, ms) in &intent_samples {
                     topk.push((*ms, label.clone()));
-                    if topk.len() > 10 { topk.pop(); } // keep top 10
+                    if topk.len() > 10 {
+                        topk.pop();
+                    } // keep top 10
                 }
 
                 let mut slow_list: Vec<_> = topk.into_sorted_vec();
@@ -562,16 +583,24 @@ impl PipelineController {
                     let e = agg_ev.entry(label.clone()).or_insert((0, 0, 0));
                     e.0 += 1;
                     e.1 += *ms;
-                    if *ms > e.2 { e.2 = *ms; }
+                    if *ms > e.2 {
+                        e.2 = *ms;
+                    }
                 }
 
                 println!("-- Events by label (count / total / avg / max ms) --");
                 let mut rows: Vec<_> = agg_ev.into_iter().collect();
                 rows.sort_by_key(|(_, v)| Reverse(v.1));
                 for (label, (count, total, maxv)) in rows.iter().take(50) {
-                    let avg = if *count > 0 { (*total as f64) / (*count as f64) } else { 0.0 };
-                    println!("{:<32} {:>5}  {:>8}  {:>7.2}  {:>8}",
-                             label, count, total, avg, maxv);
+                    let avg = if *count > 0 {
+                        (*total as f64) / (*count as f64)
+                    } else {
+                        0.0
+                    };
+                    println!(
+                        "{:<32} {:>5}  {:>8}  {:>7.2}  {:>8}",
+                        label, count, total, avg, maxv
+                    );
                 }
             }
 
@@ -579,7 +608,6 @@ impl PipelineController {
         }
         Ok(true)
     }
-
 
     /// Dynamically injects a new pipeline stage at a specific index and logs the transition.
     #[allow(dead_code)]
@@ -591,7 +619,7 @@ impl PipelineController {
     ) -> Result<(), anyhow::Error> {
         //self.host_data.ctx.top_state = TopState::Degraded(DegradedState::ThrottledInference);
 
-        self.intent_bus.execute(
+        execute_intent(
             &mut self.host_data,
             &Intent::LogTransition {
                 from: "Dynamic".into(),

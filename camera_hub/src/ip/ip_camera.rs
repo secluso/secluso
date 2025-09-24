@@ -39,9 +39,9 @@
 //! https://standards.iso.org/ittf/PubliclyAvailableStandards/c068960_ISO_IEC_14496-12_2015.zip
 
 use crate::delivery_monitor::VideoInfo;
-use crate::motion::MotionResult;
 use crate::fmp4::Fmp4Writer;
 use crate::livestream::LivestreamWriter;
+use crate::motion::MotionResult;
 use crate::mp4::Mp4Writer;
 use crate::traits::{Camera, CodecParameters, Mp4};
 use std::fs;
@@ -64,7 +64,8 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use crate::ip::ip_motion_detection::MotionDetection;
-use crate::{STATE_DIR_GENERAL, VIDEO_DIR_GENERAL, THUMBNAIL_DIR_GENERAL};
+use crate::{STATE_DIR_GENERAL, THUMBNAIL_DIR_GENERAL, VIDEO_DIR_GENERAL};
+use rpassword::read_password;
 use std::collections::VecDeque;
 use std::process::exit;
 use std::sync::{
@@ -72,7 +73,6 @@ use std::sync::{
     Mutex,
 };
 use std::time::{Duration, SystemTime};
-use rpassword::read_password;
 
 pub struct IpCamera {
     name: String,
@@ -111,6 +111,7 @@ struct CameraConfig {
 }
 
 impl IpCamera {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
         ip: String,
@@ -191,9 +192,8 @@ impl IpCamera {
             }
         };
 
-        // Load the yml file in for analysis    
-        let cfg: Config = serde_yaml2::from_str(&content)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        // Load the yml file in for analysis
+        let cfg: Config = serde_yaml2::from_str(&content).map_err(io::Error::other)?;
 
         let mut camera_list: Vec<Box<dyn Camera + Send>> = Vec::new();
 
@@ -201,14 +201,13 @@ impl IpCamera {
         for c in cfg.cameras {
             let mut camera_username = c.username.unwrap_or_default();
             let mut camera_password = c.password.unwrap_or_default();
-            
 
             if camera_username.is_empty() {
                 camera_username = Self::ask_user(format!(
                     "Enter the username for the IP camera {:?}: ",
                     c.name
                 ))
-                    .unwrap();
+                .unwrap();
             }
 
             if camera_password.is_empty() {
@@ -216,7 +215,7 @@ impl IpCamera {
                     "Enter the password for the IP camera {:?}: ",
                     c.name
                 ))
-                    .unwrap();
+                .unwrap();
             }
 
             let ip_camera_result = IpCamera::new(
@@ -295,8 +294,8 @@ impl IpCamera {
     }
 
     /// Copies packets from the IP camera session to the frame queue
-    async fn stream_loop<'a>(
-        session: &'a mut retina::client::Demuxed,
+    async fn stream_loop(
+        session: &mut retina::client::Demuxed,
         frame_queue: Arc<Mutex<VecDeque<Frame>>>,
     ) -> Result<(), Error> {
         loop {
@@ -383,7 +382,7 @@ impl IpCamera {
         video_params_tx: Sender<VideoParameters>,
         audio_params_tx: Sender<AudioParameters>,
     ) -> Result<(), Error> {
-        let _ = Self::start_camera_stream_attempt(
+        Self::start_camera_stream_attempt(
             username.clone(),
             password.clone(),
             url.clone(),
@@ -397,7 +396,7 @@ impl IpCamera {
             println!("IP camera stream stopped or didn't start. Will try to restart soon.");
             thread::sleep(Duration::from_secs(5));
 
-            let _ = Self::start_camera_stream_attempt(
+            Self::start_camera_stream_attempt(
                 username.clone(),
                 password.clone(),
                 url.clone(),
@@ -459,26 +458,26 @@ impl IpCamera {
     }
 
     /// Copies packets from `session` to `mp4` without handling any cleanup on error.
-    async fn copy<'a, M: Mp4>(
-        mp4: &'a mut M,
+    async fn copy<M: Mp4>(
+        mp4: &mut M,
         duration: Option<u64>,
         frame_queue: Arc<Mutex<VecDeque<Frame>>>,
     ) -> Result<(), Error> {
-        let recording_window = match duration {
-            Some(secs) => Some(Duration::new(secs, 0)),
-            None => None,
-        };
+        let recording_window = duration.map(|secs| Duration::new(secs, 0));
         let recording_start_time = SystemTime::now();
         let mut first_frame_found = false;
 
         loop {
-            let mut queue = frame_queue.lock().unwrap();
-            let frame = match queue.pop_front() {
-                Some(f) => f,
-                None => {
-                    drop(queue);
-                    thread::sleep(Duration::from_secs(1));
-                    continue;
+            let frame = {
+                let mut queue = frame_queue.lock().unwrap();
+                match queue.pop_front() {
+                    Some(f) => f,
+                    None => {
+                        // guard is dropped at the end of this block
+                        drop(queue);
+                        thread::sleep(Duration::from_secs(1));
+                        continue;
+                    }
                 }
             };
 
@@ -502,7 +501,6 @@ impl IpCamera {
                     .await
                     .with_context(|| "Error processing video frame")?;
                 }
-                drop(queue);
             } else {
                 // audio
                 if first_frame_found {
@@ -510,7 +508,6 @@ impl IpCamera {
                         .await
                         .with_context(|| "Error processing audio frame")?;
                 }
-                drop(queue);
             }
 
             if let Some(window) = recording_window {
@@ -690,7 +687,9 @@ impl Camera for IpCamera {
     fn get_video_dir(&self) -> String {
         self.video_dir.clone()
     }
-    fn get_thumbnail_dir(&self) -> String {self.thumbnail_dir.clone() }
+    fn get_thumbnail_dir(&self) -> String {
+        self.thumbnail_dir.clone()
+    }
 }
 
 struct IpCameraVideoParameters {

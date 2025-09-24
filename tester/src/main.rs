@@ -15,12 +15,12 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::process::{Command, Stdio, Child};
-use std::time::Duration;
-use std::thread;
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::thread;
+use std::time::Duration;
 
 mod fault_injection;
 use crate::fault_injection::inject_faults;
@@ -138,15 +138,18 @@ fn get_fault_tag<'a>(
     asking_component: &FaultComponent,
 ) -> &'a str {
     if *asking_component != *fault_component {
-        return "";
+        ""
     } else if let FaultType::Fault(t) = fault_type {
-        return t;
+        t
     } else {
-        return "";
-    };
+        ""
+    }
 }
 
-fn parse_test_type(test_type: &TestType, asking_component: FaultComponent) -> io::Result<(String, String)> {
+fn parse_test_type(
+    test_type: &TestType,
+    asking_component: FaultComponent,
+) -> io::Result<(String, String)> {
     if let TestType::Motion(fault_component, fault_type) = test_type {
         let tag = get_fault_tag(fault_type, fault_component, &asking_component);
         return Ok(("--test-motion".to_string(), tag.to_string()));
@@ -165,10 +168,9 @@ fn file_exists(path_str: &str) -> io::Result<()> {
     let path = Path::new(path_str);
 
     if !path.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error: could not find {path_str}!"),
-        ));
+        return Err(io::Error::other(format!(
+            "Error: could not find {path_str}!"
+        )));
     }
 
     Ok(())
@@ -182,7 +184,10 @@ fn prepare_environment() -> io::Result<()> {
     let _ = fs::remove_dir_all("./data");
 
     fs::create_dir_all("./data/server/user_credentials")?;
-    fs::copy("user_credentials", "./data/server/user_credentials/user_credentials")?;
+    fs::copy(
+        "user_credentials",
+        "./data/server/user_credentials/user_credentials",
+    )?;
 
     fs::create_dir_all("./data/camera_hub")?;
     fs::copy("user_credentials", "./data/camera_hub/user_credentials")?;
@@ -199,11 +204,7 @@ fn prepare_environment() -> io::Result<()> {
 /// A test session involves launching the three compoents and getting them
 /// to interact either for motion or livestream video.
 /// A session might also involves fault injection.
-fn run_test_session(
-    test_type: TestType,
-    clean_environment: bool,
-) -> io::Result<i32> {
-
+fn run_test_session(test_type: TestType, clean_environment: bool) -> io::Result<i32> {
     if clean_environment {
         println!("Preparing environment (needed directories and files)");
         prepare_environment()?;
@@ -228,12 +229,7 @@ fn run_test_session(
     println!("Waiting for app to finish...");
     let app_exit_status = app.wait()?;
 
-    let app_exit_code = if let Some(code) = app_exit_status.code() {
-        code
-    } else {
-        //Terminated by signal.
-        0
-    };
+    let app_exit_code = app_exit_status.code().unwrap_or_default();
 
     println!("App finished. Killing camera_hub and server...");
 
@@ -258,18 +254,20 @@ fn main() -> io::Result<()> {
     // Construct tests for all the injected faults.
     let mut tests = vec![];
     for i in 0..num_injected_faults {
-        tests.push(
-            (
-                TestType::Motion(FaultComponent::CameraHub, FaultType::Fault(format!("fault_tag_{}", i))),
-                TestType::Motion(FaultComponent::CameraHub, FaultType::None),
+        tests.push((
+            TestType::Motion(
+                FaultComponent::CameraHub,
+                FaultType::Fault(format!("fault_tag_{}", i)),
             ),
-        );
-        tests.push(
-            (
-                TestType::Livestream(FaultComponent::CameraHub, FaultType::Fault(format!("fault_tag_{}", i))),
-                TestType::Livestream(FaultComponent::CameraHub, FaultType::None),
+            TestType::Motion(FaultComponent::CameraHub, FaultType::None),
+        ));
+        tests.push((
+            TestType::Livestream(
+                FaultComponent::CameraHub,
+                FaultType::Fault(format!("fault_tag_{}", i)),
             ),
-        );
+            TestType::Livestream(FaultComponent::CameraHub, FaultType::None),
+        ));
     }
 
     for test in tests {

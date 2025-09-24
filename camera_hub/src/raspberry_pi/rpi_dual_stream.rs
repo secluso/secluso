@@ -35,8 +35,8 @@ use crossbeam_channel::Sender;
 use secluso_motion_ai::frame::RawFrame;
 use secluso_motion_ai::logic::pipeline::PipelineController;
 
-
 /// Provides two channels: one for raw YUV420 frames from rpicam‑vid (for motion detection), one for H.264 frames converted by rpicam-vid.
+#[allow(clippy::too_many_arguments)]
 pub fn start(
     width: usize,
     height: usize,
@@ -50,7 +50,7 @@ pub fn start(
     // For 8-bit yuv420p, frame size = width * height * 3/2 bytes.
     // However, we need to take into account how the width is padded to 64-bytes.
     // This is for a row-aligned format from V4L2 for DMA transfer alignment.
-    let yuv_width = (width + 63) / 64 * 64;
+    let yuv_width = width.div_ceil(64) * 64;
     let yuv_height = height;
     let yuv_frame_size = yuv_width * yuv_height * 3 / 2;
 
@@ -155,7 +155,7 @@ pub fn start(
             }
         });
 
-        return Ok(());
+        Ok(())
     }
 }
 

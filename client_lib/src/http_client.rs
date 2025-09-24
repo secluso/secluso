@@ -15,14 +15,14 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use base64::engine::general_purpose::STANDARD as base64_engine;
+use base64::{engine::general_purpose, Engine as _};
+use reqwest::blocking::{Body, Client};
+use serde_json::json;
 use std::fs::File;
-use std::io::{self, Write, BufReader, BufWriter, BufRead};
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::time::Duration;
-use reqwest::blocking::{Client, Body};
-use base64::{engine::general_purpose, Engine as _};
-use base64::engine::general_purpose::STANDARD as base64_engine;
-use serde_json::json;
 
 #[derive(Clone)]
 pub struct HttpClient {
@@ -97,11 +97,7 @@ impl HttpClient {
     }
 
     /// Uploads an (encrypted) file.
-    pub fn upload_enc_file(
-        &self,
-        group_name: &str,
-        enc_file_path: &Path,
-    ) -> io::Result<()> {
+    pub fn upload_enc_file(&self, group_name: &str, enc_file_path: &Path) -> io::Result<()> {
         let enc_file_name = enc_file_path
             .file_name()
             .and_then(|name| name.to_str())
@@ -141,11 +137,7 @@ impl HttpClient {
     }
 
     /// Fetches an (encrypted) video file, persists it, and then deletes it from the server.
-    pub fn fetch_enc_video(
-        &self,
-        group_name: &str,
-        enc_file_path: &Path,
-    ) -> io::Result<()> {
+    pub fn fetch_enc_video(&self, group_name: &str, enc_file_path: &Path) -> io::Result<()> {
         let enc_file_name = enc_file_path
             .file_name()
             .and_then(|name| name.to_str())
@@ -202,10 +194,7 @@ impl HttpClient {
         Ok(())
     }
 
-    pub fn deregister(
-        &self,
-        group_name: &str,
-    ) -> io::Result<()> {
+    pub fn deregister(&self, group_name: &str) -> io::Result<()> {
         let server_url = format!("{}/{}", self.server_addr, group_name);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
@@ -231,10 +220,7 @@ impl HttpClient {
         Ok(())
     }
 
-    pub fn send_fcm_notification(
-        &self,
-        notification: Vec<u8>,
-    ) -> io::Result<()> {
+    pub fn send_fcm_notification(&self, notification: Vec<u8>) -> io::Result<()> {
         let server_url = format!("{}/fcm_notification", self.server_addr);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
@@ -261,10 +247,7 @@ impl HttpClient {
     }
 
     /// Start a livestream session
-    pub fn livestream_start(
-        &self,
-        group_name: &str,
-    ) -> io::Result<()> {
+    pub fn livestream_start(&self, group_name: &str) -> io::Result<()> {
         let server_url = format!("{}/livestream/{}", self.server_addr, group_name);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
@@ -334,7 +317,10 @@ impl HttpClient {
         data: Vec<u8>,
         chunk_number: u64,
     ) -> io::Result<usize> {
-        let server_url = format!("{}/livestream/{}/{}", self.server_addr, group_name, chunk_number);
+        let server_url = format!(
+            "{}/livestream/{}/{}",
+            self.server_addr, group_name, chunk_number
+        );
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
         let auth_encoded = general_purpose::STANDARD.encode(auth_value);
@@ -364,18 +350,19 @@ impl HttpClient {
             .text()
             .map_err(|e: reqwest::Error| io::Error::new(io::ErrorKind::Other, e.to_string()))?
             .parse()
-            .map_err(|e: std::num::ParseIntError| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e: std::num::ParseIntError| {
+                io::Error::new(io::ErrorKind::Other, e.to_string())
+            })?;
 
         Ok(num_files)
     }
 
     /// Retrieves and returns (encrypted) livestream data.
-    pub fn livestream_retrieve(
-        &self,
-        group_name: &str,
-        chunk_number: u64,
-    ) -> io::Result<Vec<u8>> {
-        let server_url = format!("{}/livestream/{}/{}", self.server_addr, group_name, chunk_number);
+    pub fn livestream_retrieve(&self, group_name: &str, chunk_number: u64) -> io::Result<Vec<u8>> {
+        let server_url = format!(
+            "{}/livestream/{}/{}",
+            self.server_addr, group_name, chunk_number
+        );
         let server_del_url = format!("{}/{}/{}", self.server_addr, group_name, chunk_number);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
@@ -427,10 +414,7 @@ impl HttpClient {
 
     /// End a livestream session
     // FIXME: shares a lot of code with livestream_start
-    pub fn livestream_end(
-        &self,
-        group_name: &str,
-    ) -> io::Result<()> {
+    pub fn livestream_end(&self, group_name: &str) -> io::Result<()> {
         let server_url = format!("{}/livestream_end/{}", self.server_addr, group_name);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
@@ -456,11 +440,7 @@ impl HttpClient {
     }
 
     /// Send a config command
-    pub fn config_command(
-        &self,
-        group_name: &str,
-        command: Vec<u8>,
-    ) -> io::Result<()> {
+    pub fn config_command(&self, group_name: &str, command: Vec<u8>) -> io::Result<()> {
         let server_url = format!("{}/config/{}", self.server_addr, group_name);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
@@ -515,7 +495,8 @@ impl HttpClient {
             let line = line?;
             if line.starts_with("data:") {
                 let encoded_command = &line[5..];
-                let command = base64_engine.decode(encoded_command)
+                let command = base64_engine
+                    .decode(encoded_command)
                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
                 return Ok(command);
             }
@@ -528,11 +509,7 @@ impl HttpClient {
     }
 
     /// Send a config response
-    pub fn config_response(
-        &self,
-        group_name: &str,
-        response: Vec<u8>,
-    ) -> io::Result<()> {
+    pub fn config_response(&self, group_name: &str, response: Vec<u8>) -> io::Result<()> {
         let server_url = format!("{}/config_response/{}", self.server_addr, group_name);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);
@@ -559,10 +536,7 @@ impl HttpClient {
     }
 
     /// Checks and retrieve a config command response.
-    pub fn fetch_config_response(
-        &self,
-        group_name: &str,
-    ) -> io::Result<Vec<u8>> {
+    pub fn fetch_config_response(&self, group_name: &str) -> io::Result<Vec<u8>> {
         let server_url = format!("{}/config_response/{}", self.server_addr, group_name);
 
         let auth_value = format!("{}:{}", self.server_username, self.server_password);

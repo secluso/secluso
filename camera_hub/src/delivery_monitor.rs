@@ -17,13 +17,13 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use secluso_client_lib::mls_client::MlsClient;
+use secluso_client_lib::thumbnail_meta_info::ThumbnailMetaInfo;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use secluso_client_lib::thumbnail_meta_info::{ThumbnailMetaInfo};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct VideoInfo {
@@ -117,7 +117,8 @@ impl DeliveryMonitor {
         file.sync_all().unwrap();
 
         //delete old state files
-        let d_files = MlsClient::get_state_files_sorted(&self.state_dir, "delivery_monitor_").unwrap();
+        let d_files =
+            MlsClient::get_state_files_sorted(&self.state_dir, "delivery_monitor_").unwrap();
         assert!(d_files[0] == "delivery_monitor_".to_owned() + &current_timestamp.to_string());
         for f in &d_files[1..] {
             let _ = fs::remove_file(self.state_dir.clone() + "/" + f);
@@ -126,7 +127,9 @@ impl DeliveryMonitor {
 
     pub fn enqueue_video(&mut self, video_info: VideoInfo) {
         info!("enqueue_event: {}", video_info.timestamp);
-        let _ = self.video_watch_list.insert(video_info.timestamp, video_info.clone());
+        let _ = self
+            .video_watch_list
+            .insert(video_info.timestamp, video_info.clone());
         let _ = self.video_pending_list.insert(video_info.epoch, video_info);
 
         self.save_state();
@@ -134,8 +137,12 @@ impl DeliveryMonitor {
 
     pub fn enqueue_thumbnail(&mut self, thumbnail_info: ThumbnailMetaInfo) {
         info!("enqueue_thumbnail_event: {}", thumbnail_info.timestamp);
-        let _ = self.thumbnail_watch_list.insert(thumbnail_info.timestamp, thumbnail_info.clone());
-        let _ = self.thumbnail_pending_list.insert(thumbnail_info.epoch, thumbnail_info);
+        let _ = self
+            .thumbnail_watch_list
+            .insert(thumbnail_info.timestamp, thumbnail_info.clone());
+        let _ = self
+            .thumbnail_pending_list
+            .insert(thumbnail_info.epoch, thumbnail_info);
 
         self.save_state();
     }
@@ -157,7 +164,7 @@ impl DeliveryMonitor {
         self.save_state();
     }
 
-    pub fn process_heartbeat(&mut self, motion_epoch: u64,  thumbnail_epoch: u64) {
+    pub fn process_heartbeat(&mut self, motion_epoch: u64, thumbnail_epoch: u64) {
         let mut removed_list = vec![];
 
         // FIXME: the heartbeat_timestamp comes from the app.
@@ -179,14 +186,15 @@ impl DeliveryMonitor {
 
         // Process thumbnails now
         let mut removed_list = vec![];
-        self.thumbnail_pending_list.retain(|&epoch, thumbnail_info| {
-            if epoch <= thumbnail_epoch {
-                removed_list.push(thumbnail_info.clone());
-                false
-            } else {
-                true
-            }
-        });
+        self.thumbnail_pending_list
+            .retain(|&epoch, thumbnail_info| {
+                if epoch <= thumbnail_epoch {
+                    removed_list.push(thumbnail_info.clone());
+                    false
+                } else {
+                    true
+                }
+            });
 
         for thumbnail_info in removed_list {
             let _ = fs::remove_file(self.get_thumbnail_file_path(&thumbnail_info));
@@ -210,7 +218,7 @@ impl DeliveryMonitor {
     }
 
     pub fn get_thumbnail_meta_by_timestamp(&self, timestamp: &u64) -> &ThumbnailMetaInfo {
-        self.thumbnail_pending_list.get(&timestamp).unwrap()
+        self.thumbnail_pending_list.get(timestamp).unwrap()
     }
 
     pub fn videos_to_send(&self) -> Vec<VideoInfo> {

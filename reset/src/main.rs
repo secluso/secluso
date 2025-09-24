@@ -15,21 +15,21 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use base64::{engine::general_purpose, Engine as _};
+use reqwest::blocking::{Body, Client};
 use rppal::gpio::{Gpio, Trigger};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant};
-use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::VecDeque;
 use std::fs;
 use std::fs::File;
 use std::io;
-use std::io::Write;
-use std::str;
 use std::io::BufReader;
-use reqwest::blocking::{Client, Body};
-use base64::{engine::general_purpose, Engine as _};
+use std::io::Write;
+use std::process::Command;
+use std::str;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use secluso_client_server_lib::auth::parse_user_credentials_full;
 
@@ -46,15 +46,9 @@ fn run_command_to_completion(command: &str) {
 
     println!("Status: {}", output.status);
 
-    println!(
-        "Stdout:\n{}",
-        String::from_utf8_lossy(&output.stdout)
-    );
+    println!("Stdout:\n{}", String::from_utf8_lossy(&output.stdout));
 
-    println!(
-        "Stderr:\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    println!("Stderr:\n{}", String::from_utf8_lossy(&output.stderr));
 }
 
 fn reset_action() {
@@ -75,8 +69,10 @@ fn save_logs_to_file() -> io::Result<()> {
     let mut cmd = Command::new("journalctl");
     cmd.arg("--no-pager")
         .arg("--output=short-iso")
-        .arg("-u").arg("secluso.service")
-        .arg("-n").arg("10000"); // number of lines
+        .arg("-u")
+        .arg("secluso.service")
+        .arg("-n")
+        .arg("10000"); // number of lines
 
     let out = cmd.output()?;
     if !out.status.success() {
@@ -95,7 +91,8 @@ pub fn upload_logs() -> io::Result<()> {
     // Read server info
     let credentials_full = fs::read("../camera_hub/credentials_full")?;
     let credentials_full_bytes = credentials_full.to_vec();
-    let (server_username, server_password, server_addr) = parse_user_credentials_full(credentials_full_bytes).unwrap();
+    let (server_username, server_password, server_addr) =
+        parse_user_credentials_full(credentials_full_bytes).unwrap();
 
     if !server_addr.starts_with("https") {
         return Err(io::Error::new(
@@ -157,9 +154,13 @@ fn main() {
     let led_pin_number = 25;
 
     let gpio = Gpio::new().expect("Failed to initialize GPIO");
-    
-    let mut button = gpio.get(button_pin_number).expect("Failed to get GPIO pin").into_input_pullup();
-    button.set_interrupt(Trigger::Both, Some(Duration::from_millis(50)))
+
+    let mut button = gpio
+        .get(button_pin_number)
+        .expect("Failed to get GPIO pin")
+        .into_input_pullup();
+    button
+        .set_interrupt(Trigger::Both, Some(Duration::from_millis(50)))
         .expect("Failed to set interrupt");
 
     let mut led = gpio
@@ -212,7 +213,7 @@ fn main() {
                         thread::spawn(move || {
                             for _ in 0..500 {
                                 thread::sleep(Duration::from_millis(10));
-                                
+
                                 if cancel_flag_clone.load(Ordering::Relaxed) {
                                     return;
                                 }
@@ -222,7 +223,7 @@ fn main() {
                                 println!("Button held for 5 seconds!");
                                 thread::spawn(|| {
                                     reset_action();
-                                });                                
+                                });
 
                                 // Blink for 5 seconds
                                 let mut led = led_clone.lock().unwrap();

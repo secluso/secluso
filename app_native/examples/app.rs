@@ -16,12 +16,13 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use secluso_app_native::{
-    add_camera, decrypt_video, deregister, get_group_name,
-    initialize, livestream_decrypt, livestream_update, Clients,
-    generate_heartbeat_request_config_command, process_heartbeat_config_response,
+    add_camera, decrypt_video, deregister, generate_heartbeat_request_config_command,
+    get_group_name, initialize, livestream_decrypt, livestream_update,
+    process_heartbeat_config_response, Clients,
 };
 use secluso_client_lib::http_client::HttpClient;
 use secluso_client_server_lib::auth::parse_user_credentials_full;
+use std::env;
 use std::fs;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
@@ -30,7 +31,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::env;
 
 // This is a simple app that pairs with the Secluso camera, receives motion videos,
 // and launches livestream sessions.
@@ -134,9 +134,9 @@ fn main() -> io::Result<()> {
     }
 
     let clients_clone = Arc::clone(&clients);
-    let http_client_clone = http_client.clone(); 
+    let http_client_clone = http_client.clone();
     let clients_clone_2 = Arc::clone(&clients);
-    let http_client_clone_2 = http_client.clone();  
+    let http_client_clone_2 = http_client.clone();
 
     // This thread is used for receiving motion videos
     println!("Launching a thread to listen for motion videos.");
@@ -162,10 +162,8 @@ fn deregister_all(
     clients: Arc<Mutex<Option<Box<Clients>>>>,
     http_client: &HttpClient,
 ) -> io::Result<()> {
-    let motion_group_name =
-        get_group_name(&mut clients.lock().unwrap(), "motion")?;
-    let livestream_group_name =
-        get_group_name(&mut clients.lock().unwrap(), "livestream")?;
+    let motion_group_name = get_group_name(&mut clients.lock().unwrap(), "motion")?;
+    let livestream_group_name = get_group_name(&mut clients.lock().unwrap(), "livestream")?;
     deregister(&mut clients.lock().unwrap());
     let _ = http_client.deregister(&motion_group_name);
     let _ = http_client.deregister(&livestream_group_name);
@@ -189,9 +187,8 @@ fn heartbeat_loop(
 
         let config_msg_enc =
             generate_heartbeat_request_config_command(&mut clients.lock().unwrap(), timestamp)?;
-        
-        let config_group_name =
-            get_group_name(&mut clients.lock().unwrap(), "config")?;
+
+        let config_group_name = get_group_name(&mut clients.lock().unwrap(), "config")?;
 
         println!("Sending heartbeat request: {}", timestamp);
         http_client.config_command(&config_group_name, config_msg_enc)?;
@@ -206,8 +203,8 @@ fn heartbeat_loop(
                 Ok(resp) => {
                     config_response_opt = Some(resp);
                     break;
-                },
-                Err(_) => {},
+                }
+                Err(_) => {}
             }
         }
 
@@ -219,7 +216,11 @@ fn heartbeat_loop(
 
         let config_response = config_response_opt.unwrap();
 
-        match process_heartbeat_config_response(&mut clients.lock().unwrap(), config_response.clone(), timestamp) {
+        match process_heartbeat_config_response(
+            &mut clients.lock().unwrap(),
+            config_response.clone(),
+            timestamp,
+        ) {
             Ok(response) if response.contains("healthy") => {
                 println!("Healthy heartbeat");
                 ignored_heartbeats = 0;
@@ -229,11 +230,12 @@ fn heartbeat_loop(
                 } else {
                     println!("Error: unknown firmware version");
                 }
-            },
+            }
             Ok(response) if response == "invalid ciphertext".to_string() => {
                 println!("The connection to the camera is corrupted. Pair the app with the camera again.");
-            },
-            Ok(response) => { //invalid timestamp || invalid epoch
+            }
+            Ok(response) => {
+                //invalid timestamp || invalid epoch
                 // FIXME: Before processing the heartbeat response, we should make sure all motion videos are fetched and processed.
                 // But we're not doing that here, therefore an "invalid epoch" might not mean a corrupted channel.
                 println!("{response}");
@@ -241,7 +243,7 @@ fn heartbeat_loop(
                 if ignored_heartbeats >= 4 {
                     println!("The connection to the camera might have got corrupted. Consider pairing the app with the camera again.");
                 }
-            },
+            }
             Err(e) => {
                 println!("Error processing heartbeat response {e}");
                 ignored_heartbeats += 1;
@@ -255,10 +257,7 @@ fn heartbeat_loop(
     }
 }
 
-fn fetch_all_motion_videos(
-    clients: Arc<Mutex<Option<Box<Clients>>>>,
-    http_client: &HttpClient,
-) {
+fn fetch_all_motion_videos(clients: Arc<Mutex<Option<Box<Clients>>>>, http_client: &HttpClient) {
     loop {
         if let Err(_) = fetch_motion_video(Arc::clone(&clients), http_client) {
             return;
@@ -283,9 +282,9 @@ fn fetch_motion_video(
         // The first motion video will be sent in MLS epoch 2.
         2
     };
-    
+
     let group_name = get_group_name(&mut clients_locked, "motion")?;
-    
+
     let enc_filename = format!("{}", epoch);
     let enc_filepath = Path::new(DATA_DIR).join("videos").join(&enc_filename);
     match http_client.fetch_enc_video(&group_name, &enc_filepath) {
@@ -296,7 +295,8 @@ fn fetch_motion_video(
             epoch += 1;
 
             let epoch_data = bincode::serialize(&epoch).unwrap();
-            let mut file = fs::File::create(&epoch_file_path).expect("Could not create motion_epoch file");
+            let mut file =
+                fs::File::create(&epoch_file_path).expect("Could not create motion_epoch file");
             file.write_all(&epoch_data).unwrap();
             file.flush().unwrap();
             file.sync_all().unwrap();

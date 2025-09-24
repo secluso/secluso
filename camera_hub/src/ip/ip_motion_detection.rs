@@ -16,8 +16,8 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use image::{imageops, GenericImageView, GrayImage, ImageReader};
 use crate::motion::MotionResult;
+use image::{imageops, GenericImageView, GrayImage, ImageReader};
 use linfa::dataset::Labels;
 use linfa::prelude::Transformer;
 use linfa::Dataset;
@@ -282,7 +282,7 @@ impl MotionDetection {
         }
 
         // Strip trailing newline and/or carriage return
-        while buffer.ends_with(&[b'\n']) || buffer.ends_with(&[b'\r']) {
+        while buffer.ends_with(b"\n") || buffer.ends_with(b"\r") {
             buffer.pop();
         }
 
@@ -300,14 +300,14 @@ impl MotionDetection {
             // Ensure that either no detection has occurred before, or that this isn't the same frame as last time.
             if self.last_detection.is_none()
                 || self
-                .last_detection
-                .map(|last_time| {
-                    latest_video_time
-                        .duration_since(last_time)
-                        .map(|d| d >= Duration::from_millis(1000.div(self.motion_fps)))
-                        .unwrap_or(false)
-                })
-                .unwrap_or(false)
+                    .last_detection
+                    .map(|last_time| {
+                        latest_video_time
+                            .duration_since(last_time)
+                            .map(|d| d >= Duration::from_millis(1000.div(self.motion_fps)))
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false)
             {
                 let decoded = ImageReader::new(io::Cursor::new(latest_video))
                     .with_guessed_format()
@@ -396,9 +396,9 @@ impl MotionDetection {
                             (points_scale_factor * MINIMUM_INDIVIDUAL_CLUSTER_POINTS as f64)
                                 as usize,
                         )
-                            .tolerance(points_scale_factor * DBSCAN_TOLERANCE)
-                            .transform(dataset)
-                            .unwrap();
+                        .tolerance(points_scale_factor * DBSCAN_TOLERANCE)
+                        .transform(dataset)
+                        .unwrap();
                         let label_count = cluster_memberships.label_count().remove(0);
 
                         let mut total_count = 0;
@@ -425,7 +425,6 @@ impl MotionDetection {
                             diff_result.save(format!("difference_cluster_{:?}.png", millis)).expect("Failed to save difference image!");
                             */
 
-
                             return Ok(MotionResult {
                                 motion: true,
                                 thumbnail: Some(decoded.to_rgb8()),
@@ -437,10 +436,10 @@ impl MotionDetection {
             }
         }
 
-        return Ok(MotionResult {
+        Ok(MotionResult {
             motion: false,
             thumbnail: None,
             detections: vec![],
-        });
+        })
     }
 }

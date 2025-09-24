@@ -20,16 +20,16 @@
 
 use super::identity::Identity;
 use super::openmls_rust_persistent_crypto::OpenMlsRustPersistentCrypto;
+use crate::pairing;
 use ds_lib::GroupMessage;
 use openmls::prelude::*;
-use openmls::schedule::{ExternalPsk, Psk, PreSharedKeyId};
+use openmls::schedule::{ExternalPsk, PreSharedKeyId, Psk};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::io::{BufRead, BufReader, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tls_codec::{Serialize as TlsSerialize, Deserialize as TlsDeserialize};
-use crate::pairing;
+use tls_codec::{Deserialize as TlsDeserialize, Serialize as TlsSerialize};
 
 const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 
@@ -47,7 +47,7 @@ pub struct Contact {
 
 impl Contact {
     pub fn get_credential(&self) -> Credential {
-        return self.key_packages[0].1.leaf_node().credential().clone();
+        self.key_packages[0].1.leaf_node().credential().clone()
     }
 }
 
@@ -82,25 +82,22 @@ impl Group {
         group_helper: GroupHelper,
         provider: &OpenMlsRustPersistentCrypto,
     ) -> io::Result<Self> {
-        let mls_group_option = MlsGroup::load(provider.storage(), &GroupId::from_slice(&group_helper.group_id))
-            .map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Failed to load group from storage provider - {e}"),
-                )
-            })?;
+        let mls_group_option = MlsGroup::load(
+            provider.storage(),
+            &GroupId::from_slice(&group_helper.group_id),
+        )
+        .map_err(|e| {
+            io::Error::other(format!("Failed to load group from storage provider - {e}"))
+        })?;
 
         if let Some(mls_group) = mls_group_option {
-            return Ok(Group {
+            Ok(Group {
                 group_name: group_helper.group_name,
                 only_contact: group_helper.only_contact,
                 mls_group,
             })
         } else {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Group not found in storage provider.",
-            ))
+            Err(io::Error::other("Group not found in storage provider."))
         }
     }
 }
@@ -216,15 +213,9 @@ impl MlsClient {
     }
 
     /// Create a group with the given name.
-    pub fn create_group(
-        &mut self,
-        name: &str,
-    ) -> io::Result<()> {
+    pub fn create_group(&mut self, name: &str) -> io::Result<()> {
         if self.group.is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Group previously created.",
-            ))
+            return Err(io::Error::other("Group previously created."));
         }
 
         log::debug!("{} creates group {}", self.username, name);
@@ -248,7 +239,7 @@ impl MlsClient {
 
         let group = Group {
             group_name: name.to_string(),
-            mls_group: mls_group,
+            mls_group,
             only_contact: None,
         };
 
@@ -259,17 +250,13 @@ impl MlsClient {
     /// Invite a contact to a group.
     pub fn invite(&mut self, contact: &Contact, secret: Vec<u8>) -> io::Result<Vec<u8>> {
         if self.group.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Group not created yet".to_string(),
-            ))
+            return Err(io::Error::other("Group not created yet".to_string()));
         }
 
         let group = self.group.as_mut().unwrap();
 
         if group.only_contact.is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 "Cannot invite more than one member to the group.",
             ));
         }
@@ -277,23 +264,23 @@ impl MlsClient {
         // Create an external psk proposal and commit it.
         // This is used for mutual authentication.
         if secret.len() != pairing::NUM_SECRET_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Invalid number of bytes in secret.",
-            ));
+            return Err(io::Error::other("Invalid number of bytes in secret."));
         }
 
         let psk_id = vec![1u8, 2, 3];
         //let secret = [0u8; 64];
         let external_psk = ExternalPsk::new(psk_id);
-        let preshared_key_id =
-            PreSharedKeyId::new(CIPHERSUITE, self.provider.rand(), Psk::External(external_psk))
-                .expect("An unexpected error occured.");
+        let preshared_key_id = PreSharedKeyId::new(
+            CIPHERSUITE,
+            self.provider.rand(),
+            Psk::External(external_psk),
+        )
+        .expect("An unexpected error occured.");
         preshared_key_id.store(&self.provider, &secret).unwrap();
 
         let (_psk_proposal, _proposal_ref) = group
             .mls_group
-            .propose_external_psk(& self.provider, &self.identity.signer, preshared_key_id)
+            .propose_external_psk(&self.provider, &self.identity.signer, preshared_key_id)
             .expect("Could not create PSK proposal");
 
         // Build a proposal with this key package and do the MLS bits.
@@ -304,32 +291,20 @@ impl MlsClient {
         // two members, an inviter (camera) and an invitee (app).
         let (_out_messages, welcome, _group_info) = group
             .mls_group
-            .add_members(
-                &self.provider,
-                &self.identity.signer,
-                &[joiner_key_package],
-            )
-            .map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Failed to add member to group - {e}"),
-                )
-            })?;
+            .add_members(&self.provider, &self.identity.signer, &[joiner_key_package])
+            .map_err(|e| io::Error::other(format!("Failed to add member to group - {e}")))?;
 
         // First, process the invitation on our end.
-       group
+        group
             .mls_group
             .merge_pending_commit(&self.provider)
             .expect("error merging pending commit");
 
         // Second, generate and return the Welcome message (to be sent to the joiner).
         let mut welcome_msg_vec = Vec::new();
-        welcome.tls_serialize(&mut welcome_msg_vec).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("tls_serialize for welcome_msg failed ({e})"),
-            )
-        })?;
+        welcome
+            .tls_serialize(&mut welcome_msg_vec)
+            .map_err(|e| io::Error::other(format!("tls_serialize for welcome_msg failed ({e})")))?;
 
         group.only_contact = Some(contact.clone());
 
@@ -345,10 +320,7 @@ impl MlsClient {
         group_name: String,
     ) -> io::Result<()> {
         if self.group.is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Joined a group already.",
-            ))
+            return Err(io::Error::other("Joined a group already."));
         }
 
         log::debug!("{} joining group ...", self.username);
@@ -356,17 +328,17 @@ impl MlsClient {
         // Store the secret as an external psk.
         // This is used for mutual authentication.
         if secret.len() != pairing::NUM_SECRET_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Invalid number of bytes in secret.",
-            ));
+            return Err(io::Error::other("Invalid number of bytes in secret."));
         }
 
         let psk_id = vec![1u8, 2, 3];
         let external_psk = ExternalPsk::new(psk_id);
-        let preshared_key_id =
-            PreSharedKeyId::new(CIPHERSUITE, self.provider.rand(), Psk::External(external_psk))
-                .expect("An unexpected error occured.");
+        let preshared_key_id = PreSharedKeyId::new(
+            CIPHERSUITE,
+            self.provider.rand(),
+            Psk::External(external_psk),
+        )
+        .expect("An unexpected error occured.");
         preshared_key_id.store(&self.provider, &secret).unwrap();
 
         // NOTE: Since the DS doesn't distribute copies of the group's ratchet
@@ -382,13 +354,10 @@ impl MlsClient {
 
         // Currently, we only support groups that have one camera and one app.
         if mls_group.members().count() != 2 {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "Unexpected group size in the invitation {:?}",
-                    mls_group.members().count()
-                ),
-            ));
+            return Err(io::Error::other(format!(
+                "Unexpected group size in the invitation {:?}",
+                mls_group.members().count()
+            )));
         }
 
         // Check to ensure the welcome message is from the contact we expect.
@@ -411,15 +380,12 @@ impl MlsClient {
         }
 
         if !inviter_confirmed || !invitee_confirmed {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Unexpected inviter/invitee identity",
-            ));
+            return Err(io::Error::other("Unexpected inviter/invitee identity"));
         }
 
         let group = Group {
             group_name: group_name.clone(),
-            mls_group: mls_group,
+            mls_group,
             only_contact: Some(expected_inviter),
         };
 
@@ -439,7 +405,7 @@ impl MlsClient {
     ) -> io::Result<()> {
         let welcome_msg = match MlsMessageIn::tls_deserialize(&mut welcome_msg_vec.as_slice()) {
             Ok(msg) => msg,
-            Err(e) => {return Err(io::Error::new(io::ErrorKind::Other, format!("{}", e)))},
+            Err(e) => return Err(io::Error::other(format!("{}", e))),
         };
 
         match welcome_msg.extract() {
@@ -468,16 +434,11 @@ impl MlsClient {
         // This does make some assumptions about the execution speed, but those assumptions are reasonable (for now).
         let current_timestamp: u128 = Self::now_in_nano_secs();
 
-        let group_helper_option = match &self.group {
-            Some(group) => {
-                Some(GroupHelper {
-                    group_name: group.group_name.clone(),
-                    group_id: group.mls_group.group_id().to_vec(),
-                    only_contact: group.only_contact.clone(),
-                })
-            },
-            None => None,
-        };
+        let group_helper_option = self.group.as_ref().map(|group| GroupHelper {
+            group_name: group.group_name.clone(),
+            group_id: group.mls_group.group_id().to_vec(),
+            only_contact: group.only_contact.clone(),
+        });
 
         let data = bincode::serialize(&group_helper_option).unwrap();
         let pathname = self.file_dir.clone()
@@ -534,7 +495,11 @@ impl MlsClient {
         }
     }
 
-    pub fn restore_group_state(file_dir: String, tag: String, provider: &OpenMlsRustPersistentCrypto) -> io::Result<Option<Group>> {
+    pub fn restore_group_state(
+        file_dir: String,
+        tag: String,
+        provider: &OpenMlsRustPersistentCrypto,
+    ) -> io::Result<Option<Group>> {
         let g_files =
             Self::get_state_files_sorted(&file_dir, &("group_state_".to_string() + &tag + "_"))
                 .unwrap();
@@ -550,7 +515,7 @@ impl MlsClient {
                     Some(group_helper) => {
                         let group = Group::from_deserialized(group_helper, provider)?;
                         return Ok(Some(group));
-                    },
+                    }
                     None => {
                         return Ok(None);
                     }
@@ -615,16 +580,9 @@ impl MlsClient {
 
     pub fn get_group_name(&self) -> io::Result<String> {
         match &self.group {
-            Some(g) => {        
-                return Ok(g.group_name.clone());
-            },
+            Some(g) => Ok(g.group_name.clone()),
 
-            None => {
-                Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Group not created yet".to_string(),
-                ))
-            },
+            None => Err(io::Error::other("Group not created yet".to_string())),
         }
     }
 
@@ -632,10 +590,7 @@ impl MlsClient {
     /// to be sent to other group members. It also returns the epoch number after the update.
     pub fn update(&mut self) -> io::Result<(Vec<u8>, u64)> {
         if self.group.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Group not created yet".to_string(),
-            ))
+            return Err(io::Error::other("Group not created yet".to_string()));
         }
 
         let group = self.group.as_mut().unwrap();
@@ -648,12 +603,7 @@ impl MlsClient {
             group
                 .mls_group
                 .store_pending_proposal(self.provider.storage(), proposal)
-                .map_err(|e| {
-                    io::Error::new(
-                        io::ErrorKind::Other,
-                        format!("FError: could not store proposal - {e}"),
-                    )
-                })?;
+                .map_err(|e| io::Error::other(format!("FError: could not store proposal - {e}")))?;
         }
 
         // FIXME: _welcome should be none, group_info should be some.
@@ -665,12 +615,10 @@ impl MlsClient {
                 &self.identity.signer,
                 LeafNodeParameters::default(),
             )
-            .map_err(|e| {
-                io::Error::new(io::ErrorKind::Other, format!("Failed to self update - {e}"))
-            })?;
+            .map_err(|e| io::Error::other(format!("Failed to self update - {e}")))?;
 
         log::trace!("Generating update message");
-        let group_recipients = Self::recipients(&group);
+        let group_recipients = Self::recipients(group);
         // Generate the message to the group.
         let msg = GroupMessage::new(commit_msg_bundle.into_commit().into(), &group_recipients);
 
@@ -681,17 +629,10 @@ impl MlsClient {
             .expect("error merging pending commit");
 
         let mut msg_vec = Vec::new();
-        msg.tls_serialize(&mut msg_vec).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("tls_serialize for msg failed ({e})"),
-            )
-        })?;
+        msg.tls_serialize(&mut msg_vec)
+            .map_err(|e| io::Error::other(format!("tls_serialize for msg failed ({e})")))?;
 
-        let epoch = group
-            .mls_group
-            .epoch()
-            .as_u64();
+        let epoch = group.mls_group.epoch().as_u64();
 
         Ok((msg_vec, epoch))
     }
@@ -700,10 +641,7 @@ impl MlsClient {
     /// to be sent to other group members.
     pub fn update_proposal(&mut self) -> io::Result<Vec<u8>> {
         if self.group.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Group not created yet".to_string(),
-            ))
+            return Err(io::Error::other("Group not created yet".to_string()));
         }
 
         let group = self.group.as_mut().unwrap();
@@ -711,7 +649,7 @@ impl MlsClient {
         // Set AAD
         let group_aad = group.group_name.clone() + " AAD";
         group.mls_group.set_aad(group_aad.as_bytes().to_vec());
-        
+
         let (proposal_msg, _) = group
             .mls_group
             .propose_self_update(
@@ -720,15 +658,14 @@ impl MlsClient {
                 LeafNodeParameters::default(),
             )
             .map_err(|e| {
-                io::Error::new(io::ErrorKind::Other, format!("Failed to generate self update proposal message - {e}"))
+                io::Error::other(format!(
+                    "Failed to generate self update proposal message - {e}"
+                ))
             })?;
 
         let mut msg_vec = Vec::new();
         proposal_msg.tls_serialize(&mut msg_vec).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("tls_serialize for proposal_msg failed ({e})"),
-            )
+            io::Error::other(format!("tls_serialize for proposal_msg failed ({e})"))
         })?;
 
         Ok(msg_vec)
@@ -737,18 +674,12 @@ impl MlsClient {
     /// Get the current group epoch
     pub fn get_epoch(&self) -> io::Result<u64> {
         if self.group.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Group not created yet".to_string(),
-            ))
+            return Err(io::Error::other("Group not created yet".to_string()));
         }
 
         let group = self.group.as_ref().unwrap();
 
-        let epoch = group
-            .mls_group
-            .epoch()
-            .as_u64();
+        let epoch = group.mls_group.epoch().as_u64();
 
         Ok(epoch)
     }
@@ -771,10 +702,7 @@ impl MlsClient {
     /// Encrypts a message and returns the ciphertext
     pub fn encrypt(&mut self, bytes: &[u8]) -> io::Result<Vec<u8>> {
         if self.group.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Group not created yet".to_string(),
-            ))
+            return Err(io::Error::other("Group not created yet".to_string()));
         }
 
         let group = self.group.as_mut().unwrap();
@@ -786,17 +714,13 @@ impl MlsClient {
         let message_out = group
             .mls_group
             .create_message(&self.provider, &self.identity.signer, bytes)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{e}")))?;
+            .map_err(|e| io::Error::other(format!("{e}")))?;
 
-        let msg = GroupMessage::new(message_out.into(), &Self::recipients(&group));
-        
+        let msg = GroupMessage::new(message_out.into(), &Self::recipients(group));
+
         let mut msg_vec = Vec::new();
-        msg.tls_serialize(&mut msg_vec).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("tls_serialize for msg failed ({e})"),
-            )
-        })?;
+        msg.tls_serialize(&mut msg_vec)
+            .map_err(|e| io::Error::other(format!("tls_serialize for msg failed ({e})")))?;
 
         Ok(msg_vec)
     }
@@ -807,10 +731,7 @@ impl MlsClient {
         app_msg: bool,
     ) -> io::Result<Vec<u8>> {
         if self.group.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Group not created yet".to_string(),
-            ))
+            return Err(io::Error::other("Group not created yet".to_string()));
         }
         let group = self.group.as_mut().unwrap();
         let mls_group = &mut group.mls_group;
@@ -823,10 +744,11 @@ impl MlsClient {
         // Instead, we return an error here and leave it to the caller to decide if the error
         // needs to be printed or not.
         if mls_group.epoch() != message.epoch() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Error: message epoch ({}) must match the group epoch ({})", message.epoch(), mls_group.epoch()),
-            ))
+            return Err(io::Error::other(format!(
+                "Error: message epoch ({}) must match the group epoch ({})",
+                message.epoch(),
+                mls_group.epoch()
+            )));
         }
 
         // This works since none of the other members of the group, other than the camera,
@@ -837,13 +759,10 @@ impl MlsClient {
             Ok(msg) => msg,
             Err(e) => {
                 log::debug!("process_message returned: {e}");
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!(
-                        "Error processing unverified message: {:?} -  Dropping message.",
-                        e
-                    ),
-                ));
+                return Err(io::Error::other(format!(
+                    "Error processing unverified message: {:?} -  Dropping message.",
+                    e
+                )));
             }
         };
 
@@ -851,8 +770,7 @@ impl MlsClient {
         let group_aad = group.group_name.clone() + " AAD";
 
         if processed_message.aad().to_vec() != group_aad.into_bytes() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 "Error: received a message with an invalid AAD".to_string(),
             ));
         }
@@ -862,8 +780,7 @@ impl MlsClient {
         // See: openmls/src/framing/validation.rs
         let sender = processed_message.credential().clone();
         if sender != only_contact.get_credential() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 "Error: received a message from an unknown party".to_string(),
             ));
         }
@@ -871,19 +788,17 @@ impl MlsClient {
         match processed_message.into_content() {
             ProcessedMessageContent::ApplicationMessage(application_message) => {
                 if !app_msg {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
+                    return Err(io::Error::other(
                         "Error: expected a commit message, but received an application message",
                     ));
                 }
                 let application_message = application_message.into_bytes();
 
-                return Ok(application_message);
+                Ok(application_message)
             }
             ProcessedMessageContent::ProposalMessage(proposal) => {
                 if app_msg {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
+                    return Err(io::Error::other(
                         "Error: expected an application message, but received a proposal message.",
                     ));
                 }
@@ -896,32 +811,28 @@ impl MlsClient {
 
                 only_contact.last_update_timestamp = Self::now_in_secs();
 
-                return Ok(vec![]);
+                Ok(vec![])
             }
-            ProcessedMessageContent::ExternalJoinProposalMessage(_external_proposal) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Error: Unexpected external join proposal message!".to_string(),
-                ));
-            }
+            ProcessedMessageContent::ExternalJoinProposalMessage(_external_proposal) => Err(
+                io::Error::other("Error: Unexpected external join proposal message!".to_string()),
+            ),
             ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
                 if app_msg {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
+                    return Err(io::Error::other(
                         "Error: expected an application message, but received a commit message.",
                     ));
                 }
 
                 // Restrict the type of staged commits that we'll merge: only one update/queued proposal!
-                if !staged_commit.add_proposals().next().is_none() ||
-                !staged_commit.remove_proposals().next().is_none() ||
-                !(staged_commit.update_proposals().next().is_none() ||
-                    staged_commit.update_proposals().collect::<Vec<_>>().len() == 1) ||                   
-                !staged_commit.psk_proposals().next().is_none() ||
-                !(staged_commit.queued_proposals().next().is_none() ||
-                    staged_commit.queued_proposals().collect::<Vec<_>>().len() == 1) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
+                if staged_commit.add_proposals().next().is_some()
+                    || staged_commit.remove_proposals().next().is_some()
+                    || !(staged_commit.update_proposals().next().is_none()
+                        || staged_commit.update_proposals().collect::<Vec<_>>().len() == 1)
+                    || staged_commit.psk_proposals().next().is_some()
+                    || !(staged_commit.queued_proposals().next().is_none()
+                        || staged_commit.queued_proposals().collect::<Vec<_>>().len() == 1)
+                {
+                    return Err(io::Error::other(
                         "Error: staged commit message must contain at most one update/queued proposal and no other proposals.",
                     ));
                 }
@@ -936,7 +847,7 @@ impl MlsClient {
                 // to see which other leaf nodes/contacts have been updated.
                 group.only_contact.as_mut().unwrap().last_update_timestamp = Self::now_in_secs();
 
-                return Ok(vec![]);
+                Ok(vec![])
             }
         }
     }
@@ -946,43 +857,27 @@ impl MlsClient {
     /// application message (app_msg = true) or a commit message (app_msg = false).
     /// This function will return an error if the message type is different from
     /// what was provided as input.
-    pub fn decrypt(
-        &mut self,
-        msg: Vec<u8>,
-        app_msg: bool,
-    ) -> io::Result<Vec<u8>> {
+    pub fn decrypt(&mut self, msg: Vec<u8>, app_msg: bool) -> io::Result<Vec<u8>> {
         let mls_msg = match MlsMessageIn::tls_deserialize(&mut msg.as_slice()) {
             Ok(m) => m,
             Err(e) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Could not deserialize msg ({e})"),
-                ));
-            },
+                return Err(io::Error::other(format!("Could not deserialize msg ({e})")));
+            }
         };
 
         match mls_msg.extract() {
-            MlsMessageBodyIn::Welcome(_welcome) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Error: Unexpected welcome message!".to_string(),
-                ));
-            }
+            MlsMessageBodyIn::Welcome(_welcome) => Err(io::Error::other(
+                "Error: Unexpected welcome message!".to_string(),
+            )),
             MlsMessageBodyIn::PrivateMessage(message) => {
-                return self.process_protocol_message(message.into(), app_msg);
+                self.process_protocol_message(message.into(), app_msg)
             }
-            MlsMessageBodyIn::PublicMessage(_message) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Error: Unexpected public message!".to_string(),
-                ));
-            }
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Error: Unsupported message type!".to_string(),
-                ));
-            }
+            MlsMessageBodyIn::PublicMessage(_message) => Err(io::Error::other(
+                "Error: Unexpected public message!".to_string(),
+            )),
+            _ => Err(io::Error::other(
+                "Error: Unsupported message type!".to_string(),
+            )),
         }
     }
 

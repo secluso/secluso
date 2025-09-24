@@ -1,14 +1,19 @@
+use crate::frame::SAVE_IMAGES;
 use crate::logic::intent::Intent;
 use crate::logic::pipeline::RunId;
+use crossbeam_channel::{Sender, TrySendError, bounded, select, tick};
 use serde::Serialize;
-use std::{fs::{File, OpenOptions}, io::Write, path::Path, thread};
-use crossbeam_channel::{bounded, Sender, select, TrySendError, tick};
 use std::io::BufWriter;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
-use crate::frame::SAVE_IMAGES;
+use std::{
+    fs::{File, OpenOptions},
+    io::Write,
+    path::Path,
+    thread,
+};
 
 /// Represents a structured telemetry message logged during pipeline operation.
 /// Encodes metadata about performance, state transitions, detection outcomes, and events.
@@ -184,7 +189,7 @@ impl TelemetryRun {
         let handle = thread::Builder::new()
             .name("telemetry-writer".to_string())
             .spawn(move || {
-                const BATCH_MAX: usize = 512;           // max lines per write burst
+                const BATCH_MAX: usize = 512; // max lines per write burst
                 const FLUSH_EVERY: Duration = Duration::from_millis(500); // periodic flush
                 const IDLE_EXIT: Option<Duration> = None; // keep thread alive entire run
 
@@ -193,15 +198,18 @@ impl TelemetryRun {
                 let ticker = tick(FLUSH_EVERY);
 
                 // Helper to write & flush current buffer
-                let flush_buf = |writer: &mut BufWriter<File>, buf: &mut Vec<String>, force: bool| {
-                    if buf.is_empty() && !force { return; }
-                    for line in buf.drain(..) {
-                        // Each line already JSON; add newline and write
-                        let _ = writer.write_all(line.as_bytes());
-                        let _ = writer.write_all(b"\n");
-                    }
-                    let _ = writer.flush();
-                };
+                let flush_buf =
+                    |writer: &mut BufWriter<File>, buf: &mut Vec<String>, force: bool| {
+                        if buf.is_empty() && !force {
+                            return;
+                        }
+                        for line in buf.drain(..) {
+                            // Each line already JSON; add newline and write
+                            let _ = writer.write_all(line.as_bytes());
+                            let _ = writer.write_all(b"\n");
+                        }
+                        let _ = writer.flush();
+                    };
 
                 // Main loop
                 loop {
@@ -249,7 +257,9 @@ impl TelemetryRun {
         if !self.activated {
             return Ok(());
         }
-        let Some(tx) = &self.tx else { return Ok(()); };
+        let Some(tx) = &self.tx else {
+            return Ok(());
+        };
 
         // Serialize outside worker to minimize critical section in writer
         let line = serde_json::to_string(pkt)?;
@@ -267,10 +277,13 @@ impl TelemetryRun {
                 };
                 if waited {
                     // Try once more
-                    if tx.try_send(TelemetryMsg::Line(match line {
-                        TelemetryMsg::Line(s) => s,
-                        _ => unreachable!(),
-                    })).is_ok() {
+                    if tx
+                        .try_send(TelemetryMsg::Line(match line {
+                            TelemetryMsg::Line(s) => s,
+                            _ => unreachable!(),
+                        }))
+                        .is_ok()
+                    {
                         return Ok(());
                     }
                 }

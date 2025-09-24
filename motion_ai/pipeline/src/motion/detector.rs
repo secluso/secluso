@@ -227,22 +227,16 @@ impl MotionDetection {
         let area_by_label: std::collections::HashMap<u32, usize> = pixel_labels
             .par_iter()
             .filter(|&&label| label != 0) // Skip background
-            .fold(
-                || std::collections::HashMap::new(),
-                |mut acc, &label| {
-                    *acc.entry(label).or_insert(0) += 1;
-                    acc
-                },
-            )
-            .reduce(
-                || std::collections::HashMap::new(),
-                |mut map1, map2| {
-                    for (label, count) in map2 {
-                        *map1.entry(label).or_insert(0) += count;
-                    }
-                    map1
-                },
-            );
+            .fold(std::collections::HashMap::new, |mut acc, &label| {
+                *acc.entry(label).or_insert(0) += 1;
+                acc
+            })
+            .reduce(std::collections::HashMap::new, |mut map1, map2| {
+                for (label, count) in map2 {
+                    *map1.entry(label).or_insert(0) += count;
+                }
+                map1
+            });
 
         // Determine the minimum area threshold for an individual component.
         let min_area = (scale_factor * MINIMUM_INDIVIDUAL_CLUSTER_POINTS as f64) as usize;
@@ -271,6 +265,6 @@ impl MotionDetection {
             denoised.put_pixel(x, y, Luma([out_val]))
         }
 
-        return (count, denoised);
+        (count, denoised)
     }
 }

@@ -1,9 +1,12 @@
 use crate::logic::pipeline::RunId;
 use crate::ml::models::DetectionType;
 use crate::ml::models::{BoxInfo, DetectionResult};
+use flume::{Receiver, Sender};
 use image::{GrayImage, Rgb, RgbImage};
 use imageproc::drawing::draw_hollow_rect_mut;
 use imageproc::rect::Rect;
+use log::{debug, warn};
+use once_cell::sync::Lazy;
 use rayon::iter::IndexedParallelIterator;
 use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSliceMut;
@@ -13,11 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
-use log::{debug, warn};
-use once_cell::sync::Lazy;
-use flume::{Receiver, Sender};
 use std::{fs, path::PathBuf, thread};
-
 
 #[cfg(feature = "mp4_player")]
 use yuv::{
@@ -90,8 +89,14 @@ mod serde_bytes_arc_option {
 }
 
 enum SaveJob {
-    Rgb { img: image::RgbImage, path: PathBuf },
-    Gray { img: image::GrayImage, path: PathBuf },
+    Rgb {
+        img: image::RgbImage,
+        path: PathBuf,
+    },
+    Gray {
+        img: image::GrayImage,
+        path: PathBuf,
+    },
 }
 
 // BOUNDED queue to prevent unbounded memory growth under backpressure.
@@ -105,12 +110,13 @@ fn worker(rx: Receiver<SaveJob>) {
     while let Ok(job) = rx.recv() {
         match job {
             SaveJob::Rgb { img, path } => {
-                if let Some(parent) = path.parent() {
-                    if let Err(e) = fs::create_dir_all(parent) {
-                        warn!("create_dir_all({}): {}", parent.display(), e);
-                        // still attempt save; will likely fail below
-                    }
+                if let Some(parent) = path.parent()
+                    && let Err(e) = fs::create_dir_all(parent)
+                {
+                    warn!("create_dir_all({}): {}", parent.display(), e);
+                    // still attempt save; will likely fail below
                 }
+
                 if let Err(e) = img.save(&path) {
                     warn!("image save failed {}: {}", path.display(), e);
                 } else {
@@ -118,11 +124,12 @@ fn worker(rx: Receiver<SaveJob>) {
                 }
             }
             SaveJob::Gray { img, path } => {
-                if let Some(parent) = path.parent() {
-                    if let Err(e) = fs::create_dir_all(parent) {
-                        warn!("create_dir_all({}): {}", parent.display(), e);
-                    }
+                if let Some(parent) = path.parent()
+                    && let Err(e) = fs::create_dir_all(parent)
+                {
+                    warn!("create_dir_all({}): {}", parent.display(), e);
                 }
+
                 if let Err(e) = img.save(&path) {
                     warn!("gray save failed {}: {}", path.display(), e);
                 } else {
@@ -145,12 +152,14 @@ fn save_rgb_async(img: image::RgbImage, path: PathBuf) {
 fn save_gray_async_if_room(img: &image::GrayImage, path: PathBuf) {
     if !TX.is_full() {
         // one clone to transfer ownership to worker
-        let _ = TX.try_send(SaveJob::Gray { img: img.clone(), path });
+        let _ = TX.try_send(SaveJob::Gray {
+            img: img.clone(),
+            path,
+        });
     } else {
         debug!("save queue full; dropped GRAY save");
     }
 }
-
 
 /// Core methods to manipulate, save, and convert raw image frames.
 /// Includes support for saving annotated detections and converting YUV420p to RGB.
@@ -170,7 +179,7 @@ impl RawFrame {
             return Ok("".into());
         }
 
-        if let None = self.rgb_data {
+        if self.rgb_data.is_none() {
             self.yuv_to_rgb();
         }
 
@@ -206,10 +215,8 @@ impl RawFrame {
         use image::imageops::FilterType;
         img = image::imageops::resize(&img, 416, 416, FilterType::CatmullRom);
 
-        if draw_bb {
-            if let Some(det) = &self.detection_result {
-                img = self.draw_boxes(img, &det.results)
-            }
+        if draw_bb && let Some(det) = &self.detection_result {
+            img = self.draw_boxes(img, &det.results)
         }
 
         // Encode as PNG under output/runs/<run>/frames
@@ -322,7 +329,11 @@ impl RawFrame {
         })
     }
 
-    pub fn create_from_buffer(buffer: Vec<u8>, actual_width: usize, actual_height: usize) -> RawFrame {
+    pub fn create_from_buffer(
+        buffer: Vec<u8>,
+        actual_width: usize,
+        actual_height: usize,
+    ) -> RawFrame {
         RawFrame {
             yuv_data: Arc::new(buffer),
             rgb_data: None,
@@ -334,17 +345,17 @@ impl RawFrame {
         }
     }
 
-
     /**
     Tested with 1292x972 resized frames
     This method approximates of YUV -> RGB, average runtime: 17ms on Raspberry Pi Zero 2W
     Without approximation feature, runtime was 64ms for this method on average.
-     **/    pub(crate) fn yuv_to_rgb(&mut self) {
+     **/
+    pub(crate) fn yuv_to_rgb(&mut self) {
         // For 8-bit yuv420p, frame size = width * height * 3/2 bytes.
         // However, we need to take into account how the width is padded to 64-bytes.
         // This is for a row-aligned format from V4L2 for DMA transfer alignment.
         let yuv_width = if self.dma_aligned {
-            (self.width + 63) / 64 * 64
+            self.width.div_ceil(64)
         } else {
             self.width
         };

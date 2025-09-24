@@ -1,27 +1,30 @@
+use anyhow::anyhow;
+use anyhow::Context;
+use log::{debug, error, info};
 use rand::Rng;
+use secluso_client_lib::config::{
+    Heartbeat, HeartbeatRequest, HeartbeatResult, OPCODE_HEARTBEAT_REQUEST,
+    OPCODE_HEARTBEAT_RESPONSE,
+};
+use secluso_client_lib::mls_client::{Contact, KeyPackages, MlsClient};
+use secluso_client_lib::mls_clients::MlsClients;
+use secluso_client_lib::mls_clients::{
+    CONFIG, FCM, LIVESTREAM, MLS_CLIENT_TAGS, MOTION, NUM_MLS_CLIENTS, THUMBNAIL,
+};
+use secluso_client_lib::pairing;
+use secluso_client_lib::thumbnail_meta_info::{ThumbnailMetaInfo, THUMBNAIL_SANITY};
+use secluso_client_lib::video_net_info::{VideoNetInfo, VIDEONETINFO_SANITY};
+use serde_json::json;
+use std::array;
 use std::fs;
 use std::fs::File;
 use std::io;
-use std::io::{BufRead, BufWriter, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::net::SocketAddr;
 use std::net::TcpStream;
-use std::str::FromStr;
-use std::str;
-use std::array;
 use std::path::Path;
-use log::{info, debug, error};
-use anyhow::Context;
-use anyhow::anyhow;
-use secluso_client_lib::pairing;
-use secluso_client_lib::mls_client::{Contact, KeyPackages, MlsClient};
-use secluso_client_lib::mls_clients::MlsClients;
-use secluso_client_lib::video_net_info::{VideoNetInfo, VIDEONETINFO_SANITY};
-use secluso_client_lib::thumbnail_meta_info::{ThumbnailMetaInfo, THUMBNAIL_SANITY};
-use secluso_client_lib::mls_clients::{NUM_MLS_CLIENTS, MLS_CLIENT_TAGS,
-                                         MOTION, LIVESTREAM, FCM, CONFIG, THUMBNAIL};
-use secluso_client_lib::config::{HeartbeatResult, Heartbeat, HeartbeatRequest,
-                                    OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE};
-use serde_json::json;
+use std::str;
+use std::str::FromStr;
 
 // Used to generate random names.
 // With 16 alphanumeric characters, the probability of collision is very low.
@@ -36,19 +39,21 @@ pub struct Clients {
 
 #[flutter_rust_bridge::frb]
 impl Clients {
-    pub fn new(
-        first_time: bool,
-        file_dir: String,
-    ) -> io::Result<Self> {
+    pub fn new(first_time: bool, file_dir: String) -> io::Result<Self> {
         let mls_clients: MlsClients = array::from_fn(|i| {
-            let app_name = get_app_name(first_time, file_dir.clone(), format!("app_{}_name", MLS_CLIENT_TAGS[i]));
+            let app_name = get_app_name(
+                first_time,
+                file_dir.clone(),
+                format!("app_{}_name", MLS_CLIENT_TAGS[i]),
+            );
 
             let mut mls_client = MlsClient::new(
                 app_name,
                 first_time,
                 file_dir.clone(),
                 MLS_CLIENT_TAGS[i].to_string(),
-            ).expect("MlsClient::new() for returned error.");
+            )
+            .expect("MlsClient::new() for returned error.");
 
             // Make sure the groups_state files are created in case we initialize again soon.
             mls_client.save_group_state();
@@ -56,9 +61,7 @@ impl Clients {
             mls_client
         });
 
-        Ok(Self {
-            mls_clients,
-        })
+        Ok(Self { mls_clients })
     }
 }
 
@@ -210,8 +213,7 @@ fn pair_with_camera(
 
         let app_key_packages = mls_client.key_packages();
 
-        let camera_key_packages =
-            perform_pairing_handshake(stream, app_key_packages)?;
+        let camera_key_packages = perform_pairing_handshake(stream, app_key_packages)?;
 
         let camera_welcome_msg = read_varying_len(stream)?;
         let group_name = read_varying_len(stream)?;
@@ -238,12 +240,7 @@ fn process_welcome_message(
     secret: Vec<u8>,
     group_name: String,
 ) -> io::Result<()> {
-    mls_client.process_welcome(
-        contact,
-        welcome_msg,
-        secret,
-        group_name,
-    )?;
+    mls_client.process_welcome(contact, welcome_msg, secret, group_name)?;
     mls_client.save_group_state();
 
     Ok(())
@@ -261,12 +258,15 @@ pub fn encrypt_settings_message(
     let config_mls_client = &mut clients.mls_clients[CONFIG];
 
     debug!("Encrypting message");
-    let settings_msg = config_mls_client.encrypt(&message).context("Failed to encrypt SSID")?;
+    let settings_msg = config_mls_client
+        .encrypt(&message)
+        .context("Failed to encrypt SSID")?;
     config_mls_client.save_group_state();
 
     Ok(settings_msg)
 }
 
+#[allow(clippy::too_many_arguments)]
 #[flutter_rust_bridge::frb]
 pub fn add_camera(
     clients_reg: &mut Option<Box<Clients>>,
@@ -334,16 +334,14 @@ pub fn add_camera(
         return "Error".to_string();
     }
 
-    let firmware_version = match receive_firmware_version(
-        &mut stream,
-        &mut clients.mls_clients[CONFIG],
-    ) {
-        Ok(version) => version,
-        Err(e) => {
-            info!("Error (firmware): {e}");
-            return "Error".to_string();
-        }
-    };
+    let firmware_version =
+        match receive_firmware_version(&mut stream, &mut clients.mls_clients[CONFIG]) {
+            Ok(version) => version,
+            Err(e) => {
+                info!("Error (firmware): {e}");
+                return "Error".to_string();
+            }
+        };
 
     // Send Wi-Fi info
     if standalone_camera {
@@ -368,10 +366,7 @@ pub fn initialize(
     first_time: bool,
 ) -> io::Result<bool> {
     info!("Initialize start");
-    *clients = Some(Box::new(Clients::new(
-        first_time,
-        file_dir,
-    )?));
+    *clients = Some(Box::new(Clients::new(first_time, file_dir)?));
 
     Ok(true)
 }
@@ -380,9 +375,8 @@ fn read_next_msg_from_file(file: &mut File) -> io::Result<Vec<u8>> {
     let mut len_buffer = [0u8; 4];
     let len_bytes_read = file.read(&mut len_buffer)?;
     if len_bytes_read != 4 {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error: not enough bytes to read the len from file"),
+        return Err(io::Error::other(
+            "Error: not enough bytes to read the len from file".to_string(),
         ));
     }
 
@@ -391,9 +385,8 @@ fn read_next_msg_from_file(file: &mut File) -> io::Result<Vec<u8>> {
     let mut buffer = vec![0; msg_len.try_into().unwrap()];
     let bytes_read = file.read(&mut buffer)?;
     if bytes_read != msg_len as usize {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error: not enough bytes to read the message from file"),
+        return Err(io::Error::other(
+            "Error: not enough bytes to read the message from file".to_string(),
         ));
     }
 
@@ -405,9 +398,8 @@ pub fn decrypt_video(
     encrypted_filename: String,
 ) -> io::Result<String> {
     if clients.is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error: clients not initialized!"),
+        return Err(io::Error::other(
+            "Error: clients not initialized!".to_string(),
         ));
     }
 
@@ -419,29 +411,18 @@ pub fn decrypt_video(
 
     let enc_msg = read_next_msg_from_file(&mut enc_file)?;
     // The first message is a commit message
-    clients
-        .as_mut()
-        .unwrap()
-        .mls_clients[MOTION]
-        .decrypt(enc_msg, false)?;
+    clients.as_mut().unwrap().mls_clients[MOTION].decrypt(enc_msg, false)?;
     clients.as_mut().unwrap().mls_clients[MOTION].save_group_state();
 
     let enc_msg = read_next_msg_from_file(&mut enc_file)?;
     // The second message is the video info
-    let dec_msg = clients
-        .as_mut()
-        .unwrap()
-        .mls_clients[MOTION]
-        .decrypt(enc_msg, true)?;
+    let dec_msg = clients.as_mut().unwrap().mls_clients[MOTION].decrypt(enc_msg, true)?;
 
     let info: VideoNetInfo = bincode::deserialize(&dec_msg)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
     if info.sanity != *VIDEONETINFO_SANITY || info.num_msg == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "Error: Corrupt VideoNetInfo message.",
-        ));
+        return Err(io::Error::other("Error: Corrupt VideoNetInfo message."));
     }
 
     // The rest of the messages are video data
@@ -462,17 +443,13 @@ pub fn decrypt_video(
 
     for expected_chunk_number in 0..info.num_msg {
         let enc_msg = read_next_msg_from_file(&mut enc_file)?;
-        let dec_msg = clients
-            .as_mut()
-            .unwrap()
-            .mls_clients[MOTION]
-            .decrypt(enc_msg, true)?;
+        let dec_msg = clients.as_mut().unwrap().mls_clients[MOTION].decrypt(enc_msg, true)?;
 
         // check the chunk number
         if dec_msg.len() < 8 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Error: too few bytes!"),
+                "Error: too few bytes!".to_string(),
             ));
         }
 
@@ -481,7 +458,7 @@ pub fn decrypt_video(
             let _ = fs::remove_file(&dec_pathname);
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Error: invalid chunk number!"),
+                "Error: invalid chunk number!".to_string(),
             ));
         }
 
@@ -503,9 +480,8 @@ pub fn decrypt_thumbnail(
     pending_meta_directory: String,
 ) -> io::Result<String> {
     if clients.is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error: clients not initialized!"),
+        return Err(io::Error::other(
+            "Error: clients not initialized!".to_string(),
         ));
     }
 
@@ -517,29 +493,18 @@ pub fn decrypt_thumbnail(
 
     let enc_msg = read_next_msg_from_file(&mut enc_file)?;
     // The first message is a commit message
-    clients
-        .as_mut()
-        .unwrap()
-        .mls_clients[THUMBNAIL]
-        .decrypt(enc_msg, false)?;
+    clients.as_mut().unwrap().mls_clients[THUMBNAIL].decrypt(enc_msg, false)?;
     clients.as_mut().unwrap().mls_clients[MOTION].save_group_state();
 
     let enc_msg = read_next_msg_from_file(&mut enc_file)?;
     // The second message is the timestamp
-    let dec_msg = clients
-        .as_mut()
-        .unwrap()
-        .mls_clients[THUMBNAIL]
-        .decrypt(enc_msg, true)?;
+    let dec_msg = clients.as_mut().unwrap().mls_clients[THUMBNAIL].decrypt(enc_msg, true)?;
 
     let thumbnail_meta_info: ThumbnailMetaInfo = bincode::deserialize(&dec_msg)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
     if thumbnail_meta_info.sanity != *THUMBNAIL_SANITY {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "Error: Corrupt ThumbalMetaInfo message.",
-        ));
+        return Err(io::Error::other("Error: Corrupt ThumbalMetaInfo message."));
     }
 
     let dec_filename: String = thumbnail_meta_info.filename;
@@ -551,21 +516,21 @@ pub fn decrypt_thumbnail(
     }
 
     // Write a metadata file for the thumbnail, which will be deleted later and stored in the database via the pending processor.
-    let dec_meta_file_path: String = format!("{}/meta_{}.txt", pending_meta_directory, thumbnail_meta_info.timestamp);
+    let dec_meta_file_path: String = format!(
+        "{}/meta_{}.txt",
+        pending_meta_directory, thumbnail_meta_info.timestamp
+    );
     let meta_file = File::create(&dec_meta_file_path)?;
     let mut meta_file_writer = BufWriter::new(meta_file);
 
     // Write JSON data to file.
-    serde_json::to_writer(&mut meta_file_writer, &thumbnail_meta_info.detections).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    serde_json::to_writer(&mut meta_file_writer, &thumbnail_meta_info.detections)
+        .map_err(std::io::Error::other)?;
 
     let mut dec_file = fs::File::create(&dec_pathname).expect("Could not create decrypted file");
 
     let enc_msg = read_next_msg_from_file(&mut enc_file)?;
-    let dec_msg = clients
-        .as_mut()
-        .unwrap()
-        .mls_clients[THUMBNAIL]
-        .decrypt(enc_msg, true)?;
+    let dec_msg = clients.as_mut().unwrap().mls_clients[THUMBNAIL].decrypt(enc_msg, true)?;
 
     let _ = dec_file.write_all(&dec_msg);
 
@@ -584,25 +549,18 @@ pub fn decrypt_message(
     message: Vec<u8>,
 ) -> io::Result<String> {
     if clients.is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error: clients not initialized!"),
+        return Err(io::Error::other(
+            "Error: clients not initialized!".to_string(),
         ));
     }
 
     let mls_client_index = client_tag_to_index(client_tag);
     if mls_client_index.is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error: No matching client!"),
-        ));
+        return Err(io::Error::other("Error: No matching client!".to_string()));
     }
 
-    let dec_msg_bytes = clients
-        .as_mut()
-        .unwrap()
-        .mls_clients[mls_client_index.unwrap()]
-        .decrypt(message, true)?;
+    let dec_msg_bytes =
+        clients.as_mut().unwrap().mls_clients[mls_client_index.unwrap()].decrypt(message, true)?;
     clients.as_mut().unwrap().mls_clients[mls_client_index.unwrap()].save_group_state();
 
     // New JSON structure. Ensure valid JSON string
@@ -622,42 +580,28 @@ pub fn decrypt_message(
             "Download".to_string()
         }
     } else {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "Error: invalid len in decrypted msg ({})",
-                dec_msg_bytes.len()
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "Error: invalid len in decrypted msg ({})",
+            dec_msg_bytes.len()
+        )));
     };
 
     Ok(response)
 }
 
-pub fn get_group_name(
-    clients: &mut Option<Box<Clients>>,
-    client_tag: &str,
-) -> io::Result<String> {
+pub fn get_group_name(clients: &mut Option<Box<Clients>>, client_tag: &str) -> io::Result<String> {
     if clients.is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error: clients not initialized!"),
+        return Err(io::Error::other(
+            "Error: clients not initialized!".to_string(),
         ));
     }
 
     let mls_client_index = client_tag_to_index(client_tag);
     if mls_client_index.is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error: No matching client!"),
-        ));
+        return Err(io::Error::other("Error: No matching client!".to_string()));
     }
 
-    clients
-        .as_mut()
-        .unwrap()
-        .mls_clients[mls_client_index.unwrap()]
-        .get_group_name()
+    clients.as_mut().unwrap().mls_clients[mls_client_index.unwrap()].get_group_name()
 }
 
 fn client_tag_to_index(tag: &str) -> Option<usize> {
@@ -677,28 +621,19 @@ pub fn livestream_decrypt(
     expected_chunk_number: u64,
 ) -> io::Result<Vec<u8>> {
     if clients.is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error: clients not initialized!"),
+        return Err(io::Error::other(
+            "Error: clients not initialized!".to_string(),
         ));
     }
 
-    let dec_data = clients
-        .as_mut()
-        .unwrap()
-        .mls_clients[LIVESTREAM]
-        .decrypt(enc_data, true)?;
-    clients
-        .as_mut()
-        .unwrap()
-        .mls_clients[LIVESTREAM]
-        .save_group_state();
+    let dec_data = clients.as_mut().unwrap().mls_clients[LIVESTREAM].decrypt(enc_data, true)?;
+    clients.as_mut().unwrap().mls_clients[LIVESTREAM].save_group_state();
 
     // check the chunk number
     if dec_data.len() < 8 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("Error: too few bytes!"),
+            "Error: too few bytes!".to_string(),
         ));
     }
 
@@ -706,7 +641,7 @@ pub fn livestream_decrypt(
     if chunk_number != expected_chunk_number {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("Error: invalid chunk number!"),
+            "Error: invalid chunk number!".to_string(),
         ));
     }
 
@@ -718,33 +653,22 @@ pub fn livestream_update(
     updates_msg: Vec<u8>,
 ) -> io::Result<()> {
     if clients.is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error: clients not initialized!"),
+        return Err(io::Error::other(
+            "Error: clients not initialized!".to_string(),
         ));
     }
 
-    let update_commit_msgs: Vec<Vec<u8>> = bincode::deserialize(&updates_msg)
-        .map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("Error: deserialization of updates_msg failed! - {e}"),
-            )
-        })?;
+    let update_commit_msgs: Vec<Vec<u8>> = bincode::deserialize(&updates_msg).map_err(|e| {
+        io::Error::other(format!(
+            "Error: deserialization of updates_msg failed! - {e}"
+        ))
+    })?;
 
     for commit_msg in update_commit_msgs {
-        let _ = clients
-            .as_mut()
-            .unwrap()
-            .mls_clients[LIVESTREAM]
-            .decrypt(commit_msg, false)?;
+        let _ = clients.as_mut().unwrap().mls_clients[LIVESTREAM].decrypt(commit_msg, false)?;
     }
 
-    clients
-        .as_mut()
-        .unwrap()
-        .mls_clients[LIVESTREAM]
-        .save_group_state();
+    clients.as_mut().unwrap().mls_clients[LIVESTREAM].save_group_state();
 
     Ok(())
 }
@@ -767,7 +691,6 @@ pub fn deregister(clients: &mut Option<Box<Clients>>) {
         let _ = fs::remove_file(format!("{}/app_{}_name", file_dir, MLS_CLIENT_TAGS[i]));
     }
 
-
     *clients = None;
 }
 
@@ -776,23 +699,18 @@ pub fn generate_heartbeat_request_config_command(
     timestamp: u64,
 ) -> io::Result<Vec<u8>> {
     if clients.is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error: clients not initialized!"),
+        return Err(io::Error::other(
+            "Error: clients not initialized!".to_string(),
         ));
     }
 
-    let heartbeat_request = HeartbeatRequest::generate(&mut clients.as_mut().unwrap().mls_clients, timestamp)?;
+    let heartbeat_request =
+        HeartbeatRequest::generate(&mut clients.as_mut().unwrap().mls_clients, timestamp)?;
 
     let mut config_msg = vec![OPCODE_HEARTBEAT_REQUEST];
-    config_msg
-        .extend(bincode::serialize(&heartbeat_request).unwrap());
+    config_msg.extend(bincode::serialize(&heartbeat_request).unwrap());
 
-    let config_msg_enc = clients
-        .as_mut()
-        .unwrap()
-        .mls_clients[CONFIG]
-        .encrypt(&config_msg)?;
+    let config_msg_enc = clients.as_mut().unwrap().mls_clients[CONFIG].encrypt(&config_msg)?;
 
     clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state();
 
@@ -805,61 +723,50 @@ pub fn process_heartbeat_config_response(
     expected_timestamp: u64,
 ) -> io::Result<String> {
     if clients.is_none() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Error: clients not initialized!"),
+        return Err(io::Error::other(
+            "Error: clients not initialized!".to_string(),
         ));
     }
 
-    match clients.as_mut().unwrap().mls_clients[CONFIG]
-        .decrypt(config_response, true) {
+    match clients.as_mut().unwrap().mls_clients[CONFIG].decrypt(config_response, true) {
         Ok(command) => {
             clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state();
             info!("Decrypted command: {}", command.len());
             match command[0] {
                 OPCODE_HEARTBEAT_RESPONSE => {
-                    let heartbeat: Heartbeat = bincode::deserialize(&command[1..])
-                        .map_err(|e| {
-                            io::Error::new(
-                                io::ErrorKind::Other,
-                                format!("Failed to deserialize heartbeat msg - {e}"),
-                            )
+                    let heartbeat: Heartbeat =
+                        bincode::deserialize(&command[1..]).map_err(|e| {
+                            io::Error::other(format!("Failed to deserialize heartbeat msg - {e}"))
                         })?;
 
-                    let heartbeat_result =
-                        heartbeat.process(&mut clients.as_mut().unwrap().mls_clients, expected_timestamp)?;
+                    let heartbeat_result = heartbeat.process(
+                        &mut clients.as_mut().unwrap().mls_clients,
+                        expected_timestamp,
+                    )?;
 
                     match heartbeat_result {
                         HeartbeatResult::HealthyHeartbeat(_timestamp) => {
-                            return Ok(format!("healthy_{}", heartbeat.firmware_version));
+                            Ok(format!("healthy_{}", heartbeat.firmware_version))
                         }
-                        HeartbeatResult::InvalidTimestamp => {
-                            return Ok("invalid timestamp".to_string());
-                        }
-                        HeartbeatResult::InvalidCiphertext => {
-                            return Ok("invalid ciphertext".to_string());
-                        }
-                        HeartbeatResult::InvalidEpoch => {
-                            return Ok("invalid epoch".to_string());
-                        }
+                        HeartbeatResult::InvalidTimestamp => Ok("invalid timestamp".to_string()),
+                        HeartbeatResult::InvalidCiphertext => Ok("invalid ciphertext".to_string()),
+                        HeartbeatResult::InvalidEpoch => Ok("invalid epoch".to_string()),
                     }
                 }
                 _ => {
                     error!("Error: Unknown config command response opcode!");
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!("Error: Unknown config response opcode!"),
-                    ));
+                    Err(io::Error::other(
+                        "Error: Unknown config response opcode!".to_string(),
+                    ))
                 }
             }
         }
         Err(e) => {
             error!("Failed to decrypt command message: {e}");
             clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state();
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Failed to decrypt command message: {e}"),
-            ));
+            Err(io::Error::other(format!(
+                "Failed to decrypt command message: {e}"
+            )))
         }
     }
 }

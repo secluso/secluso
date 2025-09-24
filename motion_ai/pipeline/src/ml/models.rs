@@ -2,6 +2,7 @@ use crate::frame::RawFrame;
 use crate::logic::pipeline::RunId;
 use crate::logic::telemetry::TelemetryRun;
 use crate::ml::nanodet::NanodetRunner;
+use include_dir::{Dir, include_dir};
 use once_cell::sync::Lazy;
 use ort::session::Session;
 use ort::session::builder::SessionBuilder;
@@ -10,7 +11,6 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use thiserror::Error;
-use include_dir::{Dir, include_dir};
 
 /// Lazily-initialized map of model kinds to file paths, loaded from config.
 static MODEL_PATHS: OnceLock<HashMap<ModelKind, String>> = OnceLock::new();
@@ -23,7 +23,7 @@ static SESSION_CACHE: Lazy<Mutex<HashMap<ModelKind, SessionEntry>>> =
 static MODEL_CONFIG: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/models.toml"));
 
 /// Loads the model ONNX files directory into the binary when compiling
-static MODEL_DATA_DIR: Dir<'_>  = include_dir!("$CARGO_MANIFEST_DIR/onnx_models");
+static MODEL_DATA_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/onnx_models");
 
 /// Associates an ONNX session with the model path it was built from, to detect changes.
 struct SessionEntry {
@@ -73,7 +73,7 @@ where
         .ok_or_else(|| ModelError::Inference(format!("No path for model kined: {:?}", kind)))?;
 
     // If we haven't made this yet or we changed the path, we'll go ahead and re-create it now.
-    let entry = cache.entry(kind.clone()).or_try_insert_with(|| {
+    let entry = cache.entry(*kind).or_try_insert_with(|| {
         let sess = build_session(wanted_path)?;
         Ok::<SessionEntry, ModelError>(SessionEntry {
             path: wanted_path.clone(),
@@ -93,15 +93,15 @@ where
 
 /// Constructs a new ONNX session from the specified model path using default threading config.
 fn build_session(path: &str) -> Result<Session, ort::Error> {
-    Ok(SessionBuilder::new()?
+    SessionBuilder::new()?
         .with_inter_threads(1)?
         .with_intra_threads(1)?
-        .commit_from_memory(MODEL_DATA_DIR.get_file(path).unwrap().contents())?)
+        .commit_from_memory(MODEL_DATA_DIR.get_file(path).unwrap().contents())
 }
 
 /// Loads model file paths from `models.toml` and registers them for later lookup.
 pub fn init_model_paths() -> Result<bool, ModelError> {
-    let raw: toml::Value = toml::from_str(&MODEL_CONFIG)
+    let raw: toml::Value = toml::from_str(MODEL_CONFIG)
         .map_err(|e| ModelError::Inference(format!("Failed to parse TOML: {}", e)))?;
     let tbl = raw["models"]
         .as_table()

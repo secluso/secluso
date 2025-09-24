@@ -20,14 +20,14 @@ use image::Luma;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::random::OpenMlsRand;
 use openmls_traits::OpenMlsProvider;
-use secluso_client_lib::http_client::HttpClient;
-use secluso_client_lib::pairing;
-use secluso_client_lib::mls_client::{KeyPackages, MlsClient};
-use secluso_client_lib::mls_clients::{MlsClients, MLS_CLIENT_TAGS, CONFIG};
-use secluso_client_server_lib::auth::parse_user_credentials_full;
 use qrcode::QrCode;
 use rand::Rng;
-use serde_json::{Value};
+use secluso_client_lib::http_client::HttpClient;
+use secluso_client_lib::mls_client::{KeyPackages, MlsClient};
+use secluso_client_lib::mls_clients::{MlsClients, CONFIG, MLS_CLIENT_TAGS};
+use secluso_client_lib::pairing;
+use secluso_client_server_lib::auth::parse_user_credentials_full;
+use serde_json::Value;
 use std::fs::File;
 use std::io;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -67,7 +67,10 @@ fn read_varying_len(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
     match stream.read_exact(&mut len_data) {
         Ok(_) => {}
         Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
-            return Err(io::Error::new(ErrorKind::WouldBlock, "Length read would block"));
+            return Err(io::Error::new(
+                ErrorKind::WouldBlock,
+                "Length read would block",
+            ));
         }
         Err(e) => return Err(e),
     }
@@ -79,7 +82,10 @@ fn read_varying_len(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
     while offset < msg.len() {
         match stream.read(&mut msg[offset..]) {
             Ok(0) => {
-                return Err(io::Error::new(ErrorKind::UnexpectedEof, "Socket closed during read"))
+                return Err(io::Error::new(
+                    ErrorKind::UnexpectedEof,
+                    "Socket closed during read",
+                ))
             }
             Ok(n) => {
                 offset += n;
@@ -146,8 +152,7 @@ fn pair_with_app(
     stream: &mut TcpStream,
     camera_key_packages: KeyPackages,
 ) -> anyhow::Result<KeyPackages> {
-    let app_key_packages = perform_pairing_handshake(stream, camera_key_packages);
-    app_key_packages
+    perform_pairing_handshake(stream, camera_key_packages)
 }
 
 fn invite(
@@ -161,9 +166,8 @@ fn invite(
 
     let welcome_msg_vec = mls_client
         .invite(&app_contact, camera_secret)
-        .map_err(|e| {
+        .inspect_err(|_| {
             error!("invite() returned error:");
-            e
         })?;
     mls_client.save_group_state();
     debug!("App invited to the group.");
@@ -172,7 +176,7 @@ fn invite(
 
     // Next, send the shared group name
     let group_name = mls_client.get_group_name()?;
-    write_varying_len(stream, &group_name.as_bytes())?;
+    write_varying_len(stream, group_name.as_bytes())?;
 
     Ok(())
 }
@@ -184,13 +188,10 @@ fn decrypt_msg(mls_client: &mut MlsClient, msg: Vec<u8>) -> io::Result<Vec<u8>> 
     Ok(decrypted_msg)
 }
 
-fn receive_credentials_full(
-    stream: &mut TcpStream,
-    mls_client: &mut MlsClient,
-) -> io::Result<()> {
+fn receive_credentials_full(stream: &mut TcpStream, mls_client: &mut MlsClient) -> io::Result<()> {
     let encrypted_msg = read_varying_len(stream)?;
     let credentials_full_bytes = decrypt_msg(mls_client, encrypted_msg)?;
-    
+
     // Write to file
     let mut file = fs::File::create("credentials_full").expect("Could not create file");
     file.write_all(&credentials_full_bytes).unwrap();
@@ -200,14 +201,11 @@ fn receive_credentials_full(
     Ok(())
 }
 
-fn send_firmware_version(
-    stream: &mut TcpStream,
-    mls_client: &mut MlsClient,
-) -> io::Result<()> {
+fn send_firmware_version(stream: &mut TcpStream, mls_client: &mut MlsClient) -> io::Result<()> {
     let msg = format!("v{}", env!("CARGO_PKG_VERSION"));
     let encrypted_msg = mls_client.encrypt(msg.as_bytes())?;
     mls_client.save_group_state();
-    
+
     write_varying_len(stream, &encrypted_msg)?;
 
     Ok(())
@@ -327,10 +325,10 @@ fn attempt_wifi_connection(ssid: String, password: String) -> io::Result<()> {
 
     bring_hotspot_back_up()?;
 
-    Err(io::Error::new(
-        io::ErrorKind::Other,
-        format!("Failed to connect to Wi-Fi '{}'", ssid),
-    ))
+    Err(io::Error::other(format!(
+        "Failed to connect to Wi-Fi '{}'",
+        ssid
+    )))
 }
 
 fn bring_hotspot_back_up() -> io::Result<()> {
@@ -351,7 +349,8 @@ pub fn create_wifi_hotspot() {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .unwrap();
+        .unwrap()
+        .wait();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -387,7 +386,6 @@ pub fn pair_all(
                     debug!("[Pairing] Failed to set blocking mode: {e}");
                 }
 
-
                 if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(10))) {
                     debug!("[Pairing] Failed to set read timeout: {e}");
                 }
@@ -401,12 +399,14 @@ pub fn pair_all(
 
                     debug!("[Pairing] Before pairing");
                     for mls_client in mls_clients_ref.iter_mut() {
-                        match pair_with_app(&mut stream, mls_client.key_packages())
-                        {
+                        match pair_with_app(&mut stream, mls_client.key_packages()) {
                             Ok(app_key_packages) => {
-                                if let Err(e) =
-                                    invite(&mut stream, mls_client, app_key_packages, secret.clone())
-                                {
+                                if let Err(e) = invite(
+                                    &mut stream,
+                                    mls_client,
+                                    app_key_packages,
+                                    secret.clone(),
+                                ) {
                                     debug!("[Pairing] Failed to create group: {e}");
                                     success = false;
                                     break;
@@ -422,7 +422,7 @@ pub fn pair_all(
 
                     if success {
                         match receive_credentials_full(&mut stream, &mut mls_clients[CONFIG]) {
-                            Ok(()) => {},
+                            Ok(()) => {}
                             Err(e) => {
                                 debug!("[Pairing] Failed to receive credentials_full: {e}");
                                 success = false;
@@ -431,8 +431,13 @@ pub fn pair_all(
                     }
 
                     let http_client = if success {
-                        let (server_username, server_password, server_addr) = read_parse_full_credentials();
-                        Some(HttpClient::new(server_addr, server_username, server_password))
+                        let (server_username, server_password, server_addr) =
+                            read_parse_full_credentials();
+                        Some(HttpClient::new(
+                            server_addr,
+                            server_username,
+                            server_password,
+                        ))
                     } else {
                         success = false;
                         None
@@ -440,7 +445,7 @@ pub fn pair_all(
 
                     if success {
                         match send_firmware_version(&mut stream, &mut mls_clients[CONFIG]) {
-                            Ok(()) => {},
+                            Ok(()) => {}
                             Err(e) => {
                                 debug!("[Pairing] Failed to send firmware_version: {e}");
                                 success = false;
@@ -459,7 +464,10 @@ pub fn pair_all(
                                         Ok(_) => {
                                             changed_wifi = true;
                                             debug!("[Pairing] Attempting to confirm pairing...");
-                                            match http_client.unwrap().send_pairing_token(&pairing_token) {
+                                            match http_client
+                                                .unwrap()
+                                                .send_pairing_token(&pairing_token)
+                                            {
                                                 Ok(status) => {
                                                     debug!("[Pairing] Pairing token acknowledged with status: {status}");
                                                     match status.as_str() {
@@ -535,7 +543,8 @@ pub fn pair_all(
                             true,
                             camera.get_state_dir().clone(),
                             MLS_CLIENT_TAGS[i].to_string(),
-                        ).expect("MlsClient::new() for returned error.");
+                        )
+                        .expect("MlsClient::new() for returned error.");
 
                         mls_client.create_group(&group_name).unwrap();
                         debug!("Created group.");
@@ -628,7 +637,8 @@ pub fn read_parse_full_credentials() -> (String, String, String) {
 
     let credentials_full_bytes = data.to_vec();
 
-    let (server_username, server_password, server_addr) = parse_user_credentials_full(credentials_full_bytes).unwrap();
+    let (server_username, server_password, server_addr) =
+        parse_user_credentials_full(credentials_full_bytes).unwrap();
 
     (server_username, server_password, server_addr)
 }

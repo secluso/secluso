@@ -15,10 +15,10 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-use std::io;
-use log::{info, error};
+use crate::mls_clients::{MlsClients, MLS_CLIENT_TAGS, MOTION, NUM_MLS_CLIENTS, THUMBNAIL};
+use log::{error, info};
 use serde::{Deserialize, Serialize};
-use crate::mls_clients::{MlsClients, NUM_MLS_CLIENTS, MLS_CLIENT_TAGS, MOTION, THUMBNAIL};
+use std::io;
 
 /// opcodes
 pub const OPCODE_HEARTBEAT_REQUEST: u8 = 0;
@@ -40,23 +40,18 @@ pub struct HeartbeatRequest {
 }
 
 impl HeartbeatRequest {
-    pub fn generate(
-        mls_clients: &mut MlsClients,
-        timestamp: u64,
-    ) -> io::Result<Self> {
-        let motion_epoch = mls_clients[MOTION]
-            .get_epoch()?;
+    pub fn generate(mls_clients: &mut MlsClients, timestamp: u64) -> io::Result<Self> {
+        let motion_epoch = mls_clients[MOTION].get_epoch()?;
 
-        let thumbnail_epoch = mls_clients[THUMBNAIL]
-            .get_epoch()?;
+        let thumbnail_epoch = mls_clients[THUMBNAIL].get_epoch()?;
 
         let mut update_proposals: Vec<Vec<u8>> = vec![];
         for i in 0..NUM_MLS_CLIENTS {
-            if MLS_CLIENT_TAGS[i] == "motion" ||
-                MLS_CLIENT_TAGS[i] == "livestream" ||
-                MLS_CLIENT_TAGS[i] == "thumbnail" {
-                let update_proposal = mls_clients[i]
-                    .update_proposal()?;
+            if MLS_CLIENT_TAGS[i] == "motion"
+                || MLS_CLIENT_TAGS[i] == "livestream"
+                || MLS_CLIENT_TAGS[i] == "thumbnail"
+            {
+                let update_proposal = mls_clients[i].update_proposal()?;
                 mls_clients[i].save_group_state();
                 update_proposals.push(update_proposal);
             }
@@ -70,16 +65,15 @@ impl HeartbeatRequest {
         })
     }
 
-    pub fn process_update_proposals(
-        &mut self,
-        mls_clients: &mut MlsClients,
-    ) -> io::Result<()> {
+    pub fn process_update_proposals(&mut self, mls_clients: &mut MlsClients) -> io::Result<()> {
         let mut proposals_i = 0;
         for i in 0..NUM_MLS_CLIENTS {
-            if MLS_CLIENT_TAGS[i] == "motion" ||
-                MLS_CLIENT_TAGS[i] == "livestream" ||
-                MLS_CLIENT_TAGS[i] == "thumbnail" {
-                let _ = mls_clients[i].decrypt(self.update_proposals[proposals_i].clone(), false)?;
+            if MLS_CLIENT_TAGS[i] == "motion"
+                || MLS_CLIENT_TAGS[i] == "livestream"
+                || MLS_CLIENT_TAGS[i] == "thumbnail"
+            {
+                let _ =
+                    mls_clients[i].decrypt(self.update_proposals[proposals_i].clone(), false)?;
                 mls_clients[i].save_group_state();
                 proposals_i += 1;
             }
@@ -93,7 +87,7 @@ impl HeartbeatRequest {
 pub struct Heartbeat {
     pub firmware_version: String,
     pub timestamp: u64,
-    pub epochs: Vec<u64>, //for motion and livestream MLS clients
+    pub epochs: Vec<u64>,          //for motion and livestream MLS clients
     pub ciphertexts: Vec<Vec<u8>>, //for all MLS clients except for config
 }
 
@@ -109,20 +103,20 @@ impl Heartbeat {
 
         for i in 0..NUM_MLS_CLIENTS {
             if MLS_CLIENT_TAGS[i] != "config" {
-                let ciphertext = mls_clients[i]
-                    .encrypt(&timestamp_bytes)?;
+                let ciphertext = mls_clients[i].encrypt(&timestamp_bytes)?;
                 mls_clients[i].save_group_state();
                 ciphertexts.push(ciphertext);
             }
 
-            if MLS_CLIENT_TAGS[i] == "motion" ||
-                MLS_CLIENT_TAGS[i] == "livestream" ||
-                MLS_CLIENT_TAGS[i] == "thumbnail" {
+            if MLS_CLIENT_TAGS[i] == "motion"
+                || MLS_CLIENT_TAGS[i] == "livestream"
+                || MLS_CLIENT_TAGS[i] == "thumbnail"
+            {
                 let epoch = mls_clients[i].get_epoch()?;
                 epochs.push(epoch);
             }
         }
-        
+
         Ok(Self {
             firmware_version,
             timestamp,
@@ -146,16 +140,17 @@ impl Heartbeat {
         let mut epoch_i = 0;
         for i in 0..NUM_MLS_CLIENTS {
             if MLS_CLIENT_TAGS[i] != "config" {
-                if MLS_CLIENT_TAGS[i] == "motion" ||
-                    MLS_CLIENT_TAGS[i] == "livestream" ||
-                    MLS_CLIENT_TAGS[i] == "thumbnail" {
+                if MLS_CLIENT_TAGS[i] == "motion"
+                    || MLS_CLIENT_TAGS[i] == "livestream"
+                    || MLS_CLIENT_TAGS[i] == "thumbnail"
+                {
                     let epoch = match mls_clients[i].get_epoch() {
                         Ok(e) => e,
                         Err(e) => {
                             // The mls client is most likely corrupted.
                             error!("Failed to get epoch of mls client: {:?}", e);
                             return Ok(HeartbeatResult::InvalidCiphertext);
-                        },
+                        }
                     };
 
                     if epoch != self.epochs[epoch_i] {
@@ -164,16 +159,16 @@ impl Heartbeat {
 
                     epoch_i += 1;
                 }
-                let plaintext = match mls_clients[i]
-                    .decrypt(self.ciphertexts[ciphertexts_i].clone(), true) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        error!("Failed to decrypt ciphertext: {:?}", e);
-                        return Ok(HeartbeatResult::InvalidCiphertext);
-                    },
-                };
+                let plaintext =
+                    match mls_clients[i].decrypt(self.ciphertexts[ciphertexts_i].clone(), true) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            error!("Failed to decrypt ciphertext: {:?}", e);
+                            return Ok(HeartbeatResult::InvalidCiphertext);
+                        }
+                    };
                 mls_clients[i].save_group_state();
-                        
+
                 info!("Checking plaintext for {}", MLS_CLIENT_TAGS[i]);
                 let timestamp_bytes: [u8; 8] = match plaintext.try_into() {
                     Ok(b) => b,
@@ -184,7 +179,10 @@ impl Heartbeat {
                 };
                 let timestamp = u64::from_le_bytes(timestamp_bytes);
                 if timestamp != self.timestamp {
-                    error!("Decrypted timestamp from the {} client is not correct.", MLS_CLIENT_TAGS[i]);
+                    error!(
+                        "Decrypted timestamp from the {} client is not correct.",
+                        MLS_CLIENT_TAGS[i]
+                    );
                     return Ok(HeartbeatResult::InvalidCiphertext);
                 }
                 ciphertexts_i += 1;

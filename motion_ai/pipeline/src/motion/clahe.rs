@@ -46,7 +46,7 @@ This class serves as a Rust replication of OpenCV's CLAHE ("Contrast-Limited Ada
 Developed to avoid using bindings and have a smaller binary size.
 Reference Source: https://github.com/opencv/opencv/blob/8207549638c60d46ebe85af7b3a3f50bb5ef49d5/modules/imgproc/src/clahe.cpp#L47
 
-**/
+ **/
 extern crate image;
 
 use image::{GrayImage, Luma};
@@ -65,12 +65,12 @@ pub(crate) fn default_clahe(
 
     // If the image dimensions are not divisible by the grid,
     // extend the image using BORDER_REFLECT_101.
-    let need_extension = (orig_width % grid_x != 0) || (orig_height % grid_y != 0);
+    let need_extension = !orig_width.is_multiple_of(grid_x) || !orig_height.is_multiple_of(grid_y);
     let (src_for_lut, ext_width, ext_height) = if need_extension {
         let ext = extend_image_reflect101(&orig_img, grid_x, grid_y);
         (ext.clone(), ext.width() as usize, ext.height() as usize)
     } else {
-        (orig_img.clone(), orig_width as usize, orig_height as usize)
+        (orig_img.clone(), orig_width, orig_height)
     };
 
     // Compute tile size based on the (possibly extended) image.
@@ -102,25 +102,25 @@ pub(crate) fn default_clahe(
     );
 
     let mut out_img = GrayImage::new(orig_width as u32, orig_height as u32);
-    for y in 0..orig_height {
-        for x in 0..orig_width {
-            out_img.put_pixel(x as u32, y as u32, Luma([result_vec[y][x]]));
+    for (y, row) in result_vec.iter().enumerate().take(orig_height) {
+        for (x, &val) in row.iter().enumerate().take(orig_width) {
+            out_img.put_pixel(x as u32, y as u32, Luma([val]));
         }
     }
 
-    return out_img;
+    out_img
 }
 
 /// Extend the image so that its dimensions become divisible by grid_x and grid_y via BORDER_REFLECT_101 strategy
 fn extend_image_reflect101(img: &GrayImage, grid_x: usize, grid_y: usize) -> GrayImage {
     let width = img.width() as usize;
     let height = img.height() as usize;
-    let new_width = if width % grid_x == 0 {
+    let new_width = if width.is_multiple_of(grid_x) {
         width
     } else {
         width + (grid_x - (width % grid_x))
     };
-    let new_height = if height % grid_y == 0 {
+    let new_height = if height.is_multiple_of(grid_y) {
         height
     } else {
         height + (grid_y - (height % grid_y))
@@ -156,17 +156,18 @@ fn image_to_vec(img: &GrayImage) -> Vec<Vec<u8>> {
     let width = img.width() as usize;
     let height = img.height() as usize;
     let mut vec = vec![vec![0u8; width]; height];
-    for y in 0..height {
-        for x in 0..width {
-            vec[y][x] = img.get_pixel(x as u32, y as u32)[0];
+    for (y, row) in vec.iter_mut().enumerate().take(height) {
+        for (x, val) in row.iter_mut().enumerate().take(width) {
+            *val = img.get_pixel(x as u32, y as u32)[0];
         }
     }
+
     vec
 }
 
 /// For each tile, compute its LUT by calculating the histogram, clipping it (with redistribution), and then computing the cumulative distribution.
 fn compute_all_tile_luts(
-    image: &Vec<Vec<u8>>,
+    image: &[Vec<u8>],
     grid_x: usize,
     grid_y: usize,
     tile_width: usize,
@@ -174,22 +175,23 @@ fn compute_all_tile_luts(
     clip_limit: f32,
 ) -> Vec<Vec<[u8; 256]>> {
     let mut luts = vec![vec![[0u8; 256]; grid_x]; grid_y];
-    for j in 0..grid_y {
-        for i in 0..grid_x {
+    for (j, row) in luts.iter_mut().enumerate().take(grid_y) {
+        for (i, lut) in row.iter_mut().enumerate().take(grid_x) {
             let x0 = i * tile_width;
             let x1 = x0 + tile_width;
             let y0 = j * tile_height;
             let y1 = y0 + tile_height;
-            luts[j][i] = compute_tile_lut(image, x0, x1, y0, y1, clip_limit);
+            *lut = compute_tile_lut(image, x0, x1, y0, y1, clip_limit);
         }
     }
+
     luts
 }
 
 /// Compute the LUT for one tile using a histogram with 256 bins.
 /// Histogram bins exceeding the clip limit are clipped and their excess is redistributed.
 fn compute_tile_lut(
-    image: &Vec<Vec<u8>>,
+    image: &[Vec<u8>],
     x0: usize,
     x1: usize,
     y0: usize,
@@ -201,10 +203,9 @@ fn compute_tile_lut(
     let mut hist = [0usize; 256];
 
     // Build histogram.
-    for y in y0..y1 {
-        for x in x0..x1 {
-            let val = image[y][x] as usize;
-            hist[val] += 1;
+    for row in image.iter().take(y1).skip(y0) {
+        for &val in row.iter().take(x1).skip(x0) {
+            hist[val as usize] += 1;
         }
     }
 
@@ -212,18 +213,18 @@ fn compute_tile_lut(
     let clip_limit_int =
         (((clip_limit * tile_area as f32) / hist_size as f32).max(1.0)).floor() as usize;
     let mut clipped = 0;
-    for i in 0..hist_size {
-        if hist[i] > clip_limit_int {
-            clipped += hist[i] - clip_limit_int;
-            hist[i] = clip_limit_int;
+    for bin in hist.iter_mut().take(hist_size) {
+        if *bin > clip_limit_int {
+            clipped += *bin - clip_limit_int;
+            *bin = clip_limit_int;
         }
     }
 
     // Redistribute the excess pixels.
     let redist_batch = clipped / hist_size;
     let mut residual = clipped % hist_size;
-    for i in 0..hist_size {
-        hist[i] += redist_batch;
+    for bin in hist.iter_mut().take(hist_size) {
+        *bin += redist_batch;
     }
     if residual > 0 {
         let residual_step = std::cmp::max(hist_size / residual, 1);
@@ -260,8 +261,8 @@ fn compute_tile_lut(
 /// Interpolates the final image using bilinear interpolation between neighboring LUTs.
 /// The tile size is based on the extended image, while interpolation is performed on the original image.
 fn interpolate(
-    image: &Vec<Vec<u8>>,
-    tile_luts: &Vec<Vec<[u8; 256]>>,
+    image: &[Vec<u8>],
+    tile_luts: &[Vec<[u8; 256]>],
     grid_x: usize,
     grid_y: usize,
     tile_width: usize,

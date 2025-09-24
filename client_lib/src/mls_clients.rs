@@ -18,13 +18,8 @@
 use crate::mls_client::MlsClient;
 
 pub const NUM_MLS_CLIENTS: usize = 5;
-pub static MLS_CLIENT_TAGS: [&str; NUM_MLS_CLIENTS] = [
-    "motion",
-    "livestream",
-    "fcm",
-    "config",
-    "thumbnail",
-];
+pub static MLS_CLIENT_TAGS: [&str; NUM_MLS_CLIENTS] =
+    ["motion", "livestream", "fcm", "config", "thumbnail"];
 
 // indices for different clients
 pub const MOTION: usize = 0;

@@ -59,11 +59,11 @@ impl TimerManager {
 
     /// Checks if the timer has expired and returns a `BackoffExpired` event if so.
     fn poll(&mut self) -> Option<PipelineEvent> {
-        if let Some(deadline) = self.deadline {
-            if Instant::now() >= deadline {
-                self.deadline = None;
-                return Some(PipelineEvent::BackoffExpired);
-            }
+        if let Some(deadline) = self.deadline
+            && Instant::now() >= deadline
+        {
+            self.deadline = None;
+            return Some(PipelineEvent::BackoffExpired);
         }
 
         None

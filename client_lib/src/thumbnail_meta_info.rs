@@ -35,7 +35,11 @@ pub struct ThumbnailMetaInfo {
 pub const THUMBNAIL_SANITY: &str = "thumbbeef";
 
 impl ThumbnailMetaInfo {
-    pub fn new(timestamp: u64, thumbnail_epoch: u64, detections: Vec<GeneralDetectionType>) -> Self {
+    pub fn new(
+        timestamp: u64,
+        thumbnail_epoch: u64,
+        detections: Vec<GeneralDetectionType>,
+    ) -> Self {
         Self {
             timestamp, // Matches video ts
             detections,

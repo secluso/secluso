@@ -16,18 +16,18 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
-use secluso_client_lib::mls_client::MlsClient;
-use secluso_client_lib::mls_clients::{MlsClients, MOTION, FCM, THUMBNAIL, MAX_OFFLINE_WINDOW};
+use crate::traits::Camera;
+use image::RgbImage;
+use regex::Regex;
 use secluso_client_lib::http_client::HttpClient;
-use secluso_client_lib::video_net_info::VideoNetInfo;
+use secluso_client_lib::mls_client::MlsClient;
+use secluso_client_lib::mls_clients::{MlsClients, FCM, MAX_OFFLINE_WINDOW, MOTION, THUMBNAIL};
 use secluso_client_lib::thumbnail_meta_info::{GeneralDetectionType, ThumbnailMetaInfo};
+use secluso_client_lib::video_net_info::VideoNetInfo;
 use std::fs;
 use std::fs::File;
 use std::io;
-use std::io::{BufRead, BufReader, Write, Read};
-use image::RgbImage;
-use regex::Regex;
-use crate::traits::Camera;
+use std::io::{BufRead, BufReader, Read, Write};
 
 // Used to contain data returned from motion detection from IP + Raspberry cameras
 pub struct MotionResult {
@@ -50,9 +50,9 @@ pub fn upload_pending_enc_thumbnails(
 ) -> io::Result<()> {
     // Send pending thumbnails
     let send_list_thumbnails: Vec<ThumbnailMetaInfo> = delivery_monitor.thumbnails_to_send();
-    for enc_thumbnail in &send_list_thumbnails {
+    if let Some(enc_thumbnail) = send_list_thumbnails.first() {
         let enc_video_file_path = delivery_monitor.get_enc_thumbnail_file_path(enc_thumbnail);
-        match http_client.upload_enc_file(group_name, &*enc_video_file_path) {
+        match http_client.upload_enc_file(group_name, &enc_video_file_path) {
             Ok(_) => {
                 info!(
                     "Thumbnail (epoch #{}) successfully uploaded to the server.",
@@ -82,7 +82,7 @@ pub fn upload_pending_enc_videos(
     // Send pending videos
     let send_list_videos = delivery_monitor.videos_to_send();
     // The send list is sorted. We must send the videos in order.
-    for video_info in &send_list_videos {
+    if let Some(video_info) = send_list_videos.first() {
         let enc_video_file_path = delivery_monitor.get_enc_video_file_path(video_info);
         match http_client.upload_enc_file(group_name, &enc_video_file_path) {
             Ok(_) => {
@@ -134,9 +134,8 @@ pub fn prepare_motion_thumbnail(
     // We need to store the timestamp to match against the video's, as otherwise we only have epoch-level info (which can vary between videos and timestamps easily)
     let msg = mls_client
         .encrypt(&bincode::serialize(&thumbnail_info).unwrap())
-        .map_err(|e| {
+        .inspect_err(|_| {
             error!("encrypt() returned error:");
-            e
         })?;
     append_to_file(&enc_file, msg);
 
@@ -144,12 +143,9 @@ pub fn prepare_motion_thumbnail(
     let mut thumbnail_data: Vec<u8> = Vec::new();
     file.read_to_end(&mut thumbnail_data)?;
 
-    let msg = mls_client
-        .encrypt(&thumbnail_data)
-        .map_err(|e| {
-            error!("encrypt() returned error:");
-            e
-        })?;
+    let msg = mls_client.encrypt(&thumbnail_data).inspect_err(|_| {
+        error!("encrypt() returned error:");
+    })?;
     append_to_file(&enc_file, msg);
 
     // Here, we first make sure the enc_file is flushed.
@@ -207,9 +203,8 @@ pub fn prepare_motion_video(
 
     let msg = mls_client
         .encrypt(&bincode::serialize(&net_info).unwrap())
-        .map_err(|e| {
+        .inspect_err(|_| {
             error!("encrypt() returned error:");
-            e
         })?;
     append_to_file(&enc_file, msg);
 
@@ -229,13 +224,10 @@ pub fn prepare_motion_video(
             );
         }
 
-        let msg = mls_client
-            .encrypt(&buffer)
-            .map_err(|e| {
-                error!("send_video() returned error:");
-                mls_client.save_group_state();
-                e
-            })?;
+        let msg = mls_client.encrypt(&buffer).inspect_err(|_| {
+            error!("send_video() returned error:");
+            mls_client.save_group_state();
+        })?;
         append_to_file(&enc_file, msg);
         reader.consume(length);
     }
@@ -316,8 +308,8 @@ pub fn send_pending_motion_videos(
     if num_recovered > 0 {
         //Timestamp of 0 tells the app it's time to start downloading.
         let dummy_timestamp: u64 = 0;
-        let notification_msg = clients[FCM].encrypt(
-            &bincode::serialize(&dummy_timestamp).unwrap())?;
+        let notification_msg =
+            clients[FCM].encrypt(&bincode::serialize(&dummy_timestamp).unwrap())?;
         clients[FCM].save_group_state();
         http_client.send_fcm_notification(notification_msg)?;
     }
@@ -356,7 +348,8 @@ pub fn send_pending_thumbnails(
         }
     }
 
-    let delivery_monitor_pending_timestamps = delivery_monitor.get_all_pending_thumbnail_timestamps();
+    let delivery_monitor_pending_timestamps =
+        delivery_monitor.get_all_pending_thumbnail_timestamps();
     let mut num_recovered = 0;
 
     for timestamp in &pending_timestamps {
@@ -369,7 +362,11 @@ pub fn send_pending_thumbnails(
         let thumbnail_meta = delivery_monitor.get_thumbnail_meta_by_timestamp(timestamp);
 
         // We clone the thumbnail meta here, which modifies the epoch. This doesn't matter as it's re-entered into the HashMap in the DeliveryMonitor at the end.
-        prepare_motion_thumbnail(&mut clients[THUMBNAIL], thumbnail_meta.clone(), delivery_monitor)?;
+        prepare_motion_thumbnail(
+            &mut clients[THUMBNAIL],
+            thumbnail_meta.clone(),
+            delivery_monitor,
+        )?;
 
         let _ = upload_pending_enc_thumbnails(
             &clients[THUMBNAIL].get_group_name().unwrap(),
@@ -383,8 +380,8 @@ pub fn send_pending_thumbnails(
     if num_recovered > 0 {
         //Timestamp of 0 tells the app it's time to start downloading.
         let dummy_timestamp: u64 = 0;
-        let notification_msg = clients[FCM].encrypt(
-            &bincode::serialize(&dummy_timestamp).unwrap())?;
+        let notification_msg =
+            clients[FCM].encrypt(&bincode::serialize(&dummy_timestamp).unwrap())?;
         clients[FCM].save_group_state();
         http_client.send_fcm_notification(notification_msg)?;
     }

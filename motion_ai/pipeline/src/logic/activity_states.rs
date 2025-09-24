@@ -5,7 +5,7 @@ use crate::logic::pipeline::{Pipeline, PipelineEvent};
 use crate::logic::stages::StageType;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::time::{Duration};
+use std::time::Duration;
 
 #[derive(Hash, Eq, PartialEq, Clone, Debug, Copy, Serialize, Deserialize)]
 /// Activity lifecycle states for a single processing cycle
@@ -109,8 +109,7 @@ impl StateHandler<ActivityState> for DetectingState {
                 reason: format!(
                     "Requested frame drop at stage {:?} for reason {}",
                     stage_type, reason
-                )
-                .into(),
+                ),
                 intents: vec![Intent::StartTimer(Duration::from_millis(500))],
             },
             PipelineEvent::Fault(stage_type, reason) => TransitionDecision::Transition {

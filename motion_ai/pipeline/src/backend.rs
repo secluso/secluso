@@ -94,7 +94,6 @@ struct SeriesData {
 }
 
 /// Shared App State
-
 #[derive(Clone)]
 struct AppState {
     runs_root: PathBuf,
@@ -102,11 +101,10 @@ struct AppState {
     sessions: Arc<RwLock<Vec<Session>>>,
 }
 
-/// Public API
-
+/** Public API functions below **/
 /// Spawn the Rocket server on a background thread.
-pub fn spawn_replay_server(runs_root: impl Into<PathBuf>,) -> (JoinHandle<Result<()>>, bool) {
-     let runs_root: PathBuf = runs_root.into();
+pub fn spawn_replay_server(runs_root: impl Into<PathBuf>) -> (JoinHandle<Result<()>>, bool) {
+    let runs_root: PathBuf = runs_root.into();
 
     // Used to notify the caller whether the server started successfully.
     let (ready_tx, ready_rx) = mpsc::channel::<std::result::Result<(), String>>();
@@ -189,10 +187,7 @@ pub fn spawn_replay_server(runs_root: impl Into<PathBuf>,) -> (JoinHandle<Result
                         Box::pin(async move {
                             let cfg = rocket.config();
                             let _ = liftoff_tx.send(Ok(()));
-                            println!(
-                                "Rocket: launched from http://{}:{}",
-                                cfg.address, cfg.port
-                            );
+                            println!("Rocket: launched from http://{}:{}", cfg.address, cfg.port);
                         })
                     }));
 
@@ -223,8 +218,7 @@ pub fn spawn_replay_server(runs_root: impl Into<PathBuf>,) -> (JoinHandle<Result
     (handle, started_ok)
 }
 
-/// Routes
-
+/**  Routes start here **/
 /// GET / to serve static/index.html strictly from disk
 #[get("/")]
 async fn index_route(
@@ -297,9 +291,8 @@ async fn reload_sessions(
     }
 }
 
-/// Helpers
-
-fn must_exist(path: &PathBuf) -> Result<()> {
+/** Helper functions below **/
+fn must_exist(path: &Path) -> Result<()> {
     if !path.exists() {
         bail!("Missing required file: {}", path.display());
     }
@@ -406,7 +399,7 @@ fn collect_frames(run_id: &str, dir: &Path, web_subdir: &str) -> Vec<String> {
         .collect()
 }
 
-fn file_name_cmp(a: &PathBuf, b: &PathBuf) -> Ordering {
+fn file_name_cmp(a: &Path, b: &Path) -> Ordering {
     let sa = a.file_name().unwrap().to_string_lossy();
     let sb = b.file_name().unwrap().to_string_lossy();
     sa.cmp(&sb) // zero-padded names will sort numerically
@@ -421,7 +414,7 @@ fn build_series_from_telemetry(path: &Path) -> Result<SeriesData> {
     let mut health: Vec<SeriesHealth> = vec![];
     let mut ticks: Vec<SeriesTick> = vec![];
 
-    for line in reader.lines().flatten() {
+    for line in reader.lines().map_while(Result::ok) {
         let Ok(v) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
@@ -551,7 +544,7 @@ fn build_events_from_telemetry(path: &Path, _frames: &[String]) -> Vec<FrontEven
     let last_f_by_run: HashMap<String, usize> = HashMap::new();
     let default_f = 0usize;
 
-    for line in reader.lines().flatten() {
+    for line in reader.lines().map_while(Result::ok) {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
@@ -620,15 +613,14 @@ fn build_events_from_telemetry(path: &Path, _frames: &[String]) -> Vec<FrontEven
                 push_ev(format!("InferenceSkipped: {}", reason));
             }
             "stage_duration" => {
-                if let Some(ms) = v.get("duration_ms").and_then(|x| x.as_u64()) {
-                    if ms > 50 {
-                        if let (Some(name), Some(kind2)) = (
-                            v.get("stage_name").and_then(|s| s.as_str()),
-                            v.get("stage_kind").and_then(|s| s.as_str()),
-                        ) {
-                            push_ev(format!("{}:{} took {} ms", kind2, name, ms));
-                        }
-                    }
+                if let Some(ms) = v.get("duration_ms").and_then(|x| x.as_u64())
+                    && ms > 50
+                    && let (Some(name), Some(kind2)) = (
+                        v.get("stage_name").and_then(|s| s.as_str()),
+                        v.get("stage_kind").and_then(|s| s.as_str()),
+                    )
+                {
+                    push_ev(format!("{}:{} took {} ms", kind2, name, ms));
                 }
             }
             "state_duration" => {
@@ -699,8 +691,7 @@ fn build_events_from_telemetry(path: &Path, _frames: &[String]) -> Vec<FrontEven
     events
 }
 
-/// JSON helpers
-
+/** JSON helpers below **/
 fn as_u128_opt(v: &Value, key: &str) -> Option<u128> {
     v.get(key)
         .and_then(|x| x.as_u64())

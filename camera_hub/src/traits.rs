@@ -17,10 +17,10 @@
 
 use crate::delivery_monitor::VideoInfo;
 use crate::livestream::LivestreamWriter;
+use crate::motion::MotionResult;
 use anyhow::Error;
 use bytes::BytesMut;
 use std::io;
-use crate::motion::MotionResult;
 
 pub trait CodecParameters {
     fn write_codec_box(&self, buf: &mut BytesMut) -> Result<(), Error>;

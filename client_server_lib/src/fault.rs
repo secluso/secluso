@@ -28,11 +28,10 @@ macro_rules! inject_fault {
                         std::process::exit(1);
                     }
                 }
-                Err(_) => {},
+                Err(_) => {}
             }
         }
         #[cfg(not(debug_assertions))]
-        {
-        }
+        {}
     };
 }

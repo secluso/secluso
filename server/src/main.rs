@@ -25,6 +25,8 @@ use std::io;
 use std::path::Path;
 use std::time::{Duration, UNIX_EPOCH};
 
+use base64::engine::general_purpose::STANDARD as base64_engine;
+use base64::Engine;
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use rocket::data::{Data, ToByteUnit};
@@ -40,18 +42,16 @@ use rocket::tokio::sync::Notify;
 use rocket::tokio::task;
 use rocket::tokio::time::timeout;
 use rocket::Shutdown;
+use serde::Serialize;
 use serde_json::Number;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use base64::engine::general_purpose::STANDARD as base64_engine;
-use base64::Engine;
-use serde::Serialize;
 
 mod auth;
 mod fcm;
 mod security;
 
-use crate::auth::{initialize_users, FailStore, BasicAuth};
+use crate::auth::{initialize_users, BasicAuth, FailStore};
 use crate::fcm::send_notification;
 use crate::security::check_path_sandboxed;
 
@@ -132,7 +132,10 @@ async fn pair(
     data: Json<PairingRequest>,
     state: &rocket::State<SharedPairingState>,
 ) -> Json<PairingResponse> {
-    debug!("[PAIR] Entered pair method with role: {}, token: {}", data.role, data.pairing_token);
+    debug!(
+        "[PAIR] Entered pair method with role: {}, token: {}",
+        data.role, data.pairing_token
+    );
 
     let role = data.role.to_lowercase();
     if role != "phone" && role != "camera" {
@@ -173,7 +176,6 @@ async fn pair(
         });
     }
 
-
     let notify;
     let expired_at;
     {
@@ -192,10 +194,7 @@ async fn pair(
             elapsed, entry.phone_notified, entry.camera_notified
         );
 
-        if elapsed > Duration::from_secs(45)
-            || entry.phone_notified
-            || entry.camera_notified
-        {
+        if elapsed > Duration::from_secs(45) || entry.phone_notified || entry.camera_notified {
             debug!("[PAIR] Expiring session due to timeout or notification flag");
             entry.expired = true;
             return Json(PairingResponse {
@@ -277,7 +276,6 @@ async fn pair(
     }
 }
 
-
 #[post("/<camera>/<filename>", data = "<data>")]
 async fn upload(
     camera: &str,
@@ -295,10 +293,7 @@ async fn upload(
 
     let num_pending_files = get_num_files(&camera_path).await?;
     if num_pending_files > MAX_NUM_PENDING_MOTION_FILES {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "Error: Reached max motion pending limit.",
-        ));
+        return Err(io::Error::other("Error: Reached max motion pending limit."));
     }
 
     let filepath = Path::new(&camera_path).join(filename);
@@ -347,7 +342,12 @@ async fn bulk_group_check(data: Json<MotionPairs>, auth: BasicAuth) -> Json<Vec<
 
         if let Ok(true) = Path::try_exists(&filepath) {
             if let Ok(meta) = fs::metadata(&filepath).await {
-                let ts = meta.created().or_else(|_| meta.modified()).and_then(|t| t.duration_since(UNIX_EPOCH).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))).map(|d| d.as_secs() as i64).unwrap_or(0);
+                let ts = meta
+                    .created()
+                    .or_else(|_| meta.modified())
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).map_err(std::io::Error::other))
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
 
                 results.push(GroupTimestamp {
                     group_name,
@@ -424,10 +424,7 @@ async fn send_fcm_notification(data: Data<'_>, auth: BasicAuth) -> io::Result<St
     check_path_sandboxed(&root, &token_path)?;
 
     if !token_path.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "Error: FCM token not available.",
-        ));
+        return Err(io::Error::other("Error: FCM token not available."));
     }
     let token = fs::read_to_string(token_path).await?;
 
@@ -482,8 +479,7 @@ async fn livestream_start(
     check_path_sandboxed(&root, &update_path)?;
 
     if update_path.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             "Error: Previous update has not been retrieved yet.",
         ));
     }
@@ -497,7 +493,7 @@ async fn livestream_start(
 
     let user_state = get_user_state(all_state.inner().clone(), &auth.username);
 
-    let epoch = format!("placeholder");
+    let epoch = "placeholder".to_string();
     user_state.events.insert(camera.to_string(), epoch);
     let _ = user_state.sender.send(());
 
@@ -559,8 +555,7 @@ async fn livestream_upload(
     check_path_sandboxed(&root, &camera_path)?;
 
     if !camera_path.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             "Error: Livestream session not started properly.",
         ));
     }
@@ -578,8 +573,7 @@ async fn livestream_upload(
 
     let num_pending_files = get_num_files(&camera_path).await?;
     if num_pending_files > MAX_NUM_PENDING_LIVESTREAM_FILES {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             "Error: Reached max livestream pending limit.",
         ));
     }
@@ -676,7 +670,7 @@ async fn config_command(
 
     //FIXME: if we receive two commands back to back, one could overwrite the other.
     let command_file_name = "command".to_string();
-    let command_path = Path::new(&camera_path).join(&command_file_name);    
+    let command_path = Path::new(&camera_path).join(&command_file_name);
     check_path_sandboxed(&root, &command_path)?;
 
     let mut file = fs::File::create(&command_path).await?;
@@ -687,7 +681,9 @@ async fn config_command(
 
     let user_state = get_user_state(all_state.inner().clone(), &auth.username);
 
-    user_state.events.insert(camera.to_string(), command_file_name);
+    user_state
+        .events
+        .insert(camera.to_string(), command_file_name);
     let _ = user_state.sender.send(());
 
     Ok(())
@@ -716,7 +712,7 @@ async fn config_check(
 
         loop {
             if let Some((_key, command_file_name)) = user_state.events.remove(&camera) {
-                let command_path = Path::new(&camera_path).join(&command_file_name);    
+                let command_path = Path::new(&camera_path).join(&command_file_name);
                 if check_path_sandboxed(&root, &command_path).is_err() {
                     yield Event::data("invalid");
                     return;
@@ -731,7 +727,7 @@ async fn config_check(
                 };
 
                 fs::remove_file(&camera_path).await.ok();
-                
+
                 // Encode binary data as base64 and return
                 let encoded = base64_engine.encode(&content);
                 yield Event::data(encoded);
@@ -750,20 +746,13 @@ async fn config_check(
 }
 
 #[post("/config_response/<camera>", data = "<data>")]
-async fn config_response(
-    camera: &str,
-    data: Data<'_>,
-    auth: BasicAuth,
-) -> io::Result<()> {
+async fn config_response(camera: &str, data: Data<'_>, auth: BasicAuth) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
     let camera_path = root.join(camera);
     check_path_sandboxed(&root, &camera_path)?;
 
     if !camera_path.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "Error: config camera doesn't exist.",
-        ));
+        return Err(io::Error::other("Error: config camera doesn't exist."));
     }
 
     let filepath = camera_path.join("config_response");
@@ -778,7 +767,6 @@ async fn config_response(
     // Flush the file to disk
     file.sync_all().await?;
 
-
     // We write to a temp file first and then rename to avoid a race with the retrieve operation.
     fs::rename(filepath_tmp, filepath).await?;
 
@@ -790,10 +778,7 @@ async fn config_response(
 }
 
 #[get("/config_response/<camera>")]
-async fn retrieve_config_response(
-    camera: &str,
-    auth: BasicAuth,
-) -> Option<RawText<File>> {
+async fn retrieve_config_response(camera: &str, auth: BasicAuth) -> Option<RawText<File>> {
     let root = Path::new("data").join(&auth.username);
     let camera_path = root.join(camera);
     if check_path_sandboxed(&root, &camera_path).is_err() {

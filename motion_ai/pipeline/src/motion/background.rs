@@ -88,8 +88,6 @@ impl BackgroundSubtractor {
 
         //todo: make use of offset
 
-        let result = GrayImage::from_raw(width, height, out_vec.0)
-            .expect("Failed to create GrayImage from mask");
-        result
+        GrayImage::from_raw(width, height, out_vec.0).expect("Failed to create GrayImage from mask")
     }
 }

@@ -24,15 +24,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Error};
-use bytes::{BufMut, BytesMut};
-use crossbeam_channel::unbounded;
-use image::RgbImage;
-use secluso_client_lib::thumbnail_meta_info::GeneralDetectionType;
-use secluso_motion_ai::pipeline;
-use tokio::runtime::Runtime;
-use secluso_motion_ai::logic::pipeline::PipelineController;
-use secluso_motion_ai::ml::models::DetectionType;
+use crate::motion::MotionResult;
 use crate::raspberry_pi::rpi_dual_stream;
 use crate::traits::Mp4;
 use crate::{
@@ -43,7 +35,15 @@ use crate::{
     traits::{Camera, CodecParameters},
     write_box,
 };
-use crate::motion::MotionResult;
+use anyhow::{Context, Error};
+use bytes::{BufMut, BytesMut};
+use crossbeam_channel::unbounded;
+use image::RgbImage;
+use secluso_client_lib::thumbnail_meta_info::GeneralDetectionType;
+use secluso_motion_ai::logic::pipeline::PipelineController;
+use secluso_motion_ai::ml::models::DetectionType;
+use secluso_motion_ai::pipeline;
+use tokio::runtime::Runtime;
 
 // Frame dimensions
 const WIDTH: usize = 1296;
@@ -90,7 +90,13 @@ pub struct RaspberryPiCamera {
 }
 
 impl RaspberryPiCamera {
-    pub fn new(name: String, state_dir: String, video_dir: String, thumbnail_dir: String, motion_fps: u64) -> Self {
+    pub fn new(
+        name: String,
+        state_dir: String,
+        video_dir: String,
+        thumbnail_dir: String,
+        motion_fps: u64,
+    ) -> Self {
         println!("Initializing Raspberry Pi Camera...");
 
         // Create a channel to receive SPS/PPS frames.
@@ -141,7 +147,6 @@ impl RaspberryPiCamera {
             debug!("Exited controller tick loop");
         });
 
-
         // Start the new shared stream.
         rpi_dual_stream::start(
             WIDTH,
@@ -153,14 +158,14 @@ impl RaspberryPiCamera {
             ps_tx,
             motion_fps as u8,
         )
-            .expect("Failed to start shared stream");
+        .expect("Failed to start shared stream");
 
         // Wait for the SPS and PPS frames before continuing.
         let mut sps_frame_opt = None;
         let mut pps_frame_opt = None;
         while sps_frame_opt.is_none() || pps_frame_opt.is_none() {
             let frame_attempt = ps_rx.recv_timeout(Duration::from_secs(30));
-            if let Err(_) = frame_attempt {
+            if frame_attempt.is_err() {
                 panic!("Failed to receive PPS/SPS frame from rpicam-vid in 30 seconds.");
             }
 
@@ -190,8 +195,8 @@ impl RaspberryPiCamera {
 
     // The modified copy function now takes an optional raw_writer.
     // For every frame sent to the MP4 writer, we also write the raw frame data.
-    async fn copy<'a, M: Mp4>(
-        mp4: &'a mut M,
+    async fn copy<M: Mp4>(
+        mp4: &mut M,
         duration: Option<u64>,
         frame_queue: Arc<Mutex<VecDeque<VideoFrame>>>,
     ) -> Result<(), Error> {
@@ -202,13 +207,16 @@ impl RaspberryPiCamera {
         let time_per_frame: u64 = 1_000_000 / TOTAL_FRAME_RATE as u64;
 
         loop {
-            let mut queue = frame_queue.lock().unwrap();
-            let frame = match queue.pop_front() {
-                Some(f) => f,
-                None => {
-                    drop(queue);
-                    thread::sleep(Duration::from_secs(1));
-                    continue;
+            let frame = {
+                let mut queue = frame_queue.lock().unwrap();
+                match queue.pop_front() {
+                    Some(f) => f,
+                    None => {
+                        // guard is dropped at the end of this block
+                        drop(queue);
+                        thread::sleep(Duration::from_secs(1));
+                        continue;
+                    }
                 }
             };
 
@@ -231,11 +239,10 @@ impl RaspberryPiCamera {
                     frame_timestamp_micros / 10, // Adjust conversion as needed.
                     frame.kind == VideoFrameKind::IFrame,
                 )
-                    .await
-                    .with_context(|| "Error processing video frame")?;
+                .await
+                .with_context(|| "Error processing video frame")?;
                 frame_count += 1;
             }
-            drop(queue);
 
             if let Some(window) = recording_window {
                 if Instant::now().duration_since(recording_start_time) > window {
@@ -279,7 +286,7 @@ impl RaspberryPiCamera {
             RpiCameraAudioParameters::default(),
             file,
         )
-            .await?;
+        .await?;
 
         // Process the rest of the frames, writing both to the MP4 writer and to the raw file.
         Self::copy(&mut mp4, Some(duration), frame_queue).await?;
@@ -304,7 +311,7 @@ impl RaspberryPiCamera {
             RpiCameraAudioParameters::default(),
             livestream_writer,
         )
-            .await?;
+        .await?;
         fmp4.finish_header().await?;
         Self::copy(&mut fmp4, None, frame_queue).await?;
 
@@ -338,7 +345,8 @@ impl Camera for RaspberryPiCamera {
             if pipeline_result.motion {
                 let frame = pipeline_result.thumbnail;
                 let data = frame.rgb_data.unwrap().to_vec();
-                let img = RgbImage::from_raw(frame.width as u32, frame.height as u32, data).expect("Failed to convert RGB data into RgbImage");
+                let img = RgbImage::from_raw(frame.width as u32, frame.height as u32, data)
+                    .expect("Failed to convert RGB data into RgbImage");
 
                 // TODO: We have to manually map these until we connect the IP camera to motion_ai
                 let mut detections: Vec<GeneralDetectionType> = Vec::new();
@@ -359,11 +367,11 @@ impl Camera for RaspberryPiCamera {
                 });
             }
         }
-        return Ok(MotionResult {
+        Ok(MotionResult {
             motion: false,
             thumbnail: None,
             detections: vec![],
-        });
+        })
     }
 
     fn record_motion_video(&self, info: &VideoInfo, duration: u64) -> io::Result<()> {
@@ -422,7 +430,9 @@ impl Camera for RaspberryPiCamera {
         self.video_dir.clone()
     }
 
-    fn get_thumbnail_dir(&self) -> String { self.thumbnail_dir.clone() }
+    fn get_thumbnail_dir(&self) -> String {
+        self.thumbnail_dir.clone()
+    }
 }
 
 struct RpiCameraVideoParameters {

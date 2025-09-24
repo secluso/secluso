@@ -64,7 +64,7 @@ static SYS: Lazy<Mutex<System>> = Lazy::new(|| {
 pub fn update(
     ctx: &mut StateContext,
     telemetry: &mut TelemetryRun,
-    temp_label: &'static str
+    temp_label: &'static str,
 ) -> Result<Option<PipelineEvent>, anyhow::Error> {
     let temp = read_current_temp(temp_label)?;
     let cpu_and_mem = read_cpu_and_memory()?;

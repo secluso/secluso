@@ -17,9 +17,9 @@
 
 use crate::delivery_monitor::DeliveryMonitor;
 use crate::Camera;
+use secluso_client_lib::http_client::HttpClient;
 use secluso_client_lib::mls_client::MlsClient;
 use secluso_client_lib::mls_clients::MAX_OFFLINE_WINDOW;
-use secluso_client_lib::http_client::HttpClient;
 use std::io;
 use std::pin::Pin;
 use std::sync::mpsc;
@@ -59,8 +59,7 @@ impl AsyncWrite for LivestreamWriter {
         let data = self.buffer.drain(..).collect();
 
         if self.sender.send(data).is_err() {
-            return Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Poll::Ready(Err(io::Error::other(
                 "Failed to send data over the channel",
             )));
         }

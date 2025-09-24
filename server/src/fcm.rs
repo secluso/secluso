@@ -117,13 +117,10 @@ pub fn send_notification(device_token: String, msg: Vec<u8>) -> Result<(), Box<d
 
     // Check the response status
     if !response.status().is_success() {
-        return Err(Box::new(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "Error: Failed to send notification. ({:?}).",
-                response.text()
-            ),
-        )));
+        return Err(Box::new(io::Error::other(format!(
+            "Error: Failed to send notification. ({:?}).",
+            response.text()
+        ))));
     }
 
     Ok(())
