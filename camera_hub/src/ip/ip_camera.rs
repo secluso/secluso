@@ -45,7 +45,6 @@ use crate::livestream::LivestreamWriter;
 use crate::mp4::Mp4Writer;
 use crate::traits::{Camera, CodecParameters, Mp4};
 use std::fs;
-use std::fs::File;
 use std::io;
 use std::io::Write;
 use std::thread;
@@ -74,7 +73,6 @@ use std::sync::{
 };
 use std::time::{Duration, SystemTime};
 use rpassword::read_password;
-use std::collections::HashMap;
 
 pub struct IpCamera {
     name: String,

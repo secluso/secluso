@@ -16,7 +16,7 @@
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 use base64::{engine::general_purpose, Engine as _};
-use secluso_client_server_lib::auth::parse_user_credentials;
+use secluso_client_server_lib::auth::{parse_user_credentials, NUM_USERNAME_CHARS, NUM_PASSWORD_CHARS};
 use rocket::http::Status;
 use rocket::request::{FromRequest, Outcome, Request};
 use rocket::State;
@@ -27,12 +27,27 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::str;
 use std::sync::Mutex;
+use subtle::{Choice, ConstantTimeEq};
+
+const DUMMY_PASSWORD: [u8; NUM_PASSWORD_CHARS] = [0u8; NUM_PASSWORD_CHARS];
 
 pub struct BasicAuth {
     pub username: String,
 }
 
 type UserStore = Mutex<HashMap<String, String>>;
+
+/// Convert &str to fixed-length bytes for constant-time comparison.
+/// Assumes passwords are ASCII (or otherwise 1 byte per char) and always NUM_PASSWORD_CHARS long.
+/// If the length differs, we still produce a fixed-size array (zero-padded/truncated),
+/// which will fail the ct_eq against a valid stored password but preserves constant-time behavior.
+fn to_fixed_bytes(s: &str) -> [u8; NUM_PASSWORD_CHARS] {
+    let b = s.as_bytes();
+    let mut out = [0u8; NUM_PASSWORD_CHARS];
+    let n = b.len().min(NUM_PASSWORD_CHARS);
+    out[..n].copy_from_slice(&b[..n]);
+    out
+}
 
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for BasicAuth {
@@ -44,13 +59,17 @@ impl<'r> FromRequest<'r> for BasicAuth {
 
         if let Some(auth_value) = auth_header {
             if let Some((username, password)) = decode_basic_auth(auth_value) {
-                let users = user_store.lock().unwrap();
+                let password_bytes: [u8; NUM_PASSWORD_CHARS] = to_fixed_bytes(&password);
 
-                if users
-                    .get(&username)
-                    .map(|stored_password| stored_password == &password)
-                    .unwrap_or(false)
-                {
+                let users = user_store.lock().unwrap();
+                let (stored_password_bytes, user_exists): ([u8; NUM_PASSWORD_CHARS], bool) = match users.get(&username) {
+                    Some(stored_password) => (to_fixed_bytes(stored_password), true),
+                    None => (DUMMY_PASSWORD, false),
+                };
+
+                let eq: Choice = stored_password_bytes.ct_eq(&password_bytes);
+
+                if bool::from(eq) && user_exists {
                     return Outcome::Success(BasicAuth { username });
                 }
             }
@@ -68,6 +87,13 @@ fn decode_basic_auth(auth_value: &str) -> Option<(String, String)> {
         let mut parts = decoded_str.splitn(2, ':');
         let username = parts.next()?.to_string();
         let password = parts.next()?.to_string();
+
+        if username.len() != NUM_USERNAME_CHARS ||
+            password.len() != NUM_PASSWORD_CHARS {
+
+            return None;
+        }
+
         return Some((username, password));
     }
     None
@@ -94,6 +120,9 @@ pub fn initialize_users() -> UserStore {
                                         fil,
                                     );
                                     let data = reader.fill_buf().unwrap();
+                                    // The returned username has NUM_USERNAME_CHARS characters.
+                                    // The returned password has NUM_PASSWORD_CHARS characters.
+                                    // See client_server_lib/src/auth.rs
                                     let (username, password) =
                                         parse_user_credentials(data.to_vec()).unwrap();
                                     debug!("Loading credentials for client {:?}", username);

@@ -14,3 +14,4 @@ jsonwebtoken = "9.3.1"
 chrono = "0.4"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
 dashmap = "6.1.0"
+subtle = "2.6.1"

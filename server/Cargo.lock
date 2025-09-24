@@ -1487,6 +1487,7 @@ dependencies = [
  "secluso-client-server-lib",
  "serde",
  "serde_json",
+ "subtle",
 ]
 
 [[package]]
@@ -1662,6 +1663,12 @@ checksum = "2b8c4a4445d81357df8b1a650d0d0d6fbbbfe99d064aa5e02f3e4022061476d8"
 dependencies = [
  "loom",
 ]
+
+[[package]]
+name = "subtle"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "syn"
