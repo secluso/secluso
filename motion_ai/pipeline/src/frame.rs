@@ -355,7 +355,7 @@ impl RawFrame {
         // However, we need to take into account how the width is padded to 64-bytes.
         // This is for a row-aligned format from V4L2 for DMA transfer alignment.
         let yuv_width = if self.dma_aligned {
-            self.width.div_ceil(64)
+            self.width.next_multiple_of(64)
         } else {
             self.width
         };
