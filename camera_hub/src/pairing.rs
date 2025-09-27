@@ -15,7 +15,9 @@
 //! You should have received a copy of the GNU General Public License
 //! along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+use crate::initialize_mls_clients;
 use crate::traits::Camera;
+use cfg_if::cfg_if;
 use image::Luma;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::random::OpenMlsRand;
@@ -24,7 +26,7 @@ use qrcode::QrCode;
 use rand::Rng;
 use secluso_client_lib::http_client::HttpClient;
 use secluso_client_lib::mls_client::{KeyPackages, MlsClient};
-use secluso_client_lib::mls_clients::{MlsClients, CONFIG, MLS_CLIENT_TAGS};
+use secluso_client_lib::mls_clients::{MlsClients, CONFIG};
 use secluso_client_lib::pairing;
 use secluso_client_server_lib::auth::parse_user_credentials_full;
 use serde_json::Value;
@@ -35,7 +37,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
-use std::{array, fs};
+use std::fs;
 use std::{thread, time::Duration};
 
 // Used to generate random names.
@@ -100,6 +102,18 @@ fn read_varying_len(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
     }
 
     Ok(msg)
+}
+
+#[cfg(feature = "raspberry")]
+fn receive_timestamp_set_system_time(stream: &mut TcpStream) -> io::Result<()> {
+    let timestamp_vec = read_varying_len(stream)?;
+    let timestamp: u64 = bincode::deserialize(&timestamp_vec).unwrap();
+    let _ = Command::new("date")
+        .arg("-s")
+        .arg(format!("@{}", timestamp))
+        .output()?;
+
+    Ok(())
 }
 
 fn perform_pairing_handshake(
@@ -393,29 +407,53 @@ pub fn pair_all(
                 if let Err(e) = stream.set_write_timeout(Some(Duration::from_secs(10))) {
                     debug!("[Pairing] Failed to set write timeout: {e}");
                 }
+
                 let result = {
-                    let mls_clients_ref = &mut *mls_clients;
                     let mut success = true;
 
-                    debug!("[Pairing] Before pairing");
-                    for mls_client in mls_clients_ref.iter_mut() {
-                        match pair_with_app(&mut stream, mls_client.key_packages()) {
-                            Ok(app_key_packages) => {
-                                if let Err(e) = invite(
-                                    &mut stream,
-                                    mls_client,
-                                    app_key_packages,
-                                    secret.clone(),
-                                ) {
-                                    debug!("[Pairing] Failed to create group: {e}");
+                    cfg_if! {
+                        if #[cfg(feature = "raspberry")] {
+                            // Receive timestamp and set system date and time.
+                            // This is because an RPi doesn't have a battery-backed real-time clock.
+                            // Therefore, if it remains off before pairing, its wall clock will be off.
+                            // This then prevents successful pairing due to MLS checking the lifetime
+                            // of key packages.
+                            match receive_timestamp_set_system_time(&mut stream) {
+                                Ok(()) => {}
+                                Err(e) => {
+                                    debug!("[Pairing] Failed to receive and set timestamp: {e}");
+                                    success = false;
+                                }
+                            }
+
+                            // Re-create mls_client objects in order to get fresh key packages
+                            *mls_clients = initialize_mls_clients(camera, true);
+                        }
+                    }
+
+                    let mls_clients_ref = &mut *mls_clients;
+
+                    if success {
+                        debug!("[Pairing] Before pairing");
+                        for mls_client in mls_clients_ref.iter_mut() {
+                            match pair_with_app(&mut stream, mls_client.key_packages()) {
+                                Ok(app_key_packages) => {
+                                    if let Err(e) = invite(
+                                        &mut stream,
+                                        mls_client,
+                                        app_key_packages,
+                                        secret.clone(),
+                                    ) {
+                                        debug!("[Pairing] Failed to create group: {e}");
+                                        success = false;
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    debug!("[Pairing] Pairing failed: {e}");
                                     success = false;
                                     break;
                                 }
-                            }
-                            Err(e) => {
-                                debug!("[Pairing] Pairing failed: {e}");
-                                success = false;
-                                break;
                             }
                         }
                     }
@@ -528,31 +566,7 @@ pub fn pair_all(
                     }
 
                     // We cannot use the old user objects, so create new clients.
-                    *mls_clients = array::from_fn(|i| {
-                        let (camera_name, group_name) = get_names(
-                            camera,
-                            true,
-                            format!("camera_{}_name", MLS_CLIENT_TAGS[i]),
-                            format!("group_{}_name", MLS_CLIENT_TAGS[i]),
-                        );
-                        debug!("{} camera_name = {}", MLS_CLIENT_TAGS[i], camera_name);
-                        debug!("{} group_name = {}", MLS_CLIENT_TAGS[i], group_name);
-
-                        let mut mls_client = MlsClient::new(
-                            camera_name,
-                            true,
-                            camera.get_state_dir().clone(),
-                            MLS_CLIENT_TAGS[i].to_string(),
-                        )
-                        .expect("MlsClient::new() for returned error.");
-
-                        mls_client.create_group(&group_name).unwrap();
-                        debug!("Created group.");
-
-                        mls_client.save_group_state();
-
-                        mls_client
-                    });
+                    *mls_clients = initialize_mls_clients(camera, true);
 
                     debug!("[Pairing] Error — resetting for next connection");
                     continue;

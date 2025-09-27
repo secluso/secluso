@@ -25,6 +25,7 @@ use std::net::TcpStream;
 use std::path::Path;
 use std::str;
 use std::str::FromStr;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // Used to generate random names.
 // With 16 alphanumeric characters, the probability of collision is very low.
@@ -201,6 +202,16 @@ fn receive_firmware_version(
     Ok(firmware_version)
 }
 
+fn send_timestamp(
+    stream: &mut TcpStream,
+) -> anyhow::Result<()> {
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let timestamp_vec = bincode::serialize(&timestamp).unwrap();
+    write_varying_len(stream, &timestamp_vec)?;
+
+    Ok(())
+}
+
 #[flutter_rust_bridge::frb]
 fn pair_with_camera(
     stream: &mut TcpStream,
@@ -308,10 +319,20 @@ pub fn add_camera(
     let mut stream = match TcpStream::connect(&addr) {
         Ok(s) => s,
         Err(e) => {
-            info!("Error: {e}");
+            info!("Error (connect): {e}");
             return "Error".to_string();
         }
     };
+
+    if standalone_camera {
+        // Need to send timestamp. RPi needs it for setting date/time.
+        if let Err(e) = send_timestamp(
+            &mut stream,
+        ) {
+            info!("Error (sending timestamp): {e}");
+            return "Error".to_string();
+        }
+    }
 
     // Perform pairing
     if let Err(e) = pair_with_camera(

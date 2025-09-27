@@ -306,6 +306,36 @@ fn reset(camera: &dyn Camera, reset_full: bool) -> io::Result<()> {
     Ok(())
 }
 
+pub fn initialize_mls_clients(camera: &dyn Camera, first_time: bool) -> MlsClients {
+    array::from_fn(|i| {
+        let (camera_name, group_name) = get_names(
+            camera,
+            first_time,
+            format!("camera_{}_name", MLS_CLIENT_TAGS[i]),
+            format!("group_{}_name", MLS_CLIENT_TAGS[i]),
+        );
+        debug!("{} camera_name = {}", MLS_CLIENT_TAGS[i], camera_name);
+        debug!("{} group_name = {}", MLS_CLIENT_TAGS[i], group_name);
+
+        let mut mls_client = MlsClient::new(
+            camera_name,
+            first_time,
+            camera.get_state_dir(),
+            MLS_CLIENT_TAGS[i].to_string(),
+        )
+        .expect("MlsClient::new() for returned error.");
+
+        if first_time {
+            mls_client.create_group(&group_name).unwrap();
+            debug!("Created group.");
+        }
+
+        mls_client.save_group_state();
+
+        mls_client
+    })
+}
+
 fn core(
     camera: &mut dyn Camera,
     input_camera_secret: Option<Vec<u8>>,
@@ -320,33 +350,7 @@ fn core(
         create_wifi_hotspot();
     }
 
-    let mut clients: MlsClients = array::from_fn(|i| {
-        let (camera_name, group_name) = get_names(
-            camera,
-            first_time,
-            format!("camera_{}_name", MLS_CLIENT_TAGS[i]),
-            format!("group_{}_name", MLS_CLIENT_TAGS[i]),
-        );
-        debug!("{} camera_name = {}", MLS_CLIENT_TAGS[i], camera_name);
-        debug!("{} group_name = {}", MLS_CLIENT_TAGS[i], group_name);
-
-        let mut mls_client = MlsClient::new(
-            camera_name,
-            first_time,
-            state_dir.clone(),
-            MLS_CLIENT_TAGS[i].to_string(),
-        )
-        .expect("MlsClient::new() for returned error.");
-
-        if first_time {
-            mls_client.create_group(&group_name).unwrap();
-            debug!("Created group.");
-        }
-
-        mls_client.save_group_state();
-
-        mls_client
-    });
+    let mut clients: MlsClients = initialize_mls_clients(camera, first_time);
 
     let camera_name = camera.get_name();
 
