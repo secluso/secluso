@@ -103,7 +103,6 @@ impl Group {
 }
 
 pub struct MlsClient {
-    pub(crate) username: String,
     pub(crate) group: Option<Group>,
     pub(crate) identity: Identity,
     provider: OpenMlsRustPersistentCrypto,
@@ -151,7 +150,6 @@ impl MlsClient {
         };
 
         let out = Self {
-            username: username.clone(),
             group,
             identity: Identity::new(
                 CIPHERSUITE,
