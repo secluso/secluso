@@ -70,7 +70,7 @@ So far, the following cameras have been tested:
 ## Supported mobile OSes
 
 * Android
-* iOS (does not support livestream yet)
+* iOS
 
 ## Tested smartphones (OS version)
 
