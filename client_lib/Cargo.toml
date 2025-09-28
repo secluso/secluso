@@ -16,12 +16,12 @@ log = { version = "0.4.4", optional = true }
 mio = { version = "0.8", features = ["net", "os-poll"] }
 serde = "1.0"
 serde_derive = "1.0"
-openmls = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.7.0" }
-ds-lib = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.7.0" }
-openmls_traits = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.7.0" }
-openmls_rust_crypto = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.7.0" }
-openmls_memory_storage = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.7.0", features = ["persistence"] }
-openmls_basic_credential = { git = "https://github.com/openmls/openmls", rev = "openmls-v0.7.0" }
+openmls = { git = "https://github.com/openmls/openmls", rev = "openmls-0.7.1" }
+ds-lib = { git = "https://github.com/openmls/openmls", rev = "openmls-0.7.1" }
+openmls_traits = { git = "https://github.com/openmls/openmls", rev = "openmls-0.7.1" }
+openmls_rust_crypto = { git = "https://github.com/openmls/openmls", rev = "openmls-0.7.1" }
+openmls_memory_storage = { git = "https://github.com/openmls/openmls", rev = "openmls-0.7.1", features = ["persistence"] }
+openmls_basic_credential = { git = "https://github.com/openmls/openmls", rev = "openmls-0.7.1" }
 bincode = "1.2.1"
 reqwest = { version = "0.11", default-features = false, features = ["blocking", "multipart", "rustls-tls"], optional = true }
 base64 = { version = "0.22.1", optional = true }

@@ -445,7 +445,7 @@ dependencies = [
 [[package]]
 name = "ds-lib"
 version = "0.1.0"
-source = "git+https://github.com/openmls/openmls?rev=openmls-v0.7.0#560e17da00bd26a803bf5389db432775de783fd6"
+source = "git+https://github.com/openmls/openmls?rev=openmls-0.7.1#b402e30bf95324971b9a40980aea93772dad24c5"
 dependencies = [
  "openmls",
  "openmls_basic_credential",
@@ -1485,8 +1485,8 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "openmls"
-version = "0.7.0"
-source = "git+https://github.com/openmls/openmls?rev=openmls-v0.7.0#560e17da00bd26a803bf5389db432775de783fd6"
+version = "0.7.1"
+source = "git+https://github.com/openmls/openmls?rev=openmls-0.7.1#b402e30bf95324971b9a40980aea93772dad24c5"
 dependencies = [
  "backtrace",
  "itertools",
@@ -1500,16 +1500,18 @@ dependencies = [
  "rand 0.8.5",
  "rayon",
  "serde",
+ "serde_bytes",
  "serde_json",
  "thiserror",
  "tls_codec",
  "wasm-bindgen-test",
+ "zeroize",
 ]
 
 [[package]]
 name = "openmls_basic_credential"
-version = "0.4.0"
-source = "git+https://github.com/openmls/openmls?rev=openmls-v0.7.0#560e17da00bd26a803bf5389db432775de783fd6"
+version = "0.4.1"
+source = "git+https://github.com/openmls/openmls?rev=openmls-0.7.1#b402e30bf95324971b9a40980aea93772dad24c5"
 dependencies = [
  "ed25519-dalek",
  "openmls_traits",
@@ -1521,8 +1523,8 @@ dependencies = [
 
 [[package]]
 name = "openmls_memory_storage"
-version = "0.4.0"
-source = "git+https://github.com/openmls/openmls?rev=openmls-v0.7.0#560e17da00bd26a803bf5389db432775de783fd6"
+version = "0.4.1"
+source = "git+https://github.com/openmls/openmls?rev=openmls-0.7.1#b402e30bf95324971b9a40980aea93772dad24c5"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -1535,8 +1537,8 @@ dependencies = [
 
 [[package]]
 name = "openmls_rust_crypto"
-version = "0.4.0"
-source = "git+https://github.com/openmls/openmls?rev=openmls-v0.7.0#560e17da00bd26a803bf5389db432775de783fd6"
+version = "0.4.1"
+source = "git+https://github.com/openmls/openmls?rev=openmls-0.7.1#b402e30bf95324971b9a40980aea93772dad24c5"
 dependencies = [
  "aes-gcm",
  "chacha20poly1305",
@@ -1559,8 +1561,8 @@ dependencies = [
 
 [[package]]
 name = "openmls_test"
-version = "0.2.0"
-source = "git+https://github.com/openmls/openmls?rev=openmls-v0.7.0#560e17da00bd26a803bf5389db432775de783fd6"
+version = "0.2.1"
+source = "git+https://github.com/openmls/openmls?rev=openmls-0.7.1#b402e30bf95324971b9a40980aea93772dad24c5"
 dependencies = [
  "ansi_term",
  "openmls_rust_crypto",
@@ -1574,8 +1576,8 @@ dependencies = [
 
 [[package]]
 name = "openmls_traits"
-version = "0.4.0"
-source = "git+https://github.com/openmls/openmls?rev=openmls-v0.7.0#560e17da00bd26a803bf5389db432775de783fd6"
+version = "0.4.1"
+source = "git+https://github.com/openmls/openmls?rev=openmls-0.7.1#b402e30bf95324971b9a40980aea93772dad24c5"
 dependencies = [
  "serde",
  "tls_codec",
@@ -2115,6 +2117,16 @@ checksum = "0dca6411025b24b60bfa7ec1fe1f8e710ac09782dca409ee8237ba74b51295fd"
 dependencies = [
  "serde_core",
  "serde_derive",
+]
+
+[[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
