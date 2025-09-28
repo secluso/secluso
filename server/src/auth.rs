@@ -210,7 +210,6 @@ pub fn initialize_users() -> UserStore {
                                     // See client_server_lib/src/auth.rs
                                     let (username, password) =
                                         parse_user_credentials(data.to_vec()).unwrap();
-                                    debug!("Loading credentials for client {:?}", username);
                                     let old = users.insert(username.clone(), password);
                                     if old.is_some() {
                                         panic!("Duplicate client!");

@@ -218,7 +218,7 @@ impl MlsClient {
             return Err(io::Error::other("Group previously created."));
         }
 
-        log::debug!("{} creates group {}", self.username, name);
+        log::debug!("About to create group");
         let group_id = GroupId::random(self.provider.rand()).to_vec();
 
         // NOTE: Since the DS currently doesn't distribute copies of the group's ratchet
@@ -323,7 +323,7 @@ impl MlsClient {
             return Err(io::Error::other("Joined a group already."));
         }
 
-        log::debug!("{} joining group ...", self.username);
+        log::debug!("Joining group");
 
         // Store the secret as an external psk.
         // This is used for mutual authentication.
