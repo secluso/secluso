@@ -1,3 +1,5 @@
+//! SPDX-License-Identifier: GPL-3.0-or-later
+
 use crate::logic::pipeline::PipelineEvent;
 use std::sync::{LazyLock, LockResult, Mutex, MutexGuard};
 use std::time::{Duration, Instant};

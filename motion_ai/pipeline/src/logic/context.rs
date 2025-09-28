@@ -1,4 +1,7 @@
 //! Shared, mutable runtime context the FSM and stages read/write during a run
+//!
+//! SPDX-License-Identifier: GPL-3.0-or-later
+
 use crate::logic::activity_states::ActivityState;
 use crate::logic::health_states::HealthState;
 use crate::logic::pipeline::{PipelineResult, RunId};

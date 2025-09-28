@@ -1,3 +1,7 @@
+//! App library.
+//!
+//! SPDX-License-Identifier: GPL-3.0-or-later
+
 use anyhow::anyhow;
 use anyhow::Context;
 use log::{debug, error, info};

@@ -1,3 +1,5 @@
+//! SPDX-License-Identifier: GPL-3.0-or-later
+
 use crate::frame::SAVE_IMAGES;
 use crate::logic::intent::Intent;
 use crate::logic::pipeline::RunId;

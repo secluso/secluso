@@ -1,3 +1,5 @@
+//! SPDX-License-Identifier: GPL-3.0-or-later
+
 use crate::logic::activity_states::ActivityState;
 use crate::logic::health_states::HealthState;
 use crate::logic::pipeline::{PipelineEvent, PipelineHostData, RunId};

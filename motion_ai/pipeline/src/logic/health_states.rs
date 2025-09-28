@@ -1,3 +1,5 @@
+//! SPDX-License-Identifier: GPL-3.0-or-later
+
 use crate::config::{
     CPU_RESOURCE_CAP, MEMORY_RESOURCE_CAP, THRESH_TEMP_CRITICAL, THRESH_TEMP_HIGH,
 };

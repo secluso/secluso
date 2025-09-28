@@ -1,3 +1,5 @@
+//! SPDX-License-Identifier: GPL-3.0-or-later
+
 // -----------------------------------------------------------------------------
 // Portions of this file were ported from the NanoDet project from C++ into Rust
 // (https://github.com/RangiLyu/nanodet),

@@ -1,3 +1,5 @@
+//! SPDX-License-Identifier: GPL-3.0-or-later
+
 use anyhow::{Context, Result, bail};
 use rocket::{
     State, fairing::AdHoc, fs::FileServer, get, http::ContentType, post,

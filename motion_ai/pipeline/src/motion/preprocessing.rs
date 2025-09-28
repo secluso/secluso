@@ -1,3 +1,5 @@
+//! SPDX-License-Identifier: GPL-3.0-or-later
+
 use crate::frame::RawFrame;
 use crate::logic::pipeline::RunId;
 use crate::logic::telemetry::{TelemetryPacket, TelemetryRun};

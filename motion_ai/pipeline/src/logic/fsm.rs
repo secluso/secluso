@@ -1,4 +1,7 @@
 //! Generic FSM runtime: keyed states, pluggable handlers and intent emission
+//!
+//! SPDX-License-Identifier: GPL-3.0-or-later
+
 use crate::logic::context::StateContext;
 use crate::logic::intent::Intent;
 use crate::logic::pipeline::{Pipeline, PipelineEvent};

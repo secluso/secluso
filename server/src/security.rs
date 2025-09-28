@@ -1,3 +1,5 @@
+//! SPDX-License-Identifier: GPL-3.0-or-later
+
 use std::io;
 use std::io::ErrorKind;
 use std::path::Path;

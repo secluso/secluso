@@ -1,3 +1,5 @@
+//! SPDX-License-Identifier: GPL-3.0-or-later
+
 pub const THRESH_TEMP_HIGH: f32 = 80f32;
 pub const THRESH_TEMP_CRITICAL: f32 = 90f32;
 

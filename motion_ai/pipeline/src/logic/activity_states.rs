@@ -1,3 +1,5 @@
+//! SPDX-License-Identifier: GPL-3.0-or-later
+
 use crate::logic::context::StateContext;
 use crate::logic::fsm::{StateHandler, TransitionDecision};
 use crate::logic::intent::Intent;
