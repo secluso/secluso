@@ -15,6 +15,20 @@ emit() {
   printf '::SECLUSO_EVENT::{"level":"%s","step":"%s","msg":"%s"}\n' "$level" "$step" "$msg"
 }
 
+verify_sha256() {
+  local path="$1"
+  local expected_sha="$2"
+  local actual_sha
+
+  actual_sha="$(sha256sum "$path" | awk '{print $1}')"
+  [ "$actual_sha" = "$expected_sha" ] || {
+    echo "SHA-256 mismatch for $path" >&2
+    echo "  expected: $expected_sha" >&2
+    echo "  actual:   $actual_sha" >&2
+    exit 1
+  }
+}
+
 ensure_loop_devices() {
   # Fixes case where the host already had many loop devices 
   # in use (for example snap mounts), and a failed run could also leave stale mappings behind. This helper makes
@@ -82,10 +96,12 @@ emit "info" "base_image" "Preparing base image..."
 
 # fetch base image
 if [[ "$BASE_IMAGE" == http://* || "$BASE_IMAGE" == https://* ]]; then
+  base_image_sha256="6ac3a10a1f144c7e9d1f8e568d75ca809288280a593eb6ca053e49b539f465a4"
   fname="$(basename "$BASE_IMAGE")"
   if [[ ! -f "$fname" ]]; then
     run curl -L -o "$fname" "$BASE_IMAGE"
   fi
+  verify_sha256 "$fname" "$base_image_sha256"
   BASE_PATH="$WORK/$fname"
 else
   if [[ -f "$BASE_IMAGE" ]]; then BASE_PATH="$BASE_IMAGE"
@@ -452,6 +468,11 @@ install_rpicam_apps() {
   local ver="0.4.0+rpt20250213-1"
   local arch="arm64"
   local base="https://archive.raspberrypi.com/debian/pool/main/libc/libcamera"
+  local libcamera0_4_sha256="c505ae5c3311c82b8cd8257da4288aacb50717e394a494c205f89fdc9385f72b"
+  local libcamera_ipa_sha256="ff88b7089155f85fb939a0588cc2df859fa119847d7e7b8fbab33790063b6622"
+  local libcamera_dev_sha256="defeb14a390df0bb806e1c4cce4329a761d4e7ede9c31ba979e6662f0a8fdb07"
+  local libcamera_tools_sha256="aa7dacdc7b71d2a6da8566c13adb12133925304da40bba938553eb8b33d9617d"
+  local python3_libcamera_sha256="f17ab305580a2efa81246b7b2035f1c7ca9a790e9d0abed9d097b005a9077f40"
 
   echo "+ Pinning libcamera stack to $ver" >&2
 
@@ -483,6 +504,11 @@ EOF"
     curl -fsSL -O '$base/libcamera-dev_${ver}_${arch}.deb';
     curl -fsSL -O '$base/libcamera-tools_${ver}_${arch}.deb' || true;
     curl -fsSL -O '$base/python3-libcamera_${ver}_${arch}.deb' || true;
+    echo '$libcamera0_4_sha256  /tmp/libcamera0.4_${ver}_${arch}.deb' | sha256sum -c -;
+    echo '$libcamera_ipa_sha256  /tmp/libcamera-ipa_${ver}_${arch}.deb' | sha256sum -c -;
+    echo '$libcamera_dev_sha256  /tmp/libcamera-dev_${ver}_${arch}.deb' | sha256sum -c -;
+    if [ -f /tmp/libcamera-tools_${ver}_${arch}.deb ]; then echo '$libcamera_tools_sha256  /tmp/libcamera-tools_${ver}_${arch}.deb' | sha256sum -c -; fi;
+    if [ -f /tmp/python3-libcamera_${ver}_${arch}.deb ]; then echo '$python3_libcamera_sha256  /tmp/python3-libcamera_${ver}_${arch}.deb' | sha256sum -c -; fi;
   "
 
   # install debs
