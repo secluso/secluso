@@ -385,6 +385,7 @@ ExecStartPre=/usr/bin/test -r /var/lib/secluso/wifi_password
 ExecStart=${SECLUSO_INSTALL_DIR}/bin/secluso-raspberry-camera-hub
 Environment="RUST_LOG=info"
 Environment="LD_LIBRARY_PATH=/usr/local/lib/aarch64-linux-gnu/:/usr/local/lib:${LD_LIBRARY_PATH:-}"
+Environment="UPDATE_HINT_PATH=/var/lib/secluso/update_hint"
 Restart=always
 RestartSec=1
 
@@ -414,6 +415,8 @@ EOF
 
   if [[ -x "$ROOT${SECLUSO_INSTALL_DIR}/bin/$updater_name" ]]; then
     UPDATE_INTERVAL_SECS="1800"
+    HINT_CHECK_INTERVAL_SECS="60"
+    UPDATE_HINT_PATH="/var/lib/secluso/update_hint"
     cat > "$ROOT/etc/systemd/system/secluso-updater.service" <<EOF
 [Unit]
 Description=Secluso Updater
@@ -422,7 +425,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${SECLUSO_INSTALL_DIR}/bin/${updater_name} --component raspberry_camera_hub --interval-secs ${UPDATE_INTERVAL_SECS} --github-timeout-secs 20 --restart-unit secluso_camera_hub.service --github-repo ${SECLUSO_REPO}${SIG_ARGS}
+ExecStart=${SECLUSO_INSTALL_DIR}/bin/${updater_name} --component raspberry_camera_hub --interval-secs ${UPDATE_INTERVAL_SECS} --github-timeout-secs 20 --restart-unit secluso_camera_hub.service --github-repo ${SECLUSO_REPO}${SIG_ARGS} --update-hint-path ${UPDATE_HINT_PATH} --hint-check-interval-secs ${HINT_CHECK_INTERVAL_SECS}
 Restart=always
 RestartSec=2
 

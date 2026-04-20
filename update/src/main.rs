@@ -10,12 +10,12 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread::sleep;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH, Instant};
 
 use secluso_update::{
     build_github_client, default_signers, download_and_verify_component, fetch_latest_release,
-    fetch_versioned_release, get_current_version, github_token_from_env, parse_sig_keys,
-    require_release_is_immutable, server_version, write_current_version, Component,
+    get_current_version, github_token_from_env, parse_sig_keys,
+    require_release_is_immutable, write_current_version, Component,
     DEFAULT_OWNER_REPO,
 };
 
@@ -23,23 +23,25 @@ const USAGE: &str = r#"
 Secluso updater.
 
 Usage:
-  secluso-update --component COMPONENT [--once] [--bundle-path PATH] [--interval-secs N] [--github-timeout-secs N] [--restart-unit UNIT] [--github-repo <OWNER/REPO>] [--sig-key <NAME:GITHUB_USER>]...
+  secluso-update --component COMPONENT [--once] [--bundle-path PATH] [--interval-secs N] [--github-timeout-secs N] [--restart-unit UNIT] [--github-repo <OWNER/REPO>] [--sig-key <NAME:GITHUB_USER>]... [--update-hint-path PATH] [--hint-check-interval-secs N]
   secluso-update (--help | -h)
   secluso-update (--version | -v)
 
 Options:
-  --component COMPONENT      Which single binary to update:
-                             server | updater | raspberry_camera_hub | config_tool
-  --restart-unit UNIT        systemd unit to restart after install (optional).
-                             If omitted, no service is restarted.
-  --interval-secs N          Poll interval seconds [default: 60].
-  --github-timeout-secs N    HTTP timeout seconds [default: 20].
-  --github-repo <OWNER/REPO>  GitHub repo to poll for releases [default: secluso/secluso].
+  --component COMPONENT         Which single binary to update:
+                                server | updater | raspberry_camera_hub | config_tool
+  --restart-unit UNIT           systemd unit to restart after install (optional).
+                                If omitted, no service is restarted.
+  --interval-secs N             Poll interval seconds [default: 60].
+  --github-timeout-secs N       HTTP timeout seconds [default: 20].
+  --github-repo <OWNER/REPO>    GitHub repo to poll for releases [default: secluso/secluso].
   --sig-key <NAME:GITHUB_USER>  Signature label + GitHub user (repeatable).
-  --once                     Run a single update check then exit.
-  --bundle-path PATH         Use a local bundle zip instead of downloading from GitHub.
-  --version, -v              Show tool version.
-  --help, -h                 Show this screen.
+  --once                        Run a single update check then exit.
+  --bundle-path PATH            Use a local bundle zip instead of downloading from GitHub.
+  --update-hint-path PATH       Path for the local update hint file (optional).
+  --hint-check-interval-secs N  Update hint poll interval seconds [default: 10].
+  --version, -v                 Show tool version.
+  --help, -h                    Show this screen.
 "#;
 
 #[derive(Debug, Deserialize)]
@@ -52,12 +54,13 @@ struct Args {
     flag_sig_key: Vec<String>,
     flag_once: bool,
     flag_bundle_path: Option<String>,
+    flag_update_hint_path: Option<String>,
+    flag_hint_check_interval_secs: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReleaseSource {
     LatestImmutableGitHub,
-    ServerCoordinated,
 }
 
 #[derive(Debug, Clone)]
@@ -128,12 +131,59 @@ fn main() -> ! {
         std::process::exit(0);
     }
 
-    loop {
-        println!("Going to check for updates.");
-        if let Err(e) = check_update(&args) {
-            eprintln!("Update check failed: {:#}", e);
+    if let Some(ref update_hint_path) = args.flag_update_hint_path {
+        if args.flag_interval_secs % args.flag_hint_check_interval_secs != 0 {
+            eprintln!(
+                "flag_interval_secs ({}) must be divisible by flag_update_hint_interval_secs ({})",
+                args.flag_interval_secs,
+                args.flag_hint_check_interval_secs
+            );
+            std::process::exit(1);
         }
-        sleep(Duration::from_secs(args.flag_interval_secs));
+
+        // We want to force a check in the beginning.
+        let mut last_full_check = Instant::now() - Duration::from_secs(args.flag_interval_secs);
+
+        loop {
+            let elapsed = last_full_check.elapsed();
+            if elapsed >= Duration::from_secs(args.flag_interval_secs) {
+                println!("Scheduled update check.");
+                if let Err(e) = check_update(&args) {
+                    eprintln!("Update check failed: {:#}", e);
+                }
+                last_full_check = Instant::now();
+                continue;
+            }
+
+            sleep(Duration::from_secs(args.flag_hint_check_interval_secs));
+
+            if is_there_update_hint(&update_hint_path) {
+                println!("Update hint received, triggering early check.");
+                if let Err(e) = check_update(&args) {
+                    eprintln!("Update check failed: {:#}", e);
+                }
+                last_full_check = Instant::now();
+            }
+        }
+    } else {
+        loop {
+            println!("Going to check for updates.");
+            if let Err(e) = check_update(&args) {
+                eprintln!("Update check failed: {:#}", e);
+            }
+            sleep(Duration::from_secs(args.flag_interval_secs));
+        }
+    }
+}
+
+pub fn is_there_update_hint(path: &str) -> bool {
+    let p = Path::new(path);
+
+    if p.exists() {
+        let _ = fs::remove_file(p);
+        true
+    } else {
+        false
     }
 }
 
@@ -171,8 +221,6 @@ fn check_update(args: &Args) -> Result<()> {
         &current_version,
         || fetch_latest_release(&client, &github_repo),
         require_release_is_immutable,
-        |client_version| server_version(client_version),
-        |version| fetch_versioned_release(&client, &github_repo, version),
     )?
     else {
         return Ok(());
@@ -181,9 +229,6 @@ fn check_update(args: &Args) -> Result<()> {
     match selected_release.source {
         ReleaseSource::LatestImmutableGitHub => {
             println!("Using the latest immutable GitHub release.");
-        }
-        ReleaseSource::ServerCoordinated => {
-            println!("Using the server-coordinated release.");
         }
     };
 
@@ -340,22 +385,18 @@ fn create_secure_install_temp_file(
     ))
 }
 
-fn select_release_for_component<FLatest, FRequireImmutable, FServerVersion, FFetchVersioned>(
+fn select_release_for_component<FLatest, FRequireImmutable>(
     component: Component,
     current_version: &Version,
     fetch_latest_release_fn: FLatest,
     require_release_is_immutable_fn: FRequireImmutable,
-    server_version_fn: FServerVersion,
-    fetch_versioned_release_fn: FFetchVersioned,
 ) -> Result<Option<SelectedRelease>>
 where
     FLatest: FnOnce() -> Result<secluso_update::GhRelease>,
     FRequireImmutable: FnOnce(&secluso_update::GhRelease) -> Result<()>,
-    FServerVersion: FnOnce(&str) -> Result<Option<String>>,
-    FFetchVersioned: FnOnce(&str) -> Result<secluso_update::GhRelease>,
 {
     match component {
-        Component::Server => {
+        _ => {
             let release = fetch_latest_release_fn()?;
             require_release_is_immutable_fn(&release)?;
 
@@ -368,24 +409,6 @@ where
             Ok(Some(SelectedRelease {
                 release,
                 source: ReleaseSource::LatestImmutableGitHub,
-            }))
-        }
-        Component::Updater | Component::RaspberryCameraHub | Component::ConfigTool => {
-            let Some(server_version) = server_version_fn(&current_version.to_string())? else {
-                println!("Server version unavailable; update not needed yet");
-                return Ok(None);
-            };
-
-            let latest_version = Version::parse(server_version.trim_start_matches('v'))?;
-            if current_version >= &latest_version {
-                println!("Already on the server-coordinated release.");
-                return Ok(None);
-            }
-
-            let release = fetch_versioned_release_fn(&server_version)?;
-            Ok(Some(SelectedRelease {
-                release,
-                source: ReleaseSource::ServerCoordinated,
             }))
         }
     }

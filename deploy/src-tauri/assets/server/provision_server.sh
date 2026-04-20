@@ -29,6 +29,7 @@ STATE_DIR="${STATE_DIR:-/var/lib/secluso}"
 SERVICE_USER="${SERVICE_USER:-secluso}"
 RELEASE_TAG="${RELEASE_TAG:-unknown}"
 UPDATE_INTERVAL_SECS="${UPDATE_INTERVAL_SECS:-1800}"
+HINT_CHECK_INTERVAL_SECS="${HINT_CHECK_INTERVAL_SECS:-60}"
 STAGING_DIR="${STAGING_DIR:-}"
 SIG_ARGS=""
 if [[ -n "${SIG_KEYS:-}" ]]; then
@@ -133,6 +134,7 @@ Restart=always
 RestartSec=1
 Environment=RUST_LOG=info
 Environment=SECLUSO_USER_CREDENTIALS_DIR=$STATE_DIR/user_credentials
+Environment=UPDATE_HINT_PATH=$STATE_DIR/update_hint
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
@@ -152,7 +154,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=$INSTALL_PREFIX/bin/secluso-update --component server --interval-secs $UPDATE_INTERVAL_SECS --github-timeout-secs 20 --restart-unit $SERVER_UNIT --github-repo $OWNER_REPO$SIG_ARGS
+ExecStart=$INSTALL_PREFIX/bin/secluso-update --component server --interval-secs $UPDATE_INTERVAL_SECS --github-timeout-secs 20 --restart-unit $SERVER_UNIT --github-repo $OWNER_REPO$SIG_ARGS --update-hint-path $STATE_DIR/update_hint --hint-check-interval-secs $HINT_CHECK_INTERVAL_SECS
 Restart=always
 RestartSec=2
 ${GITHUB_TOKEN:+Environment=GITHUB_TOKEN=$GITHUB_TOKEN}

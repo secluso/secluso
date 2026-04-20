@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fs;
+use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::str;
@@ -21,6 +22,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
+use std::env;
 use subtle::{Choice, ConstantTimeEq};
 
 const DUMMY_PASSWORD: [u8; NUM_PASSWORD_CHARS] = [0u8; NUM_PASSWORD_CHARS];
@@ -103,6 +105,20 @@ fn to_fixed_bytes(s: &str) -> [u8; NUM_PASSWORD_CHARS] {
     out
 }
 
+fn give_hint_to_updater() {
+    if let Ok(update_hint_path_str) = env::var("UPDATE_HINT_PATH") {
+        let update_hint_path = Path::new(&update_hint_path_str);
+
+        if !update_hint_path.exists() {
+            if let Err(e) = File::create(update_hint_path) {
+                eprintln!("Failed to create file: {}", e);
+            }
+            println!("Update hint file created: {}", update_hint_path_str);
+        }
+    }
+}
+
+
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for &'r BasicAuth {
     type Error = ();
@@ -128,9 +144,13 @@ impl<'r> FromRequest<'r> for &'r BasicAuth {
         // We run a check on client-provided version header to ensure a match.
         // If it fails, we return a 409 (Conflict).
         // It must be provided for all, or we cannot guarantee version-compatibility.
+        // When there's a version mismatch, we also give a hint to the updater so
+        // that it can check the Github latest release. The version mismatch might
+        // be because the server is running an old version.
         if let Some(client_version) = client_header {
             let version = env!("CARGO_PKG_VERSION");
             if client_version != version {
+                give_hint_to_updater();
                 return Outcome::Error((Status::Conflict, ()));
             }
         } else {

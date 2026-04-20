@@ -116,16 +116,6 @@ struct Artifact {
     sha256: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct StoredUserCredentials {
-    #[serde(rename = "u", alias = "username")]
-    username: String,
-    #[serde(rename = "p", alias = "password")]
-    password: String,
-    #[serde(rename = "sa", alias = "server_addr")]
-    server_addr: String,
-}
-
 #[derive(Debug, Clone)]
 pub struct VerifiedComponent {
     pub release_tag: String,
@@ -134,63 +124,6 @@ pub struct VerifiedComponent {
     pub component_path: String,
     pub component_bytes: Vec<u8>,
     pub bundle_bytes: Vec<u8>,
-}
-
-pub fn server_version(client_version: &str) -> Result<Option<String>> {
-    let file_path = format!("{}/{}", WORKING_DIRECTORY, "credentials_full");
-    server_version_from_path(Path::new(&file_path), client_version)
-}
-
-fn parse_credentials_full(contents: &str) -> Result<Option<(String, String, String)>> {
-    if contents.trim().is_empty() {
-        return Ok(None);
-    }
-
-    if let Ok(parsed) = serde_json::from_str::<StoredUserCredentials>(contents) {
-        return Ok(Some((parsed.username, parsed.password, parsed.server_addr)));
-    }
-
-    if contents.len() <= NUM_USERNAME_CHARS + NUM_PASSWORD_CHARS {
-        return Ok(None);
-    }
-
-    Ok(Some((
-        contents[0..NUM_USERNAME_CHARS].to_string(),
-        contents[NUM_USERNAME_CHARS..NUM_USERNAME_CHARS + NUM_PASSWORD_CHARS].to_string(),
-        contents[NUM_USERNAME_CHARS + NUM_PASSWORD_CHARS..].to_string(),
-    )))
-}
-
-fn server_version_from_path(file_path: &Path, client_version: &str) -> Result<Option<String>> {
-    let credentials_exist = fs::exists(file_path)?;
-    if !credentials_exist {
-        return Ok(None);
-    }
-
-    let user_credentials_contents = fs::read_to_string(file_path)?;
-    let Some((server_username, server_password, server_addr)) =
-        parse_credentials_full(&user_credentials_contents)?
-    else {
-        return Ok(None);
-    };
-
-    let response = reqwest::blocking::Client::new()
-        .get(format!("{}/status", server_addr.trim_end_matches('/')))
-        .header("Client-Version", client_version)
-        .basic_auth(server_username, Some(server_password))
-        .send()?;
-
-    if !(response.status().is_success() || response.status() == reqwest::StatusCode::CONFLICT) {
-        return Ok(None);
-    }
-
-    if let Some(server_version) = response.headers().get("X-Server-Version") {
-        if let Ok(version_str) = server_version.to_str() {
-            return Ok(Some(version_str.to_string()));
-        }
-    }
-
-    Ok(None)
 }
 
 impl Component {
@@ -333,22 +266,6 @@ pub fn build_github_client(
         .default_headers(headers)
         .build()
         .context("building GitHub HTTP client")
-}
-
-// Fetches a specific release from GitHub's API endpoint for the target repo.
-// Callers are expected to apply additional policy checks (draft/published/immutable) before trusting
-// the returned release for installation decisions.
-pub fn fetch_versioned_release(
-    client: &Client,
-    owner_repo: &str,
-    tag_name: &str,
-) -> Result<GhRelease> {
-    let url = format!(
-        "https://api.github.com/repos/{}/releases/tags/{}",
-        owner_repo, tag_name
-    );
-    let resp = client.get(&url).send()?.error_for_status()?;
-    Ok(resp.json::<GhRelease>()?)
 }
 
 // Fetches the latest release metadata from GitHub's API endpoint for the target repo.
