@@ -451,7 +451,7 @@ install_rpicam_apps() {
   install_pinned_libcamera() {
   local ver="0.4.0+rpt20250213-1"
   local arch="arm64"
-  local base="https://mirror.fsmg.org.nz/pub/raspberrypi/debian/pool/main/libc/libcamera"
+  local base="https://archive.raspberrypi.com/debian/pool/main/libc/libcamera"
 
   echo "+ Pinning libcamera stack to $ver" >&2
 
