@@ -37,14 +37,15 @@ Below is a guide instructing how to get everything setup on the VPS and run from
 5. Update the list of available software packages by running `sudo apt-get update`
 6. Install the command line utility jq (used for parsing JSON) by running `apt-get install jq`
 
-The following steps assume you are using version v1.0.0. If we have a release after this and have not updated the version number here, please change the version number accordingly.
-1. Acquire the code from our latest release: `wget https://github.com/secluso/secluso/archive/refs/tags/v1.0.0.zip` 
-2. Unzip the zip file `apt install unzip` then `unzip v1.0.0.zip` (unzips into folder secluso-1.0.0) 
-3. Change your directory into the releases folder in the secluso-1.0.0 directory: `cd secluso-1.0.0/releases`
+The following steps assume you are using version v0.1.0. If we have a release after this and have not updated the version number here, please change the version number accordingly.
+1. Acquire the code from our latest release: `wget https://github.com/secluso/secluso/archive/refs/tags/v0.1.0.zip` 
+2. Unzip the zip file `apt install unzip` then `unzip v0.1.0.zip` (unzips into folder secluso-0.1.0) 
+3. Change your directory into the releases folder in the secluso-0.1.0 directory: `cd secluso-0.1.0/releases`
 4. Run the build.sh script: `./build.sh` with your preferred arguments, which are detailed in the description below.
-5. Fetch our latest release's binary/manifest ZIP file via wget, `wget https://github.com/secluso/secluso/releases/download/v1.0.0/secluso-v1.0.0.zip`  
-6. Unzip the zip file: `unzip secluso-v1.0.0.zip -d official-binaries` (unzips into folder official-binaries)
-7. Run the compare check: `./build.sh --compare builds/<TIMESTAMP> official-binaries` (replace <TIMESTAMP> with the run folder that contains `manifest.json` and `artifacts/`)
+5. Fetch our latest release's binary/manifest ZIP file via wget, `wget https://github.com/secluso/secluso/releases/download/v0.1.0/secluso-v0.1.0.zip`  
+6. Verify the zip file: `echo "483a2e347bb0cd895e00c2434576849641097e8574ba6ceceb151e009c64e77b  secluso-v0.1.0.zip" | sha256sum -c -`
+7. Unzip the zip file: `unzip secluso-v0.1.0.zip -d official-binaries` (unzips into folder official-binaries)
+8. Run the compare check: `./build.sh --compare builds/<TIMESTAMP> official-binaries` (replace <TIMESTAMP> with the run folder that contains `manifest.json` and `artifacts/`)
 
 If you see `REPRODUCIBILITY CHECK PASSED`, then you're all set! We do not recommend casually building with this in case your server is compromised, we only recommend using it as a verification against our released binaries.
 </details>
