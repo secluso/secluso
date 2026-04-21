@@ -11,8 +11,8 @@ Please report security vulnerabilities to us privately via email to [secluso@pro
     * Key fingerprint: 1A9A1BA3090FA78E946DC0C0301497925DCCE876
 
 * John Kaczman
-    * Public key:
-    * Key fingerprint:
+    * Public key: https://github.com/jkaczman.gpg
+    * Key fingerprint: 7785755F1A24FF04CE0E12575DF5E79230C57C4A
 
 Please include as much information as possible:
 
