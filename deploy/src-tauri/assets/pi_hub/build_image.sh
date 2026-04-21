@@ -369,7 +369,7 @@ if [[ "$HAS_SECLUSO" == "true" ]]; then
   if jq -e '.secluso.sig_keys | length > 0' "$CFG" >/dev/null 2>&1; then
     while read -r key; do
       SIG_ARGS="$SIG_ARGS --sig-key $key"
-    done < <(jq -r '.secluso.sig_keys[] | "\(.name):\(.github_user)"' "$CFG")
+    done < <(jq -r '.secluso.sig_keys[] | if (.fingerprint // "") != "" then "\(.name):\(.github_user):\(.fingerprint)" else "\(.name):\(.github_user)" end' "$CFG")
   fi
 
   run chroot "$ROOT" bash -lc "cd '${SECLUSO_INSTALL_DIR}/bin' && './${updater_name}' --help 2>/dev/null | grep -q -- '--component' || exit 1"

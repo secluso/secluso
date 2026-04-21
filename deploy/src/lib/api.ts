@@ -43,7 +43,7 @@ export interface ServerPlan {
   runtime: ServerRuntimePlan;
   secrets?: { serviceAccountKeyPath: string; serverUrl: string; userCredentialsQrPath: string };
   overwrite?: boolean;
-  sigKeys?: { name: string; githubUser: string }[];
+  sigKeys?: { name: string; githubUser: string; fingerprint?: string }[];
   binariesRepo?: string;
   githubToken?: string;
   manifestVersionOverride?: string;
@@ -81,7 +81,7 @@ export interface ImageBuildRequest {
   sshEnabled?: boolean;
   wifi?: { country: string; ssid: string; psk: string };
   binariesRepo?: string;
-  sigKeys?: { name: string; githubUser: string }[];
+  sigKeys?: { name: string; githubUser: string; fingerprint?: string }[];
   githubToken?: string;
 }
 

@@ -53,6 +53,8 @@ pub(crate) struct Wifi {
 pub(crate) struct SigKey {
   pub name: String,
   pub github_user: String,
+  #[serde(default)]
+  pub fingerprint: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]

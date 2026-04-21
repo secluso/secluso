@@ -57,6 +57,12 @@ fn resolve_signers(sig_keys: &[crate::provision_server::types::SigKey]) -> Vec<S
     .map(|key| Signer {
       label: key.name.trim().to_string(),
       github_user: key.github_user.trim().to_string(),
+      fingerprint: key
+        .fingerprint
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToOwned::to_owned),
     })
     .collect()
 }
@@ -245,6 +251,12 @@ pub fn run_provision(app: &AppHandle, run_id: Uuid, target: SshTarget, plan: Ser
           .map(|k| crate::pi_hub_provision::model::SigKey {
             name: k.name.trim().to_string(),
             github_user: k.github_user.trim().to_string(),
+            fingerprint: k
+              .fingerprint
+              .as_deref()
+              .map(str::trim)
+              .filter(|v| !v.is_empty())
+              .map(ToOwned::to_owned),
           })
           .collect::<Vec<_>>()
       });
@@ -321,7 +333,14 @@ pub fn run_provision(app: &AppHandle, run_id: Uuid, target: SshTarget, plan: Ser
         "SIG_KEYS",
         sig_keys
           .iter()
-          .map(|k| format!("{}:{}", k.name.trim(), k.github_user.trim()))
+          .map(|k| {
+            let mut value = format!("{}:{}", k.name.trim(), k.github_user.trim());
+            if let Some(fingerprint) = k.fingerprint.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+              value.push(':');
+              value.push_str(fingerprint);
+            }
+            value
+          })
           .filter(|v| !v.trim().is_empty())
           .collect::<Vec<_>>()
           .join(","),

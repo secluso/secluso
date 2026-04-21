@@ -23,7 +23,8 @@ const USAGE: &str = r#"
 Secluso updater.
 
 Usage:
-  secluso-update --component COMPONENT [--once] [--bundle-path PATH] [--interval-secs N] [--github-timeout-secs N] [--restart-unit UNIT] [--github-repo <OWNER/REPO>] [--sig-key <NAME:GITHUB_USER>]... [--update-hint-path PATH] [--hint-check-interval-secs N]
+  secluso-update --component COMPONENT [--once] [--bundle-path PATH] [--interval-secs N] [--github-timeout-secs N] [--restart-unit UNIT] [--github-repo <OWNER/REPO>] [--sig-key <NAME:GITHUB_USER[:FINGERPRINT]>]...
+  secluso-update --component COMPONENT [--once] [--bundle-path PATH] [--interval-secs N] [--github-timeout-secs N] [--restart-unit UNIT] [--github-repo <OWNER/REPO>] [--sig-key <NAME:GITHUB_USER[:FINGERPRINT]>]... [--update-hint-path PATH] [--hint-check-interval-secs N]
   secluso-update (--help | -h)
   secluso-update (--version | -v)
 
@@ -35,7 +36,7 @@ Options:
   --interval-secs N             Poll interval seconds [default: 60].
   --github-timeout-secs N       HTTP timeout seconds [default: 20].
   --github-repo <OWNER/REPO>    GitHub repo to poll for releases [default: secluso/secluso].
-  --sig-key <NAME:GITHUB_USER>  Signature label + GitHub user (repeatable).
+  --sig-key <NAME:GITHUB_USER[:FINGERPRINT]>  Signature label + GitHub user, with optional pinned fingerprint (repeatable).
   --once                        Run a single update check then exit.
   --bundle-path PATH            Use a local bundle zip instead of downloading from GitHub.
   --update-hint-path PATH       Path for the local update hint file (optional).

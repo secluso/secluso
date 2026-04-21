@@ -82,6 +82,12 @@ fn resolve_signers(sig_keys: Option<&[SigKey]>) -> Vec<Signer> {
         .map(|key| Signer {
             label: key.name.trim().to_string(),
             github_user: key.github_user.trim().to_string(),
+            fingerprint: key
+                .fingerprint
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(ToOwned::to_owned),
         })
         .collect()
 }
@@ -202,7 +208,7 @@ pub fn run_build_image(app: &AppHandle, run_id: Uuid, req: BuildImageRequest) ->
             sig_keys: req.sig_keys.clone().map(|keys| {
                 keys
                     .into_iter()
-                    .map(|k| SigKey { name: k.name, github_user: k.github_user })
+                    .map(|k| SigKey { name: k.name, github_user: k.github_user, fingerprint: k.fingerprint })
                     .collect()
             }),
             github_token: req.github_token.clone().filter(|v| !v.trim().is_empty()),

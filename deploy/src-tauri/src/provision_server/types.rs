@@ -60,6 +60,8 @@ pub struct AutoUpdaterPlan {
 pub struct SigKey {
   pub name: String,
   pub github_user: String,
+  #[serde(default)]
+  pub fingerprint: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

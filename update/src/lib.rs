@@ -38,14 +38,19 @@ pub const NUM_USERNAME_CHARS: usize = 14;
 pub const NUM_PASSWORD_CHARS: usize = 14;
 
 /// A signer entry: label controls signature filename, github_user controls accepted keyring source.
+///Fingerprint (optionally in developer mode) pins trust to one exact OpenPGP primary key
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Signer {
     pub label: String,
     pub github_user: String,
+    pub fingerprint: Option<String>,
 }
 
 /// Primary use point here two signatures, two github contributors, two different keys.
-const DEFAULT_SIGNERS: [(&str, &str); 2] = [("jkaczman", "jkaczman"), ("arrdalan", "arrdalan")];
+const DEFAULT_SIGNERS: [(&str, &str, &str); 2] = [
+    ("jkaczman", "jkaczman", "7785755F1A24FF04CE0E12575DF5E79230C57C4A"),
+    ("arrdalan", "arrdalan", "1A9A1BA3090FA78E946DC0C0301497925DCCE876"),
+];
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct GhRelease {
@@ -199,34 +204,46 @@ impl Component {
 pub fn default_signers() -> Vec<Signer> {
     DEFAULT_SIGNERS
         .iter()
-        .map(|(label, github_user)| Signer {
+        .map(|(label, github_user, fingerprint)| Signer {
             label: (*label).to_string(),
             github_user: (*github_user).to_string(),
+            fingerprint: Some((*fingerprint).to_string()),
         })
         .collect()
 }
 
 // Signer inputs are user-facing configuration, therefore intentionally strict parsing is used. We require
-// NAME:GITHUB_USER format with both fields present... any ambiguity here would weaken signature
+// NAME:GITHUB_USER[:FINGERPRINT] format with the first two fields present... any ambiguity here would weaken signature
 // file lookup and GitHub keyring binding later in the verification pipeline.
 pub fn parse_sig_keys(values: &[String]) -> Result<Vec<Signer>> {
     let mut signers = Vec::with_capacity(values.len());
     for raw in values {
-        let mut parts = raw.splitn(2, ':');
+        let mut parts = raw.splitn(3, ':');
         let label = parts.next().unwrap_or("").trim();
         let github_user = parts.next().unwrap_or("").trim();
+        let fingerprint = parts.next().map(str::trim).filter(|v| !v.is_empty());
         if label.is_empty() || github_user.is_empty() {
             bail!(
-                "Invalid --sig-key value {}. Expected NAME:GITHUB_USER with both parts non-empty.",
+                "Invalid --sig-key value {}. Expected NAME:GITHUB_USER[:FINGERPRINT] with NAME and GITHUB_USER non-empty.",
                 raw
             );
         }
         signers.push(Signer {
             label: label.to_string(),
             github_user: github_user.to_string(),
+            fingerprint: fingerprint
+                .map(normalize_signer_fingerprint)
+                .transpose()
+                .with_context(|| format!("Invalid signer fingerprint in --sig-key {}", raw))?,
         });
     }
     Ok(signers)
+}
+
+fn normalize_signer_fingerprint(raw: &str) -> Result<String> {
+    Ok(Fingerprint::from_hex(raw)
+        .with_context(|| format!("invalid OpenPGP fingerprint {}", raw))?
+        .to_hex())
 }
 
 // We allow either environment variable name in case of a future change in the env variable used to secluso only
@@ -373,13 +390,34 @@ fn download_and_verify_component_with_key_base(
     let mut key_cache: HashMap<String, (Vec<Cert>, HashSet<Fingerprint>)> = HashMap::new();
 
     for (signer, sig_bytes) in &sigs {
-        let (certs, allowed_fprs) = match key_cache.get(&signer.github_user) {
+        let (certs, fetched_fprs) = match key_cache.get(&signer.github_user) {
             Some(v) => v.clone(),
             None => {
                 let v = fetch_github_user_keyring(client, &signer.github_user, key_base_url)?;
                 key_cache.insert(signer.github_user.clone(), v.clone());
                 v
             }
+        };
+        let allowed_fprs = if let Some(required_fpr_hex) = signer.fingerprint.as_deref() {
+            let required_fpr = Fingerprint::from_hex(required_fpr_hex).with_context(|| {
+                format!(
+                    "configured signer fingerprint is invalid (label={}, github_user={})",
+                    signer.label, signer.github_user
+                )
+            })?;
+
+            if !fetched_fprs.contains(&required_fpr) {
+                bail!(
+                    "Configured fingerprint {} was not found in {}'s GitHub keyring (label={})",
+                    required_fpr.to_hex(),
+                    signer.github_user,
+                    signer.label
+                );
+            }
+
+            HashSet::from([required_fpr])
+        } else {
+            fetched_fprs
         };
 
         verify_manifest_sig_requires_user(
@@ -392,8 +430,10 @@ fn download_and_verify_component_with_key_base(
         )
         .with_context(|| {
             format!(
-                "Signature verification failed (label={}, github_user={})",
-                signer.label, signer.github_user
+                "Signature verification failed (label={}, github_user={}, fingerprint={})",
+                signer.label,
+                signer.github_user,
+                signer.fingerprint.as_deref().unwrap_or("<any>")
             )
         })?;
     }
