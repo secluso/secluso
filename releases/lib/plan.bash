@@ -173,7 +173,7 @@ setup_builder_if_needed() {
   docker buildx create \
     --name "$BUILDER" \
     --driver docker-container \
-    --driver-opt image=moby/buildkit:v0.23.0 \
+    --driver-opt image=docker.io/moby/buildkit@sha256:a38cf64aa6415899097fac5bfcf6c07c95d5a68c67a21e3d254ba398a3c9187f \
     --use >/dev/null
 
   cleanup_builder() {

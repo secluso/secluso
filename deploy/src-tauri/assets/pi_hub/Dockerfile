@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-FROM debian:bookworm
+FROM docker.io/debian@sha256:1d6cd964917a13b547d1ea392dff9a000c3f36070686ebc5c8755d53fb374435
 
 RUN set -eux; \
     apt-get update; \
