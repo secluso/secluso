@@ -38,3 +38,6 @@ video-rs= { version = "0.10.5", features = ["ndarray"], optional = true }
 crossbeam-channel = "0.5.15"
 flume = "0.11.1"
 include_dir="0.7.4"
+
+[patch.crates-io]
+ort-sys = { path = "../../third_party/ort-sys-2.0.0-rc.10" }

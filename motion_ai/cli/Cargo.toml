@@ -13,3 +13,6 @@ ffmpeg-next = { version = "7.1.0", default-features = false, optional = true }
 video-rs= { version = "0.10.5", features = ["ndarray"], optional = true }
 secluso-motion-ai = { path = "../pipeline" }
 anyhow = "1.0.102"
+
+[patch.crates-io]
+ort-sys = { path = "../../third_party/ort-sys-2.0.0-rc.10" }

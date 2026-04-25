@@ -46,3 +46,6 @@ linfa-clustering = { version = "0.8.1", optional = true }
 
 # Raspberry Specific Dependencies
 secluso-motion-ai = { path = "../motion_ai/pipeline", optional = true, default-features = false }
+
+[patch.crates-io]
+ort-sys = { path = "../third_party/ort-sys-2.0.0-rc.10" }
