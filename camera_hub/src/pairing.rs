@@ -873,9 +873,9 @@ pub fn get_names(
     let group_path = state_dir_path.join(group_filename);
 
     let (camera_name, group_name) = if first_time {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let cname: String = (0..NUM_RANDOM_CHARS)
-            .map(|_| rng.sample(rand::distributions::Alphanumeric) as char)
+            .map(|_| rng.sample(rand::distr::Alphanumeric) as char)
             .collect();
 
         let mut file = File::create(camera_path).expect("Could not create file");
@@ -884,7 +884,7 @@ pub fn get_names(
         file.sync_all().unwrap();
 
         let gname: String = (0..NUM_RANDOM_CHARS)
-            .map(|_| rng.sample(rand::distributions::Alphanumeric) as char)
+            .map(|_| rng.sample(rand::distr::Alphanumeric) as char)
             .collect();
 
         file = File::create(group_path).expect("Could not create file");

@@ -28,8 +28,8 @@ impl Camera for TestCamera {
     fn record_motion_video(&self, info: &VideoInfo, _duration: u64) -> io::Result<()> {
         let mut file = File::create(self.video_dir.clone() + "/" + &info.filename)?;
 
-        let mut rng = rand::thread_rng();
-        let data: Vec<u8> = (0..1024).map(|_| rng.gen()).collect();
+        let mut rng = rand::rng();
+        let data: Vec<u8> = (0..1024).map(|_| rng.random()).collect();
 
         file.write_all(&data)?;
 

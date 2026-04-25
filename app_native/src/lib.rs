@@ -5,6 +5,7 @@
 use anyhow::anyhow;
 use anyhow::Context;
 use log::{debug, error, info};
+use rand::distr::Alphanumeric;
 use rand::Rng;
 use secluso_client_lib::config::{
     Heartbeat, HeartbeatRequest, HeartbeatResult, OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE,
@@ -79,9 +80,9 @@ impl Clients {
 
 fn get_app_name(first_time: bool, file_dir: String, filename: String) -> String {
     let app_name = if first_time {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let aname: String = (0..NUM_RANDOM_CHARS)
-            .map(|_| rng.sample(rand::distributions::Alphanumeric) as char)
+            .map(|_| rng.sample(Alphanumeric) as char)
             .collect();
 
         let mut file =

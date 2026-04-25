@@ -3,8 +3,8 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
 use anyhow::Context;
-use rand::distributions::Uniform;
-use rand::{thread_rng, Rng};
+use rand::distr::Uniform;
+use rand::Rng;
 use std::io;
 
 pub const NUM_USERNAME_CHARS: usize = 14;
@@ -77,10 +77,10 @@ pub fn generate_random(num_chars: usize, special_characters: bool) -> String {
                            0123456789"
     };
 
-    let mut rng = thread_rng();
+    let mut rng = rand::rng();
     (0..num_chars)
         .map(|_| {
-            let idx = rng.sample(Uniform::new(0, charset.len()));
+            let idx = rng.sample(Uniform::new(0, charset.len()).unwrap());
             charset[idx] as char
         })
         .collect()

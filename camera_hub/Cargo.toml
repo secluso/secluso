@@ -19,7 +19,7 @@ env_logger = "0.11.9"
 log = { version = "0.4.29", optional = true }
 serde = "1.0"
 serde_derive = "1.0"
-rand="0.8"
+rand = "0.9.4"
 bincode = "1.2.1"
 secluso-client-lib = { path = "../client_lib", features = ["http_client"] }
 secluso-client-server-lib = { path = "../client_server_lib" }

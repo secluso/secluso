@@ -13,8 +13,8 @@ use std::path::Path;
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_traits::random::OpenMlsRand;
 use openmls_traits::OpenMlsProvider;
-use rand::distributions::Uniform;
-use rand::{thread_rng, Rng};
+use rand::distr::Uniform;
+use rand::Rng;
 
 pub const NUM_SECRET_BYTES: usize = 72;
 pub const CAMERA_SECRET_VERSION: &str = "v1.2";
@@ -132,10 +132,10 @@ pub fn generate_random(num_chars: usize, special_characters: bool) -> String {
                            0123456789"
     };
 
-    let mut rng = thread_rng();
+    let mut rng = rand::rng();
     (0..num_chars)
         .map(|_| {
-            let idx = rng.sample(Uniform::new(0, charset.len()));
+            let idx = rng.sample(Uniform::new(0, charset.len()).unwrap());
             charset[idx] as char
         })
         .collect()
