@@ -3,12 +3,11 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
 use anyhow::{Context, Result};
+use base64ct::{Base64UrlUnpadded, Encoding};
 use reqwest::Url;
 use secluso_server_backbone::types::{IosRelayBinding, NotificationTarget};
-use std::env;
-use web_push::{
-    ContentEncoding, IsahcWebPushClient, SubscriptionInfo, WebPushClient, WebPushMessageBuilder,
-};
+use std::{env, time::Duration};
+use web_push_native::{p256, Auth, WebPushBuilder};
 
 pub const UNIFIEDPUSH_ALLOWED_HOSTS_ENV: &str = "SECLUSO_UNIFIEDPUSH_ALLOWED_HOSTS";
 
@@ -260,15 +259,46 @@ pub async fn send_notification(
     payload: &[u8],
 ) -> Result<()> {
     let endpoint_url = policy.validate_endpoint_url(endpoint_url)?.to_string();
-    let subscription_info =
-        SubscriptionInfo::new(endpoint_url, pub_key.to_string(), auth.to_string());
+    let endpoint = endpoint_url
+        .parse()
+        .with_context(|| format!("Invalid UnifiedPush endpoint URI: {endpoint_url}"))?;
+    let pub_key = Base64UrlUnpadded::decode_vec(pub_key)
+        .context("UnifiedPush public key is not valid base64url")?;
+    let ua_public = p256::PublicKey::from_sec1_bytes(&pub_key)
+        .context("UnifiedPush public key is not a valid P-256 point")?;
+    let auth = Base64UrlUnpadded::decode_vec(auth)
+        .context("UnifiedPush auth secret is not valid base64url")?;
+    let auth: [u8; 16] = auth
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("UnifiedPush auth secret must decode to 16 bytes."))?;
+    let ua_auth: Auth = auth.into();
 
-    let mut builder = WebPushMessageBuilder::new(&subscription_info);
-    builder.set_payload(ContentEncoding::Aes128Gcm, payload);
-    builder.set_ttl(60);
+    let request = WebPushBuilder::new(endpoint, ua_public, ua_auth)
+        .with_valid_duration(Duration::from_secs(60))
+        .build(payload.to_vec())
+        .context("Failed to build UnifiedPush request")?;
 
-    let client = IsahcWebPushClient::new()?;
-    client.send(builder.build()?).await?;
+    let request_url = request.uri().to_string();
+    let method = reqwest::Method::from_bytes(request.method().as_str().as_bytes())
+        .context("Failed to convert UnifiedPush HTTP method")?;
+    let client = reqwest::Client::new();
+    let mut request_builder = client.request(method, request_url);
+    for (name, value) in request.headers() {
+        request_builder = request_builder.header(name, value);
+    }
+    let response = request_builder
+        .body(request.into_body())
+        .send()
+        .await
+        .context("UnifiedPush request failed")?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "<failed to read response body>".to_string());
+        anyhow::bail!("UnifiedPush endpoint returned {}: {}", status, body);
+    }
     Ok(())
 }
 
