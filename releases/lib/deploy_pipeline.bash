@@ -119,12 +119,14 @@ record_macos_app_payload_artifacts() {
   local app_name
   app_name="$(basename "$app_dir")"
 
-  local exec_dir="$app_dir/Contents/MacOS"
-  [[ -d "$exec_dir" ]] || die "Missing macOS app executable directory: $exec_dir"
+  local contents_dir="$app_dir/Contents"
+  [[ -d "$contents_dir" ]] || die "Missing macOS app Contents directory: $contents_dir"
 
   # Capture deterministic app payload files instead of dmg container bytes.
+  # Keep the app bundle intact enough to launch locally by preserving resources such as icon.icns.
+  # Exclude signing metadata from comparisons.
   local copied_any=0
-  local info_plist="$app_dir/Contents/Info.plist"
+  local info_plist="$contents_dir/Info.plist"
   if [[ -f "$info_plist" ]]; then
     copied_any=1
     local info_rel="app/${app_name}/Contents/Info.plist"
@@ -166,9 +168,16 @@ record_macos_app_payload_artifacts() {
       "$deploy_version" \
       "$deploy_lock_sha" \
       "$digest"
-  done < <(find "$exec_dir" -type f | LC_ALL=C sort)
+  done < <(
+    find "$contents_dir" -type f \
+      ! -path '*/Info.plist' \
+      ! -path '*/_CodeSignature/*' \
+      ! -name 'CodeResources' \
+      ! -name '.DS_Store' \
+      | LC_ALL=C sort
+  )
 
-  [[ "$copied_any" -eq 1 ]] || die "No executable payload files found under $exec_dir"
+  [[ "$copied_any" -eq 1 ]] || die "No macOS app payload files found under $contents_dir"
 }
 
 run_host_deploy_bundle_for_triple() {
@@ -186,13 +195,6 @@ run_host_deploy_bundle_for_triple() {
   local source_date_epoch="${12}"
   local deterministic_rustflags="${13}"
   local effective_rustflags="$deterministic_rustflags"
-
-  if is_apple_triple "$triple"; then
-    local no_uuid_flag="-C link-arg=-Wl,-no_uuid"
-    if [[ "$effective_rustflags" != *"$no_uuid_flag"* ]]; then
-      effective_rustflags="${effective_rustflags:+$effective_rustflags }$no_uuid_flag"
-    fi
-  fi
 
   # Keep build-output path stable across run1/run2 so build-script-generated
   # absolute paths do not introduce per-run entropy into the final binary.

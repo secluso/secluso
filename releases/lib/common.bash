@@ -73,6 +73,97 @@ sha256_stdin() {
   fi
 }
 
+normalized_macho_sha256_file() {
+  local file_path="$1"
+
+  # This is intentionally not a general-purpose Mach-O canonicalizer.
+  # It is a (narrow) comparison helper for release verification, specifically for cases where the executable payload should match but Apple signing/related post-processing mutate some bytes in some (predictable) places.
+  #
+  # Current normalization policy we use here:
+  # [1] zero LC_UUID because it is per-build identity metadata rather than payload
+  # [2] zero LC_CODE_SIGNATURE and its detached blob because signing always rewrites that area
+  # [3] zero selected __LINKEDIT size fields that move around with signing
+  # [4] truncate from the earliest signature blob offset onward so trailing ignature-only bytes do not affect the comparison hash
+  perl -MDigest::SHA=sha256_hex -e '
+    use strict;
+    use warnings;
+
+    sub u32le {
+      return unpack("V", substr($_[0], $_[1], 4));
+    }
+
+    my $path = shift @ARGV;
+    open my $fh, "<", $path or die "open($path): $!";
+    binmode $fh;
+    local $/;
+    my $data = <$fh>;
+
+    my $magic = u32le($data, 0);
+    if ($magic == 0xfeedfacf) {
+      # Thin 64-bit little-endian Mach-O header. Load commands start at byte 32.
+      my $ncmds = u32le($data, 16);
+      my $offset = 32;
+      my $signature_offset;
+
+      for (my $i = 0; $i < $ncmds; $i++) {
+        last if $offset + 8 > length($data);
+        my $cmd = u32le($data, $offset);
+        my $cmdsize = u32le($data, $offset + 4);
+        last if $cmdsize < 8 || $offset + $cmdsize > length($data);
+
+        if ($cmd == 0x19) {
+          # LC_SEGMENT_64.
+          # When the segment is __LINKEDIT, signing can move around bookkeeping in ways that change these size fields without changing the code/data payload we care about reproducing.
+          my $segname = substr($data, $offset + 8, 16);
+          $segname =~ s/\0.*$//s;
+          if ($segname eq "__LINKEDIT") {
+            # Zero vmsize and filesize within this load command.
+            substr($data, $offset + 32, 8) = "\0" x 8;
+            substr($data, $offset + 48, 8) = "\0" x 8;
+          }
+        } elsif ($cmd == 0x1b) {
+          # LC_UUID is expected to vary between otherwise equivalent builds, so we drop the entire command from the comparison view.
+          substr($data, $offset, $cmdsize) = "\0" x $cmdsize;
+        } elsif ($cmd == 0x1d) {
+          # LC_CODE_SIGNATURE points to the detached signature blob.
+          # Release signing rewrites both the command metadata and the blob contents, so neither should participate in payload comparison.
+          my $dataoff = u32le($data, $offset + 8);
+          my $datasize = u32le($data, $offset + 12);
+          if (!defined($signature_offset) || $dataoff < $signature_offset) {
+            $signature_offset = $dataoff;
+          }
+          if ($dataoff + $datasize <= length($data)) {
+            substr($data, $dataoff, $datasize) = "\0" x $datasize;
+          }
+          substr($data, $offset, $cmdsize) = "\0" x $cmdsize;
+        }
+
+        $offset += $cmdsize;
+      }
+
+      if (defined($signature_offset) && $signature_offset <= length($data)) {
+        # Drop all bytes from the first signature blob onward.
+        # In our current outputs that trailing region is signature-owned, so this prevents release signing noise from surviving the earlier load-command edits.
+        # TODO: tighten this to discard only bytes we can prove belong to the code-signature region, instead of truncating the entire suffix from the first signature offset onward.
+        substr($data, $signature_offset) = "";
+      }
+    }
+
+    print sha256_hex($data);
+  ' "$file_path"
+}
+
+compare_hash_for_file() {
+  local file_path="$1"
+
+  if command -v file >/dev/null 2>&1 && file -b "$file_path" | grep -q 'Mach-O'; then
+    normalized_macho_sha256_file "$file_path"
+    return
+  fi
+
+  sha256_file "$file_path"
+}
+
 lookup_rust_digest() {
   local triple="$1"
   local key

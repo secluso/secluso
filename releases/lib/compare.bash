@@ -13,7 +13,20 @@
 # For each overlapping artifact key we validate:
 # 1) Build-input metadata (crate, version, lock digest, toolchain digest).
 # 2) Manifest hash presence / correctness against on-disk files.
-# 3) Hash equality between the two runs.
+# 3) (Comparison-)hash equality between the two runs.
+#
+# Step 2 is intentionally raw-byte strict.
+# A run directory is only trustworthy if the manifest sha256 still matches the file that is actually on disk.
+#
+# Step 3 is where format-aware normalization is now used.
+# For right now, that mainly means Mach-O files, where release signing can rewrite LC_UUID / code-signature / __LINKEDIT details even when the underlying payload is otherwise equivalent.
+# Therefore, the code compares a normalized hash for those files while still preserving raw manifest integrity checks above.
+#
+# Security caveat to consider: compare no longer proves raw-byte equivalence for normalized Mach-O files.
+# If an attacker controlled an entire run directory, rewrote both the binary and its manifest, and managed to confine the malicious delta to bytes discarded by normalization, the cross-run compare step could miss it.
+# In our expected outputs that discarded region is release-signing-related metadata, but the current truncate-from-signature-offset rule is broader than a narrowly parsed code-signature blob.
+# Normalization must therefore stay very narrow, and Apple signature/notarization verification remains a separate required check.
+# A TODO is in place to be done before this PR is merged to work on this more.
 #
 # This layered approach makes failures actionable because it distinguishes input
 # drift from output drift, instead of collapsing everything into some very generic
@@ -159,9 +172,11 @@ compare_runs() {
       continue
     fi
 
-    local h1 h2
-    h1="$(sha256_file "$p1")"
-    h2="$(sha256_file "$p2")"
+    # First prove that each run is internally self-consistent.
+    # We always compare  the manifest's recorded raw sha256 against the real file bytes before any normalization logic is allowed to enter the picture.
+    local raw_h1 raw_h2
+    raw_h1="$(sha256_file "$p1")"
+    raw_h2="$(sha256_file "$p2")"
 
     if [[ -z "$sha1" || -z "$sha2" ]]; then
       echo "FAIL: manifest missing sha256 for $pkg | $tgt | $bin"
@@ -169,21 +184,27 @@ compare_runs() {
       continue
     fi
 
-    if [[ "$h1" != "$sha1" ]]; then
+    if [[ "$raw_h1" != "$sha1" ]]; then
       echo "FAIL: run1 manifest sha256 does not match file for $pkg | $tgt | $bin"
       echo "  manifest: $sha1"
-      echo "  file    : $h1"
+      echo "  file    : $raw_h1"
       status=1
       continue
     fi
 
-    if [[ "$h2" != "$sha2" ]]; then
+    if [[ "$raw_h2" != "$sha2" ]]; then
       echo "FAIL: run2 manifest sha256 does not match file for $pkg | $tgt | $bin"
       echo "  manifest: $sha2"
-      echo "  file    : $h2"
+      echo "  file    : $raw_h2"
       status=1
       continue
     fi
+
+    # Only after both run directories pass raw integrity checks do we compare cross-run output hashes.
+    # compare_hash_for_file() is usually just sha256, but it may normalize known release-only metadata for certain formats such as signed Mach-O binaries.
+    local h1 h2
+    h1="$(compare_hash_for_file "$p1")"
+    h2="$(compare_hash_for_file "$p2")"
 
     if [[ "$h1" != "$h2" ]]; then
       echo "DIFF: binary hash mismatch for $pkg | $tgt | $bin"
