@@ -514,6 +514,29 @@ find_valid_appimage_squashfs_offset() {
   return 1
 }
 
+escape_mksquashfs_sort_path() {
+  local input="$1"
+  local output=""
+  local i ch
+
+  # mksquashfs parses each -sort line as "<path> <priority>". It also does not understand shell-style quoting.
+  # a path containing spaces/tabs is split into multiple fields unless we escape the whitespace in the generated sort file ourselves.
+  #
+  # keep -sort enabled on purpose instead of dropping it to "fix" paths with spaces.
+  # The sort file is what gives us a deterministic inode/packing order inside the squashfs payload.
+  # Removing it would make AppImage layout depend more heavily on traversal order (and would weaken reproducibility)
+  # The right fix is therefore to preserve -sort and emit sort-file paths in the exact escaped format mksquashfs expects.
+  for (( i = 0; i < ${#input}; i++ )); do
+    ch="${input:i:1}"
+    case "$ch" in
+      [[:space:]]|\\) output+="\\$ch" ;;
+      *) output+="$ch" ;;
+    esac
+  done
+
+  printf '%s' "$output"
+}
+
 rebuild_appimage_deterministically_in_place() {
   local appimage_path="$1"
   local appdir="$2"
@@ -564,10 +587,11 @@ rebuild_appimage_deterministically_in_place() {
 
   local squash_order="$tmp/squashfs.sort"
   local priority_base=32000
-  local rel
+  local rel escaped_rel
   while IFS= read -r rel; do
     [[ -n "$rel" ]] || continue
-    printf '%s %d\n' "$rel" "$priority_base" >> "$squash_order"
+    escaped_rel="$(escape_mksquashfs_sort_path "$rel")"
+    printf '%s %d\n' "$escaped_rel" "$priority_base" >> "$squash_order"
     if (( priority_base > -32000 )); then
       priority_base=$((priority_base - 1))
     fi
