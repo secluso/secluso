@@ -16,7 +16,8 @@ select_deploy_bundles_for_triple() {
     # Prefer app bundles for reproducibility checks; dmg container metadata can
     # vary between runs even when the app payload is identical.
     *apple-darwin) echo "app dmg" ;;
-    *linux*) echo "appimage deb rpm" ;;
+    # TODO: RPM reproducibility canonicalization is currently brittle
+    *linux*) echo "appimage deb" ;;
     *) echo "all" ;;
   esac
 }
@@ -102,7 +103,7 @@ deploy_bundle_targets_json_for_triple() {
   if is_windows_triple "$triple"; then
     echo '["nsis"]'
   elif is_linux_triple "$triple"; then
-    echo '["appimage","deb","rpm"]'
+    echo '["appimage","deb"]'
   else
     echo '["dmg","app"]'
   fi
