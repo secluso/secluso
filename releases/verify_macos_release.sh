@@ -24,6 +24,7 @@ VERIFY_TRIPLE=""
 VERIFY_RELEASE_PATH=""
 VERIFY_KEEP_TEMP=0
 VERIFY_TMP_DIR=""
+VERIFY_EXPECTED_TEAM_ID="${VERIFY_EXPECTED_TEAM_ID:-8PYH264TD9}"
 
 verify_usage() {
   cat >&2 <<EOF
@@ -71,6 +72,7 @@ parse_verify_args() {
 
 ensure_verify_tools() {
   require_tool codesign
+  require_tool spctl
   require_tool file
   require_tool find
   require_tool diff
@@ -136,6 +138,44 @@ materialize_app_copy() {
       die "Unsupported release input: $source_path (expected .app or .zip)"
       ;;
   esac
+}
+
+verify_release_signing_policy() {
+  local release_app="$1"
+  local local_app="$2"
+  [[ -d "$release_app" ]] || die "Release app bundle not found for signing-policy check: $release_app"
+  [[ -d "$local_app" ]] || die "Local app bundle not found for signing-policy check: $local_app"
+
+  # Enforce the Apple-side release policy before we do any signed-vs-unsigned equivalence work.
+  # is the downloaded release still a valid Developer ID / notarized app with the identity and runtime properties we expect?
+  codesign --verify --deep --strict --verbose=2 "$release_app"
+
+  local release_meta release_identifier local_identifier release_team_id
+  release_meta="$(codesign -dvvv "$release_app" 2>&1)" || die "Failed to inspect release signing metadata: $release_app"
+  release_identifier="$(awk -F= '/^Identifier=/{print $2; exit}' <<<"$release_meta")"
+  local_identifier="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$local_app/Contents/Info.plist" 2>/dev/null || true)"
+
+  # The signed release should present the same bundle identifier as the local reproducible build rather than a differently labeled app.
+  [[ -n "$release_identifier" ]] || die "Release signing metadata is missing Identifier: $release_app"
+  [[ -n "$local_identifier" ]] || die "Local app Info.plist is missing CFBundleIdentifier: $local_app"
+  [[ "$release_identifier" == "$local_identifier" ]] || die "Release identifier mismatch: expected $local_identifier, got $release_identifier"
+
+  release_team_id="$(awk -F= '/^TeamIdentifier=/{print $2; exit}' <<<"$release_meta")"
+
+  # Pin the signing team so a validly signed app from some other developer account does not pass this check.
+  [[ -n "$release_team_id" ]] || die "Release signing metadata is missing TeamIdentifier: $release_app"
+  [[ "$release_team_id" == "$VERIFY_EXPECTED_TEAM_ID" ]] || die "Release TeamIdentifier mismatch: expected $VERIFY_EXPECTED_TEAM_ID, got $release_team_id"
+
+  # Require the core distribution properties Apple expects for outside-App-Store delivery: hardened runtime, a secure timestamp, and a stapled notarization ticket on the artifact being checked
+  grep -q 'flags=0x10000(runtime)' <<<"$release_meta" || die "Release is missing hardened runtime flag: $release_app"
+  grep -q '^Runtime Version=' <<<"$release_meta" || die "Release signing metadata is missing Runtime Version: $release_app"
+  grep -q '^CMSDigest=' <<<"$release_meta" || die "Release signing metadata is missing CMSDigest: $release_app"
+  grep -q '^Notarization Ticket=stapled' <<<"$release_meta" || die "Release is missing a stapled notarization ticket: $release_app"
+
+  # complements codesign metadata checks by exercising Apple's execution policy layer rather than only the embedded signature structure itself.
+  if ! spctl --assess --type execute --verbose=4 "$release_app"; then
+    echo "WARN: spctl assessment did not succeed for release copy: $release_app" >&2
+  fi
 }
 
 strip_bundle_signing() {
@@ -230,6 +270,8 @@ main() {
   local_app="$(materialize_app_copy "$local_source_app" "$local_root")"
   local release_app
   release_app="$(materialize_app_copy "$VERIFY_RELEASE_PATH" "$release_root")"
+
+  verify_release_signing_policy "$release_app" "$local_app"
 
   # Strip bundle-level signing noise from both trees before inventorying them
   # The Mach-O-specific normalization happens inside normalized_file_hash
