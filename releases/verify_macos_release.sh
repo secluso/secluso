@@ -166,7 +166,8 @@ normalized_file_hash() {
   local path="$1"
 
   if file -b "$path" | grep -q 'Mach-O'; then
-    # Compare on a normalized Mach-O representation so Apple-added signature and __LINKEDIT layout differences do not outweigh payload equivalence.
+    # Compare on a *narrowly* normalized Mach-O representation so Apple-added signature metadata does not outweigh payload equivalence.
+    # Unsupported layouts fail inside normalized_macho_sha256_file().
     normalized_macho_sha256_file "$path"
     return
   fi
@@ -196,7 +197,9 @@ write_app_inventory() {
 
     if [[ -f "$path" ]]; then
       local hash
-      hash="$(normalized_file_hash "$path")"
+      if ! hash="$(normalized_file_hash "$path")"; then
+        die "Failed to normalize file for release verification: $path"
+      fi
       printf 'F\t%s\t%s\t%s\n' "$mode" "$rel" "$hash" >> "$out_file"
     fi
   done < <(find "$app_dir" \( -type f -o -type l \) | LC_ALL=C sort)
