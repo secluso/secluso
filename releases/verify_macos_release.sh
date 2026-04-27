@@ -25,6 +25,7 @@ VERIFY_RELEASE_PATH=""
 VERIFY_KEEP_TEMP=0
 VERIFY_TMP_DIR=""
 VERIFY_EXPECTED_TEAM_ID="${VERIFY_EXPECTED_TEAM_ID:-8PYH264TD9}"
+VERIFY_EXPECTED_ENTITLEMENTS_PLIST="${VERIFY_EXPECTED_ENTITLEMENTS_PLIST:-${RELEASES_DIR}/expected_macos_entitlements.plist}"
 
 verify_usage() {
   cat >&2 <<EOF
@@ -78,6 +79,7 @@ ensure_verify_tools() {
   require_tool diff
   require_tool ditto
   require_tool perl
+  require_tool plutil
   require_tool xattr
   init_sha256_tool
 }
@@ -178,6 +180,275 @@ verify_release_signing_policy() {
   fi
 }
 
+write_empty_plist() {
+  local out_file="$1"
+  # codesign prints nothing when a binary has no entitlements at all.
+  # verifier wants a policy artifact either way, so we put together an empty plist to compare in that instance
+  cat > "$out_file" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict/>
+</plist>
+EOF
+}
+
+app_main_executable_path() {
+  local app_dir="$1"
+  [[ -d "$app_dir" ]] || die "App bundle not found: $app_dir"
+
+  local executable_name executable_path
+  executable_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app_dir/Contents/Info.plist" 2>/dev/null || true)"
+  [[ -n "$executable_name" ]] || die "App Info.plist is missing CFBundleExecutable: $app_dir"
+  executable_path="$app_dir/Contents/MacOS/$executable_name"
+  [[ -f "$executable_path" ]] || die "App executable not found: $executable_path"
+  printf '%s\n' "$executable_path"
+}
+
+release_main_executable_has_embedded_entitlements_blob() {
+  local executable_path="$1"
+  [[ -f "$executable_path" ]] || die "Executable not found for entitlements-blob check: $executable_path"
+
+  perl -e '
+    use strict;
+    use warnings;
+
+    sub u32le {
+      return unpack("V", substr($_[0], $_[1], 4));
+    }
+
+    sub u32be {
+      return unpack("N", substr($_[0], $_[1], 4));
+    }
+
+    my $path = shift @ARGV;
+    open my $fh, "<", $path or die "open($path): $!";
+    binmode $fh;
+    local $/;
+    my $data = <$fh>;
+    my $file_len = length($data);
+
+    die "unsupported Mach-O magic in $path\n" if u32le($data, 0) != 0xfeedfacf;
+
+    my $ncmds = u32le($data, 16);
+    my $offset = 32;
+    my ($sig_dataoff, $sig_datasize);
+
+    for (my $i = 0; $i < $ncmds; $i++) {
+      die "truncated Mach-O load commands in $path\n" if $offset + 8 > $file_len;
+      my $cmd = u32le($data, $offset);
+      my $cmdsize = u32le($data, $offset + 4);
+      die "invalid load command size in $path\n" if $cmdsize < 8 || $offset + $cmdsize > $file_len;
+
+      if ($cmd == 0x1d) {
+        die "unexpected LC_CODE_SIGNATURE size in $path\n" if $cmdsize < 16;
+        die "multiple LC_CODE_SIGNATURE commands in $path\n" if defined $sig_dataoff;
+        $sig_dataoff = u32le($data, $offset + 8);
+        $sig_datasize = u32le($data, $offset + 12);
+      }
+
+      $offset += $cmdsize;
+    }
+
+    die "missing LC_CODE_SIGNATURE in $path\n" if !defined $sig_dataoff;
+    die "empty LC_CODE_SIGNATURE in $path\n" if $sig_datasize == 0;
+    die "LC_CODE_SIGNATURE exceeds file in $path\n" if $sig_dataoff + $sig_datasize > $file_len;
+    die "LC_CODE_SIGNATURE too short for SuperBlob header in $path\n" if $sig_datasize < 12;
+
+    my $sig = substr($data, $sig_dataoff, $sig_datasize);
+    die "LC_CODE_SIGNATURE is not a SuperBlob in $path\n" if u32be($sig, 0) != 0xfade0cc0;
+
+    my $superblob_len = u32be($sig, 4);
+    my $count = u32be($sig, 8);
+    my $index_end = 12 + ($count * 8);
+
+    die "SuperBlob length too small in $path\n" if $superblob_len < $index_end;
+    die "SuperBlob length exceeds LC_CODE_SIGNATURE size in $path\n" if $superblob_len > $sig_datasize;
+
+    for (my $i = 0; $i < $count; $i++) {
+      my $entry_off = 12 + ($i * 8);
+      my $blob_off = u32be($sig, $entry_off + 4);
+      die "SuperBlob index points outside SuperBlob in $path\n" if $blob_off + 8 > $superblob_len;
+      my $blob_magic = u32be($sig, $blob_off);
+      if ($blob_magic == 0xfade7171 || $blob_magic == 0xfade7172) {
+        exit 0;
+      }
+    }
+
+    exit 1;
+  ' "$executable_path"
+}
+
+verify_release_entitlements_policy() {
+  local release_app="$1"
+  [[ -d "$release_app" ]] || die "Release app bundle not found for entitlements check: $release_app"
+  [[ -f "$VERIFY_EXPECTED_ENTITLEMENTS_PLIST" ]] || die "Expected entitlements plist not found: $VERIFY_EXPECTED_ENTITLEMENTS_PLIST"
+
+  local expected_xml actual_raw actual_xml release_main_executable
+  expected_xml="$(mktemp)"
+  actual_raw="$(mktemp)"
+  actual_xml="$(mktemp)"
+  release_main_executable="$(app_main_executable_path "$release_app")"
+
+  # Explicitly policy check what powers does the signed app request from macOS at runtime because they live inside the signature blob we do not compare byte-for-byte
+  plutil -convert xml1 -o "$expected_xml" "$VERIFY_EXPECTED_ENTITLEMENTS_PLIST"
+  codesign -d --entitlements - "$release_app" >"$actual_raw" 2>/dev/null || die "Failed to extract entitlements from release app: $release_app"
+
+  if [[ ! -s "$actual_raw" ]]; then
+    # Do not treat empty extractor output as automatically safe.
+    # Only default to an empty plist when the signed Mach-O structure itself has no embedded entitlement blobs at all.
+    # If there is an entitlement blob but codesign does not give us a plist, fail.
+    if release_main_executable_has_embedded_entitlements_blob "$release_main_executable"; then
+      rm -f "$expected_xml" "$actual_raw" "$actual_xml"
+      die "Release executable has embedded entitlement blobs, but no entitlement plist could be extracted: $release_main_executable"
+    fi
+
+    # No output from codesign and no embedded entitlement blobs
+    # Convert that into the same empty-plist as expected_macos_entitlements so a normal diff can enforce the expectation.
+    write_empty_plist "$actual_xml"
+  else
+    plutil -convert xml1 -o "$actual_xml" "$actual_raw"
+  fi
+
+  if ! diff -u "$expected_xml" "$actual_xml"; then
+    rm -f "$expected_xml" "$actual_raw" "$actual_xml"
+    die "Release entitlements do not match expected policy: $release_app"
+  fi
+
+  rm -f "$expected_xml" "$actual_raw" "$actual_xml"
+}
+
+verify_macho_signature_tail_matches_local() {
+  local local_path="$1"
+  local release_path="$2"
+  [[ -f "$local_path" ]] || die "Local Mach-O file not found for signature-tail check: $local_path"
+  [[ -f "$release_path" ]] || die "Release Mach-O file not found for signature-tail check: $release_path"
+
+  # The normalized Mach-O comparison removes the full LC_CODE_SIGNATURE region from the signed release view.
+  # Most of that region is Apple signing data, but we also see it leaves trailing bytes after the declared SuperBlob length.
+  # Those bytes are not executable code, but we still want them checked somehow.
+  #
+  # So when the signed artifact has a tail beyond the parsed SuperBlob, require that tail to be inherited unchanged from the local build at the same file offsets and within the local build's own LC_CODE_SIGNATURE region.
+  if ! perl -e '
+    use strict;
+    use warnings;
+
+    sub u32le {
+      return unpack("V", substr($_[0], $_[1], 4));
+    }
+
+    sub u64le {
+      return unpack("Q<", substr($_[0], $_[1], 8));
+    }
+
+    sub u32be {
+      return unpack("N", substr($_[0], $_[1], 4));
+    }
+
+    sub parse_macho_signature_region {
+      my ($data, $path) = @_;
+      my $file_len = length($data);
+      die "unsupported Mach-O magic in $path\n" if u32le($data, 0) != 0xfeedfacf;
+
+      my $ncmds = u32le($data, 16);
+      my $offset = 32;
+      my ($sig_dataoff, $sig_datasize);
+
+      for (my $i = 0; $i < $ncmds; $i++) {
+        die "truncated Mach-O load commands in $path\n" if $offset + 8 > $file_len;
+        my $cmd = u32le($data, $offset);
+        my $cmdsize = u32le($data, $offset + 4);
+        die "invalid load command size in $path\n" if $cmdsize < 8 || $offset + $cmdsize > $file_len;
+
+        if ($cmd == 0x1d) {
+          die "unexpected LC_CODE_SIGNATURE size in $path\n" if $cmdsize < 16;
+          die "multiple LC_CODE_SIGNATURE commands in $path\n" if defined $sig_dataoff;
+          $sig_dataoff = u32le($data, $offset + 8);
+          $sig_datasize = u32le($data, $offset + 12);
+        }
+
+        $offset += $cmdsize;
+      }
+
+      die "missing LC_CODE_SIGNATURE in $path\n" if !defined $sig_dataoff;
+      die "empty LC_CODE_SIGNATURE in $path\n" if $sig_datasize == 0;
+      die "LC_CODE_SIGNATURE exceeds file in $path\n" if $sig_dataoff + $sig_datasize > $file_len;
+
+      return ($sig_dataoff, $sig_datasize, $file_len);
+    }
+
+    my ($local_path, $release_path) = @ARGV;
+
+    open my $local_fh, "<", $local_path or die "open($local_path): $!";
+    open my $release_fh, "<", $release_path or die "open($release_path): $!";
+    binmode $local_fh;
+    binmode $release_fh;
+    local $/;
+    my $local_data = <$local_fh>;
+    my $release_data = <$release_fh>;
+
+    my ($local_sig_off, $local_sig_size) = parse_macho_signature_region($local_data, $local_path);
+    my ($release_sig_off, $release_sig_size) = parse_macho_signature_region($release_data, $release_path);
+
+    die "release LC_CODE_SIGNATURE too short for SuperBlob header in $release_path\n"
+      if $release_sig_size < 12;
+
+    my $superblob_magic = u32be($release_data, $release_sig_off);
+    die "release LC_CODE_SIGNATURE is not a SuperBlob in $release_path\n"
+      if $superblob_magic != 0xfade0cc0;
+
+    my $superblob_len = u32be($release_data, $release_sig_off + 4);
+    my $superblob_count = u32be($release_data, $release_sig_off + 8);
+    my $index_len = 12 + ($superblob_count * 8);
+
+    die "release SuperBlob length too small in $release_path\n"
+      if $superblob_len < $index_len;
+    die "release SuperBlob length exceeds LC_CODE_SIGNATURE size in $release_path\n"
+      if $superblob_len > $release_sig_size;
+
+    my $tail_len = $release_sig_size - $superblob_len;
+    exit 0 if $tail_len == 0;
+
+    my $tail_off = $release_sig_off + $superblob_len;
+    my $local_sig_end = $local_sig_off + $local_sig_size;
+    my $release_sig_end = $release_sig_off + $release_sig_size;
+
+    die "release signature tail starts before local LC_CODE_SIGNATURE in $release_path\n"
+      if $tail_off < $local_sig_off;
+    die "release signature tail exceeds local LC_CODE_SIGNATURE in $release_path\n"
+      if $tail_off + $tail_len > $local_sig_end;
+
+    my $release_tail = substr($release_data, $tail_off, $tail_len);
+    my $local_tail = substr($local_data, $tail_off, $tail_len);
+
+    die "release signature tail differs from local build bytes in $release_path\n"
+      if $release_tail ne $local_tail;
+  ' "$local_path" "$release_path"; then
+    die "Mach-O signature tail check failed: $release_path"
+  fi
+}
+
+verify_release_macho_signature_tails() {
+  local local_app="$1"
+  local release_app="$2"
+  [[ -d "$local_app" ]] || die "Local app bundle not found for Mach-O signature-tail check: $local_app"
+  [[ -d "$release_app" ]] || die "Release app bundle not found for Mach-O signature-tail check: $release_app"
+
+  while IFS= read -r release_path; do
+    [[ -n "$release_path" ]] || continue
+
+    if ! file -b "$release_path" | grep -q 'Mach-O'; then
+      continue
+    fi
+
+    local rel="${release_path#${release_app}/}"
+    local local_path="${local_app}/${rel}"
+    [[ -f "$local_path" ]] || die "Local Mach-O counterpart missing: $local_path"
+    file -b "$local_path" | grep -q 'Mach-O' || die "Local counterpart is not Mach-O: $local_path"
+    verify_macho_signature_tail_matches_local "$local_path" "$release_path"
+  done < <(find "$release_app" -type f | LC_ALL=C sort)
+}
+
 strip_bundle_signing() {
   local app_dir="$1"
   [[ -d "$app_dir" ]] || die "App bundle not found for normalization: $app_dir"
@@ -272,6 +543,8 @@ main() {
   release_app="$(materialize_app_copy "$VERIFY_RELEASE_PATH" "$release_root")"
 
   verify_release_signing_policy "$release_app" "$local_app"
+  verify_release_entitlements_policy "$release_app"
+  verify_release_macho_signature_tails "$local_app" "$release_app"
 
   # Strip bundle-level signing noise from both trees before inventorying them
   # The Mach-O-specific normalization happens inside normalized_file_hash
