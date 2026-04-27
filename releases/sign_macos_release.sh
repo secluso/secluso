@@ -194,7 +194,10 @@ main() {
     # We submit a temporary zip for Apple's verdict, then staple the accepted ticket back onto the app bundle before copying the final release outputs into OUT_DIR.
     # Some interesting info on this process located here: https://developer.apple.com/documentation/security/customizing-the-notarization-workflow#Staple-the-ticket-to-your-distribution
     local submit_zip="${tmp_dir}/submit.zip"
-    ditto -c -k --keepParent "$work_app" "$submit_zip"
+    # Avoid AppleDouble/resource-fork sidecars in the notarization upload
+    # Apple uses ditto for the notarization/distribution archive shape we need here (see cmd man ditto)
+    # ditto preserves HFS metadata by default; --norsrc turns that off so the upload zip stays limited to the signed app payload instead of picking up AppleDouble ._* sidecars or other host metadata.
+    ditto -c -k --keepParent --norsrc "$work_app" "$submit_zip"
     echo "Submitting for notarization with keychain profile ${SIGN_NOTARY_PROFILE}"
     xcrun notarytool submit "$submit_zip" --keychain-profile "$SIGN_NOTARY_PROFILE" --wait
     xcrun stapler staple -v "$work_app"
@@ -203,9 +206,33 @@ main() {
     echo "Skipping notarization: no --notary-profile provided"
   fi
 
+  # Preserve the signed bundle exactly as-validated and avoid packaging AppleDouble/resource-fork sidecars that can invalidate the result app
+  xattr -cr "$work_app" 2>/dev/null || true
+
   # Write both the final .app bundle and a zip containing that exact bundle.
   ditto "$work_app" "$final_app"
-  ditto -c -k --keepParent "$final_app" "$final_zip"
+  # The copy into OUT_DIR can pick up host-specific extended attributes such as com.apple.provenance.
+  # Clear them before the final verification/zip steps
+  # xattrs are filesystem metadata attached separately from the bundle contents.
+  # Clearing them here keeps the final artifact from inheriting host-specific metadata (that is outside the signed payload)
+  xattr -cr "$final_app" 2>/dev/null || true
+  # Re-verify after the final copy.
+  # Catches cases where moving the bundle into OUT_DIR changed enough metadata to invalidate the signature
+  # Apple treats post-signing bundle changes as signature-invalidating, so we verify again after the final copy rather than assuming from the earlier check
+  # --deep --strict makes this check closer to the way Apple validates nested signed content during release handling.
+  codesign --verify --deep --strict --verbose=2 "$final_app"
+  # Zip without AppleDouble/resource-fork entries
+  # The same --norsrc rule applies to the release zip: package the signed app bundle itself (not filesystem metadata tha can change across machines)
+  ditto -c -k --keepParent --norsrc "$final_app" "$final_zip"
+
+  local verify_tmp_dir verify_app
+  verify_tmp_dir="$(mktemp -d)"
+  ditto -x -k "$final_zip" "$verify_tmp_dir"
+  verify_app="${verify_tmp_dir}/$(basename "$source_app")"
+  # Verify the extracted payload (not just the source app/zip)
+  # Proves the actual artifact users download can be expanded back into a valid signed app.
+  codesign --verify --deep --strict --verbose=2 "$verify_app"
+  rm -rf "$verify_tmp_dir"
 
   local zip_sha
   zip_sha="$(sha256_file "$final_zip")"
