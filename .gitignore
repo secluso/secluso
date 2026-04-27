@@ -37,3 +37,7 @@ service_account_key.json
 release_work
 *.asc
 secluso-v*
+
+# Exclude local release staging outputs and imported signing material
+/releases/release_assets/
+*.p12
