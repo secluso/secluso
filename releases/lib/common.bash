@@ -153,17 +153,6 @@ normalized_macho_sha256_file() {
   ' "$file_path"
 }
 
-compare_hash_for_file() {
-  local file_path="$1"
-
-  if command -v file >/dev/null 2>&1 && file -b "$file_path" | grep -q 'Mach-O'; then
-    normalized_macho_sha256_file "$file_path"
-    return
-  fi
-
-  sha256_file "$file_path"
-}
-
 lookup_rust_digest() {
   local triple="$1"
   local key
