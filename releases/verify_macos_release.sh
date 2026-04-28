@@ -449,6 +449,206 @@ verify_release_macho_signature_tails() {
   done < <(find "$release_app" -type f | LC_ALL=C sort)
 }
 
+# codesign --verify only says the signed release is internally consistent.
+# It proves the CodeDirectory hashes match the bytes in that same signed app.
+# It does NOT prove those signed executable pages match the user's local source build.
+#
+# The normalized Mach-O compare in normalized_macho_sha256_file() is our project-specific equivalence view for the first-page/load-command region that Apple signing mutates.
+# This CodeDirectory check is not a replacement for that...
+#
+# This is the Apple-native complement for the stable pages AFTER slot 0.
+# We take Apple's own signed CodeDirectory page hashes from the release app and recompute them from the local build.
+# If those match, the bulk of the executable payload is no longer relying only on our custom normalization rules, while the normalized Mach-O compare is responsible for slot 0.
+verify_macho_codedirectory_pages_match_local() {
+  local local_path="$1"
+  local release_path="$2"
+  [[ -f "$local_path" ]] || die "Local Mach-O file not found for CodeDirectory page check: $local_path"
+  [[ -f "$release_path" ]] || die "Release Mach-O file not found for CodeDirectory page check: $release_path"
+
+  # Use Apple's own signed page-hash view for the stable post-header pages.
+  if ! perl -MDigest::SHA=sha1,sha256,sha384 -e '
+    use strict;
+    use warnings;
+
+    sub u32le {
+      return unpack("V", substr($_[0], $_[1], 4));
+    }
+
+    sub u64le {
+      return unpack("Q<", substr($_[0], $_[1], 8));
+    }
+
+    sub u32be {
+      return unpack("N", substr($_[0], $_[1], 4));
+    }
+
+    sub u64be {
+      return unpack("Q>", substr($_[0], $_[1], 8));
+    }
+
+    sub parse_macho_signature_region {
+      my ($data, $path) = @_;
+      my $file_len = length($data);
+      die "unsupported Mach-O magic in $path\n" if u32le($data, 0) != 0xfeedfacf;
+
+      my $ncmds = u32le($data, 16);
+      my $offset = 32;
+      my ($sig_dataoff, $sig_datasize);
+
+      for (my $i = 0; $i < $ncmds; $i++) {
+        die "truncated Mach-O load commands in $path\n" if $offset + 8 > $file_len;
+        my $cmd = u32le($data, $offset);
+        my $cmdsize = u32le($data, $offset + 4);
+        die "invalid load command size in $path\n" if $cmdsize < 8 || $offset + $cmdsize > $file_len;
+
+        if ($cmd == 0x1d) {
+          die "unexpected LC_CODE_SIGNATURE size in $path\n" if $cmdsize < 16;
+          die "multiple LC_CODE_SIGNATURE commands in $path\n" if defined $sig_dataoff;
+          $sig_dataoff = u32le($data, $offset + 8);
+          $sig_datasize = u32le($data, $offset + 12);
+        }
+
+        $offset += $cmdsize;
+      }
+
+      die "missing LC_CODE_SIGNATURE in $path\n" if !defined $sig_dataoff;
+      die "empty LC_CODE_SIGNATURE in $path\n" if $sig_datasize == 0;
+      die "LC_CODE_SIGNATURE exceeds file in $path\n" if $sig_dataoff + $sig_datasize > $file_len;
+
+      return substr($data, $sig_dataoff, $sig_datasize);
+    }
+
+    sub find_codedirectory_blob {
+      my ($sig, $path) = @_;
+      die "LC_CODE_SIGNATURE too short for SuperBlob header in $path\n" if length($sig) < 12;
+      die "LC_CODE_SIGNATURE is not a SuperBlob in $path\n" if u32be($sig, 0) != 0xfade0cc0;
+
+      my $superblob_len = u32be($sig, 4);
+      my $count = u32be($sig, 8);
+      my $index_end = 12 + ($count * 8);
+
+      die "SuperBlob length too small in $path\n" if $superblob_len < $index_end;
+      die "SuperBlob length exceeds LC_CODE_SIGNATURE size in $path\n" if $superblob_len > length($sig);
+
+      for (my $i = 0; $i < $count; $i++) {
+        my $entry_off = 12 + ($i * 8);
+        my $slot_type = u32be($sig, $entry_off);
+        my $blob_off = u32be($sig, $entry_off + 4);
+        die "SuperBlob index points outside SuperBlob in $path\n" if $blob_off + 8 > $superblob_len;
+        my $blob_magic = u32be($sig, $blob_off);
+        my $blob_len = u32be($sig, $blob_off + 4);
+        die "SuperBlob entry exceeds SuperBlob in $path\n" if $blob_off + $blob_len > $superblob_len;
+        if ($slot_type == 0) {
+          die "slot 0 is not a CodeDirectory in $path\n" if $blob_magic != 0xfade0c02;
+          return substr($sig, $blob_off, $blob_len);
+        }
+      }
+
+      die "missing CodeDirectory slot in $path\n";
+    }
+
+    sub hash_bytes {
+      my ($hash_type, $bytes) = @_;
+      if ($hash_type == 1) {
+        return sha1($bytes);
+      }
+      if ($hash_type == 2) {
+        return sha256($bytes);
+      }
+      if ($hash_type == 3) {
+        return substr(sha256($bytes), 0, 20);
+      }
+      if ($hash_type == 4) {
+        return sha384($bytes);
+      }
+      die "unsupported CodeDirectory hash type $hash_type\n";
+    }
+
+    my ($local_path, $release_path) = @ARGV;
+
+    open my $local_fh, "<", $local_path or die "open($local_path): $!";
+    open my $release_fh, "<", $release_path or die "open($release_path): $!";
+    binmode $local_fh;
+    binmode $release_fh;
+    local $/;
+    my $local_data = <$local_fh>;
+    my $release_data = <$release_fh>;
+
+    my $sig = parse_macho_signature_region($release_data, $release_path);
+    my $cd = find_codedirectory_blob($sig, $release_path);
+    die "CodeDirectory header truncated in $release_path\n" if length($cd) < 44;
+
+    my $cd_len = u32be($cd, 4);
+    my $version = u32be($cd, 8);
+    my $hash_offset = u32be($cd, 16);
+    my $n_special = u32be($cd, 24);
+    my $n_code = u32be($cd, 28);
+    my $code_limit = u32be($cd, 32);
+    my $hash_size = ord(substr($cd, 36, 1));
+    my $hash_type = ord(substr($cd, 37, 1));
+    my $page_exp = ord(substr($cd, 39, 1));
+
+    die "CodeDirectory length mismatch in $release_path\n" if $cd_len != length($cd);
+    die "unsupported scattered CodeDirectory in $release_path\n"
+      if $version >= 0x20100 && u32be($cd, 44) != 0;
+
+    if ($version >= 0x20300) {
+      die "CodeDirectory v0x20300 header truncated in $release_path\n" if length($cd) < 64;
+      my $code_limit64 = u64be($cd, 56);
+      $code_limit = $code_limit64 if $code_limit64 != 0;
+    }
+
+    my $page_size = $page_exp == 0 ? 0 : (1 << $page_exp);
+    my $expected_slots = $page_size == 0 ? 1 : int(($code_limit + $page_size - 1) / $page_size);
+    die "unexpected CodeDirectory slot count in $release_path\n" if $n_code != $expected_slots;
+    die "local file shorter than signed CodeDirectory codeLimit in $local_path\n"
+      if length($local_data) < $code_limit;
+    die "unsupported CodeDirectory page layout in $release_path\n" if $page_size == 0;
+
+    my $hash_base = $hash_offset - ($n_special * $hash_size);
+    die "CodeDirectory hash table starts before blob in $release_path\n" if $hash_base < 0;
+    die "CodeDirectory hash table exceeds blob in $release_path\n"
+      if $hash_offset + ($n_code * $hash_size) > length($cd);
+
+    # Slot 0 covers the first page of the Mach-O, which includes the header and load commands that Apple signing mutates (UUID, the LC_CODE_SIGNATURE command, and LINKEDIT sizing bookkeeping)
+    # We keep relying on the existing normalized Mach-O compare for that page and use CodeDirectory slot parity for the remaining stable pages
+    for (my $slot = 1; $slot < $n_code; $slot++) {
+      my $start = $slot * $page_size;
+      my $length = $page_size;
+      my $remaining = $code_limit - $start;
+      $length = $remaining if $remaining < $length;
+      my $page = substr($local_data, $start, $length);
+      my $actual = hash_bytes($hash_type, $page);
+      die "unexpected CodeDirectory hash size in $release_path\n" if length($actual) != $hash_size;
+      my $expected = substr($cd, $hash_offset + ($slot * $hash_size), $hash_size);
+      die "CodeDirectory page hash mismatch at slot $slot in $release_path\n" if $actual ne $expected;
+    }
+  ' "$local_path" "$release_path"; then
+    die "Mach-O CodeDirectory page verification failed: $release_path"
+  fi
+}
+
+verify_release_macho_codedirectory_pages() {
+  local local_app="$1"
+  local release_app="$2"
+  [[ -d "$local_app" ]] || die "Local app bundle not found for CodeDirectory page check: $local_app"
+  [[ -d "$release_app" ]] || die "Release app bundle not found for CodeDirectory page check: $release_app"
+
+  while IFS= read -r release_path; do
+    [[ -n "$release_path" ]] || continue
+
+    if ! file -b "$release_path" | grep -q 'Mach-O'; then
+      continue
+    fi
+
+    local rel="${release_path#${release_app}/}"
+    local local_path="${local_app}/${rel}"
+    [[ -f "$local_path" ]] || die "Local Mach-O counterpart missing: $local_path"
+    file -b "$local_path" | grep -q 'Mach-O' || die "Local counterpart is not Mach-O: $local_path"
+    verify_macho_codedirectory_pages_match_local "$local_path" "$release_path"
+  done < <(find "$release_app" -type f | LC_ALL=C sort)
+}
+
 strip_bundle_signing() {
   local app_dir="$1"
   [[ -d "$app_dir" ]] || die "App bundle not found for normalization: $app_dir"
@@ -544,6 +744,7 @@ main() {
 
   verify_release_signing_policy "$release_app" "$local_app"
   verify_release_entitlements_policy "$release_app"
+  verify_release_macho_codedirectory_pages "$local_app" "$release_app"
   verify_release_macho_signature_tails "$local_app" "$release_app"
 
   # Strip bundle-level signing noise from both trees before inventorying them
