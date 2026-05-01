@@ -20,10 +20,13 @@ use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use rocket::data::{Data, Limits, ToByteUnit};
 use rocket::fairing::{Fairing, Info, Kind};
-use rocket::http::Header;
+use rocket::http::{Header, Status};
+use rocket::request::{FromRequest, Outcome};
 use rocket::response::content::RawText;
 use rocket::response::stream::{Event, EventStream};
+use rocket::response::status::Custom;
 use rocket::serde::json::Json;
+use rocket::tokio;
 use rocket::tokio::fs::{self, File};
 use rocket::tokio::select;
 use rocket::tokio::sync::broadcast::{channel, Sender};
@@ -31,7 +34,8 @@ use rocket::tokio::sync::Mutex as AsyncMutex;
 use rocket::tokio::sync::Notify;
 use rocket::tokio::task;
 use rocket::tokio::time::timeout;
-use rocket::{tokio, Request, Response, Shutdown};
+use rocket::tokio::io::AsyncWriteExt;
+use rocket::{Response, Request, Shutdown};
 use secluso_server_backbone::types::{
     ConfigResponse, GroupTimestamp, MotionPairs, NotificationTarget, PairingRequest,
     PairingResponse, ServerStatus,
@@ -925,40 +929,125 @@ async fn livestream_end(camera: &str, auth: &BasicAuth) -> io::Result<()> {
     Ok(())
 }
 
+struct ExpectedCommandSize(u64);
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for ExpectedCommandSize {
+    type Error = String;
+
+    async fn from_request(req: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        match req.headers().get_one("X-Command-Size") {
+            Some(value) => match value.parse::<u64>() {
+                Ok(size) => Outcome::Success(ExpectedCommandSize(size)),
+                Err(_) => Outcome::Error((
+                    Status::BadRequest,
+                    "Invalid X-Command-Size header".to_string(),
+                )),
+            },
+            None => Outcome::Error((
+                Status::LengthRequired,
+                "Missing X-Command-Size header".to_string(),
+            )),
+        }
+    }
+}
+
 #[post("/config/<camera>", data = "<data>")]
 async fn config_command(
     camera: &str,
     data: Data<'_>,
+    expected_size: ExpectedCommandSize,
     auth: &BasicAuth,
     all_state: &rocket::State<AllEventState>,
-) -> io::Result<()> {
+) -> Result<(), Custom<String>> {
+    let expected_size = expected_size.0;
+    let max_size = MAX_COMMAND_FILE_SIZE.kibibytes().as_u64();
+
+    if expected_size > max_size {
+        return Err(Custom(
+            Status::PayloadTooLarge,
+            "Command is too large".to_string(),
+        ));
+    }
+
+    if expected_size == 0 {
+        return Err(Custom(
+            Status::BadRequest,
+            "Empty command upload is not allowed".to_string(),
+        ));
+    }
+
     let root = Path::new("data").join(&auth.username);
-    let camera_path = join_validated_child(&root, camera, "camera")?;
-    check_path_sandboxed(&root, &camera_path)?;
+    let camera_path = join_validated_child(&root, camera, "camera")
+        .map_err(internal_error)?;
+    check_path_sandboxed(&root, &camera_path)
+        .map_err(internal_error)?;
 
     if !camera_path.exists() {
-        fs::create_dir_all(&camera_path).await?;
+        fs::create_dir_all(&camera_path).await
+            .map_err(internal_error)?;
     }
 
     //FIXME: if we receive two commands back to back, one could overwrite the other.
     let command_file_name = "command".to_string();
-    let command_path = Path::new(&camera_path).join(&command_file_name);
-    check_path_sandboxed(&root, &command_path)?;
+    let command_path = camera_path.join(&command_file_name);
+    let temp_command_path = camera_path.join("command.partial");
 
-    let mut file = fs::File::create(&command_path).await?;
-    let mut stream = data.open(MAX_COMMAND_FILE_SIZE.kibibytes());
-    tokio::io::copy(&mut stream, &mut file).await?;
-    // Flush the file to disk
-    file.sync_all().await?;
+    check_path_sandboxed(&root, &command_path)
+        .map_err(internal_error)?;
+    check_path_sandboxed(&root, &temp_command_path)
+        .map_err(internal_error)?;
+
+    let result = async {
+        let mut file = fs::File::create(&temp_command_path).await?;
+        let mut stream = data.open(max_size.bytes());
+
+        let bytes_written = tokio::io::copy(&mut stream, &mut file).await?;
+
+        file.flush().await?;
+        file.sync_all().await?;
+        drop(file);
+
+        Ok::<u64, io::Error>(bytes_written)
+    }.await;
+
+    let bytes_written = match result {
+        Ok(n) => n,
+        Err(e) => {
+            let _ = fs::remove_file(&temp_command_path).await;
+            return Err(Custom(
+                Status::BadRequest,
+                format!("Failed to receive complete command: {e}"),
+            ));
+        }
+    };
+
+    if bytes_written != expected_size {
+        let _ = fs::remove_file(&temp_command_path).await;
+        return Err(Custom(
+            Status::BadRequest,
+            format!(
+                "Incomplete command upload: expected {expected_size} bytes, received {bytes_written} bytes"
+            ),
+        ));
+    }
+
+    fs::rename(&temp_command_path, &command_path).await
+        .map_err(internal_error)?;
 
     let user_state = get_user_state(all_state.inner().clone(), &auth.username);
 
     user_state
         .events
         .insert(camera.to_string(), command_file_name);
+
     let _ = user_state.sender.send(());
 
     Ok(())
+}
+
+fn internal_error(e: impl std::fmt::Display) -> Custom<String> {
+    Custom(Status::InternalServerError, e.to_string())
 }
 
 #[get("/config/<camera>")]

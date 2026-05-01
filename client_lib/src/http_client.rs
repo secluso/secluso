@@ -744,10 +744,20 @@ impl HttpClient {
     pub fn config_command(&self, group_name: &str, command: Vec<u8>) -> io::Result<()> {
         let server_url = format!("{}/config/{}", self.server_addr, group_name);
 
+        if command.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Error: empty config command",
+            ));
+        }
+
+        let expected_size = command.len().to_string();
+
         let client = Client::new();
         let response = self.authorized_headers(client
             .post(server_url))
             .header("Content-Type", "application/octet-stream")
+            .header("X-Command-Size", expected_size)
             .body(command)
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
