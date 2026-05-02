@@ -3,3 +3,4 @@ builds
 # Keep the macOS release helper scripts tracked
 !sign_macos_release.sh
 !verify_macos_release.sh
+!sign_windows_release.sh
