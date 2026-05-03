@@ -248,6 +248,177 @@ normalize_tree_timestamps() {
   done < <(find "$root" -mindepth 0 -print0 2>/dev/null | LC_ALL=C sort -z)
 }
 
+desktop_field_value() {
+  local field="$1"
+  local desktop_file="$2"
+  awk -F= -v k="$field" '
+    $1 == k {
+      sub(/^[^=]*=/, "", $0)
+      print
+      exit
+    }
+  ' "$desktop_file"
+}
+
+trim_matching_quotes() {
+  local value="$1"
+  if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+    value="${value#\"}"
+    value="${value%\"}"
+  fi
+  printf '%s\n' "$value"
+}
+
+extract_desktop_exec_command() {
+  local value="$1"
+  value="$(trim_matching_quotes "$value")"
+  value="${value#"${value%%[![:space:]]*}"}"
+  printf '%s\n' "${value%%[[:space:]]*}"
+}
+
+slugify_linux_desktop_id() {
+  local value="$1"
+  value="$(trim_matching_quotes "$value")"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+  printf '%s\n' "$value"
+}
+
+rewrite_desktop_file_for_linux_bundle() {
+  local desktop_file="$1"
+  local display_name="$2"
+  local desktop_id="$3"
+  local tmp_file="${desktop_file}.tmp"
+
+  awk -F= -v display_name="$display_name" -v desktop_id="$desktop_id" '
+    BEGIN {
+      saw_name = 0
+      saw_exec = 0
+      saw_icon = 0
+      saw_wmclass = 0
+    }
+    /^Name=/ {
+      print "Name=" display_name
+      saw_name = 1
+      next
+    }
+    /^Exec=/ {
+      print "Exec=" desktop_id
+      saw_exec = 1
+      next
+    }
+    /^Icon=/ {
+      print "Icon=" desktop_id
+      saw_icon = 1
+      next
+    }
+    /^StartupWMClass=/ {
+      print "StartupWMClass=" desktop_id
+      saw_wmclass = 1
+      next
+    }
+    { print }
+    END {
+      if (!saw_name) print "Name=" display_name
+      if (!saw_exec) print "Exec=" desktop_id
+      if (!saw_icon) print "Icon=" desktop_id
+      if (!saw_wmclass) print "StartupWMClass=" desktop_id
+    }
+  ' "$desktop_file" > "$tmp_file"
+  mv -f "$tmp_file" "$desktop_file"
+}
+
+normalize_linux_bundle_desktop_metadata() {
+  local root="$1"
+  local preferred_id="${2:-}"
+  local apps_dir="$root/usr/share/applications"
+  [[ -d "$apps_dir" ]] || return 0
+
+  local desktop_file=""
+  desktop_file="$(find "$apps_dir" -maxdepth 1 -type f -name '*.desktop' | LC_ALL=C sort | head -n 1)"
+  [[ -n "$desktop_file" && -f "$desktop_file" ]] || return 0
+
+  local display_name icon_name exec_value exec_command desktop_basename desktop_id
+  display_name="$(desktop_field_value "Name" "$desktop_file")"
+  icon_name="$(desktop_field_value "Icon" "$desktop_file")"
+  exec_value="$(desktop_field_value "Exec" "$desktop_file")"
+  exec_command="$(extract_desktop_exec_command "$exec_value")"
+  desktop_basename="$(basename "$desktop_file" .desktop)"
+
+  desktop_id="$preferred_id"
+  [[ -n "$desktop_id" ]] || desktop_id="$icon_name"
+  [[ -n "$desktop_id" ]] || desktop_id="$exec_command"
+  [[ -n "$desktop_id" ]] || desktop_id="$desktop_basename"
+  [[ -n "$desktop_id" ]] || desktop_id="$display_name"
+  desktop_id="$(slugify_linux_desktop_id "$desktop_id")"
+  [[ -n "$desktop_id" ]] || return 0
+  [[ -n "$display_name" ]] || display_name="$desktop_basename"
+  [[ -n "$display_name" ]] || display_name="$desktop_id"
+
+  local bin_dir="$root/usr/bin"
+  if [[ -d "$bin_dir" ]]; then
+    local current_bin=""
+    if [[ -n "$exec_command" && -f "$bin_dir/$exec_command" ]]; then
+      current_bin="$bin_dir/$exec_command"
+    elif [[ -f "$bin_dir/$desktop_basename" ]]; then
+      current_bin="$bin_dir/$desktop_basename"
+    elif [[ -f "$bin_dir/$display_name" ]]; then
+      current_bin="$bin_dir/$display_name"
+    fi
+
+    if [[ -n "$current_bin" && "$current_bin" != "$bin_dir/$desktop_id" && ! -e "$bin_dir/$desktop_id" ]]; then
+      mv -f "$current_bin" "$bin_dir/$desktop_id"
+    fi
+  fi
+
+  local icon_dir candidate_base candidate_path target_path
+  while IFS= read -r icon_dir; do
+    [[ -n "$icon_dir" ]] || continue
+    for candidate_base in "$icon_name" "$desktop_basename" "$display_name"; do
+      [[ -n "$candidate_base" ]] || continue
+      candidate_path="$icon_dir/${candidate_base}.png"
+      target_path="$icon_dir/${desktop_id}.png"
+      if [[ -f "$candidate_path" && "$candidate_path" != "$target_path" && ! -e "$target_path" ]]; then
+        mv -f "$candidate_path" "$target_path"
+      fi
+    done
+  done < <(find "$root/usr/share/icons/hicolor" -type d -path '*/apps' 2>/dev/null | LC_ALL=C sort)
+
+  rewrite_desktop_file_for_linux_bundle "$desktop_file" "$display_name" "$desktop_id"
+
+  local normalized_desktop="$apps_dir/${desktop_id}.desktop"
+  if [[ "$desktop_file" != "$normalized_desktop" ]]; then
+    mv -f "$desktop_file" "$normalized_desktop"
+    desktop_file="$normalized_desktop"
+  fi
+
+  if [[ -e "$root/AppRun" || -L "$root/.DirIcon" || -d "$root/apprun-hooks" ]]; then
+    find "$root" -maxdepth 1 -mindepth 1 \( -name '*.desktop' -o -name '*.png' \) -exec rm -f {} +
+
+    cp -f "$desktop_file" "$root/${desktop_id}.desktop"
+
+    local root_icon_source=""
+    local icon_size_dir
+    for icon_size_dir in 512x512 256x256@2 256x256 128x128 64x64 48x48 32x32 16x16; do
+      target_path="$root/usr/share/icons/hicolor/${icon_size_dir}/apps/${desktop_id}.png"
+      if [[ -f "$target_path" ]]; then
+        root_icon_source="$target_path"
+        break
+      fi
+    done
+    if [[ -z "$root_icon_source" ]]; then
+      while IFS= read -r target_path; do
+        root_icon_source="$target_path"
+        break
+      done < <(find "$root/usr/share/icons/hicolor" -type f -path "*/apps/${desktop_id}.png" 2>/dev/null | LC_ALL=C sort)
+    fi
+
+    if [[ -n "$root_icon_source" && -f "$root_icon_source" ]]; then
+      cp -f "$root_icon_source" "$root/${desktop_id}.png"
+      ln -sfn "${desktop_id}.png" "$root/.DirIcon"
+    fi
+  fi
+}
+
 resolve_linuxdeploy_binary() {
   local linuxdeploy_bin=""
   linuxdeploy_bin="$(find /root/.cache/tauri -maxdepth 1 -type f -name 'linuxdeploy-*.AppImage' ! -name 'linuxdeploy-plugin-*' | LC_ALL=C sort | head -n 1)"
@@ -328,6 +499,11 @@ rebuild_deb_deterministically_in_place() {
     return 1
   }
 
+  local package_name=""
+  if [[ -f "$control_dir/control" ]]; then
+    package_name="$(control_field_value "Package" "$control_dir/control")"
+  fi
+  normalize_linux_bundle_desktop_metadata "$data_dir" "$package_name"
   normalize_tree_timestamps "$control_dir"
   normalize_tree_timestamps "$data_dir"
 
@@ -537,6 +713,18 @@ escape_mksquashfs_sort_path() {
   printf '%s' "$output"
 }
 
+appimage_runtime_section_offset_hex() {
+  local runtime_path="$1"
+  local section_name="$2"
+
+  readelf -SW "$runtime_path" 2>/dev/null | awk -v section_name="$section_name" '
+    $2 == section_name {
+      print $5
+      exit
+    }
+  '
+}
+
 rebuild_appimage_deterministically_in_place() {
   local appimage_path="$1"
   local appdir="$2"
@@ -548,25 +736,25 @@ rebuild_appimage_deterministically_in_place() {
   local tmp
   tmp="$(mktemp -d)"
   local staged_appdir="$tmp/appdir.staged"
-  local runtime_path=""
-  local apprun_name
-  apprun_name="$(linux_apprun_name_for_target || true)"
-  if [[ -n "$apprun_name" && -x "/root/.cache/tauri/${apprun_name}" ]]; then
-    runtime_path="/root/.cache/tauri/${apprun_name}"
-  fi
-
-  if [[ -n "$runtime_path" ]]; then
-    cp -f "$runtime_path" "$tmp/runtime"
+  local fallback_offset=""
+  fallback_offset="$(find_valid_appimage_squashfs_offset "$appimage_path" || true)"
+  if [[ -n "$fallback_offset" ]]; then
+    dd if="$appimage_path" of="$tmp/runtime" bs=1 count="$fallback_offset" status=none
   else
-    local fallback_offset=""
-    fallback_offset="$(find_valid_appimage_squashfs_offset "$appimage_path" || true)"
-    [[ -n "$fallback_offset" ]] || {
+    local runtime_path=""
+    local apprun_name
+    apprun_name="$(linux_apprun_name_for_target || true)"
+    if [[ -n "$apprun_name" && -x "/root/.cache/tauri/${apprun_name}" ]]; then
+      runtime_path="/root/.cache/tauri/${apprun_name}"
+    fi
+    [[ -n "$runtime_path" ]] || {
       rm -rf "$tmp"
       return 1
     }
-    dd if="$appimage_path" of="$tmp/runtime" bs=1 count="$fallback_offset" status=none
+    cp -f "$runtime_path" "$tmp/runtime"
   fi
 
+  normalize_linux_bundle_desktop_metadata "$appdir"
   # Lets re-stage AppDir via sorted tar stream so inode creation order is deterministic
   # across runs before we generate a new squashfs....
   mkdir -p "$staged_appdir"
@@ -627,12 +815,23 @@ rebuild_appimage_deterministically_in_place() {
   perl -e 'print pack("Q<", $ARGV[0]);' "$runtime_size" > "$tmp/runtime-offset.bin"
   dd if="$tmp/runtime-offset.bin" of="$tmp/runtime" bs=1 seek=8 conv=notrunc status=none
 
-  local squash_sha id_hex
+  local squash_md5 squash_sha id_hex
+  local digest_offset_hex=""
   squash_sha="$(sha256sum "$tmp/payload.squashfs" 2>/dev/null | awk '{print $1}' || true)"
   [[ -n "$squash_sha" ]] || {
     rm -rf "$tmp"
     return 1
   }
+  squash_md5="$(md5sum "$tmp/payload.squashfs" 2>/dev/null | awk '{print $1}' || true)"
+  [[ -n "$squash_md5" ]] || {
+    rm -rf "$tmp"
+    return 1
+  }
+  digest_offset_hex="$(appimage_runtime_section_offset_hex "$tmp/runtime" ".digest_md5" || true)"
+  if [[ -n "$digest_offset_hex" ]]; then
+    perl -e 'print pack("H*", $ARGV[0]);' "$squash_md5" > "$tmp/runtime-digest-md5.bin"
+    dd if="$tmp/runtime-digest-md5.bin" of="$tmp/runtime" bs=1 seek="$((16#$digest_offset_hex))" conv=notrunc status=none
+  fi
   id_hex="${squash_sha:0:32}"
   if [[ -n "$id_hex" && "$runtime_size" -ge 16 ]]; then
     perl -e 'print pack("H*", $ARGV[0]);' "$id_hex" > "$tmp/runtime-id.bin"
