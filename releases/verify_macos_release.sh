@@ -30,8 +30,12 @@ VERIFY_EXPECTED_ENTITLEMENTS_PLIST="${VERIFY_EXPECTED_ENTITLEMENTS_PLIST:-${RELE
 verify_usage() {
   cat >&2 <<EOF
 Usage:
-  ${PROGRAM_NAME} --local-app /path/to/Secluso\\ Deploy.app --release /path/to/release.app.zip
-  ${PROGRAM_NAME} --local-run RUN_DIR --triple {x86_64-apple-darwin|aarch64-apple-darwin} --release /path/to/release.app.zip
+  ${PROGRAM_NAME} --local-app /path/to/Secluso\\ Deploy.app --release /path/to/release.app.zip [--expected-team-id TEAMID] [--expected-entitlements-plist PATH]
+  ${PROGRAM_NAME} --local-run RUN_DIR --triple {x86_64-apple-darwin|aarch64-apple-darwin} --release /path/to/release.app.zip [--expected-team-id TEAMID] [--expected-entitlements-plist PATH]
+
+Environment:
+  VERIFY_EXPECTED_TEAM_ID             expected Apple Developer Team ID (default: 8PYH264TD9)
+  VERIFY_EXPECTED_ENTITLEMENTS_PLIST  expected release entitlements plist
 
 EOF
 }
@@ -53,6 +57,14 @@ parse_verify_args() {
         ;;
       --release)
         VERIFY_RELEASE_PATH="${2:?}"
+        shift 2
+        ;;
+      --expected-team-id)
+        VERIFY_EXPECTED_TEAM_ID="${2:?}"
+        shift 2
+        ;;
+      --expected-entitlements-plist)
+        VERIFY_EXPECTED_ENTITLEMENTS_PLIST="${2:?}"
         shift 2
         ;;
       --keep-temp)
@@ -81,6 +93,7 @@ ensure_verify_tools() {
   require_tool perl
   require_tool plutil
   require_tool xattr
+  require_tool xcrun
   init_sha256_tool
 }
 
@@ -168,16 +181,15 @@ verify_release_signing_policy() {
   [[ -n "$release_team_id" ]] || die "Release signing metadata is missing TeamIdentifier: $release_app"
   [[ "$release_team_id" == "$VERIFY_EXPECTED_TEAM_ID" ]] || die "Release TeamIdentifier mismatch: expected $VERIFY_EXPECTED_TEAM_ID, got $release_team_id"
 
-  # Require the core distribution properties Apple expects for outside-App-Store delivery: hardened runtime, a secure timestamp, and a stapled notarization ticket on the artifact being checked
+  # Require the core distribution properties this release policy expects for outside-App-Store delivery (hardened runtime metadata, CMS signing metadata, and a stapled notarization ticket on the artifact being checked)
   grep -q 'flags=0x10000(runtime)' <<<"$release_meta" || die "Release is missing hardened runtime flag: $release_app"
   grep -q '^Runtime Version=' <<<"$release_meta" || die "Release signing metadata is missing Runtime Version: $release_app"
   grep -q '^CMSDigest=' <<<"$release_meta" || die "Release signing metadata is missing CMSDigest: $release_app"
   grep -q '^Notarization Ticket=stapled' <<<"$release_meta" || die "Release is missing a stapled notarization ticket: $release_app"
 
-  # complements codesign metadata checks by exercising Apple's execution policy layer rather than only the embedded signature structure itself.
-  if ! spctl --assess --type execute --verbose=4 "$release_app"; then
-    echo "WARN: spctl assessment did not succeed for release copy: $release_app" >&2
-  fi
+  # Stapler validates the ticket payload, while spctl exercises Apple's execution policy layer rather than only the embedded signature structure itself
+  xcrun stapler validate "$release_app" || die "Stapled notarization ticket validation failed: $release_app"
+  spctl --assess --type execute --verbose=4 "$release_app" || die "spctl execution-policy assessment failed: $release_app"
 }
 
 write_empty_plist() {

@@ -23,19 +23,24 @@ VERIFY_LOCAL_RUN=""
 VERIFY_TRIPLE=""
 VERIFY_RELEASE_PATH=""
 VERIFY_SIGNTOOL_PATH="${VERIFY_SIGNTOOL_PATH:-}"
+VERIFY_POWERSHELL_PATH="${VERIFY_POWERSHELL_PATH:-}"
 VERIFY_EXPECTED_SUBJECT="${VERIFY_EXPECTED_SUBJECT:-Secluso, Inc.}"
+
+VERIFY_EXPECTED_CERT_SHA1="${VERIFY_EXPECTED_CERT_SHA1:-8768A4ED8597B0DD6ED0800EDFBED9AD262C1CE4}"
 VERIFY_KEEP_TEMP=0
 VERIFY_TMP_DIR=""
 
 verify_usage() {
   cat >&2 <<EOF
 Usage:
-  ${PROGRAM_NAME} --local-file /path/to/unsigned.exe --release /path/to/signed.exe [--signtool PATH]
-  ${PROGRAM_NAME} --local-run RUN_DIR --triple {x86_64-pc-windows-msvc|aarch64-pc-windows-msvc} --release /path/to/signed.exe [--signtool PATH]
+  ${PROGRAM_NAME} --local-file /path/to/unsigned.exe --release /path/to/signed.exe [--signtool PATH] [--expected-cert-sha1 SHA1]
+  ${PROGRAM_NAME} --local-run RUN_DIR --triple {x86_64-pc-windows-msvc|aarch64-pc-windows-msvc} --release /path/to/signed.exe [--signtool PATH] [--expected-cert-sha1 SHA1]
 
 Environment:
   VERIFY_EXPECTED_SUBJECT   expected leaf signer subject common name (default: Secluso, Inc.)
+  VERIFY_EXPECTED_CERT_SHA1 expected leaf signer certificate SHA-1 thumbprint
   VERIFY_SIGNTOOL_PATH      path to signtool.exe when it is not on PATH
+  VERIFY_POWERSHELL_PATH    path to powershell.exe or pwsh when it is not on PATH
 
 EOF
 }
@@ -61,6 +66,10 @@ parse_verify_args() {
         ;;
       --signtool)
         VERIFY_SIGNTOOL_PATH="${2:?}"
+        shift 2
+        ;;
+      --expected-cert-sha1)
+        VERIFY_EXPECTED_CERT_SHA1="${2:?}"
         shift 2
         ;;
       --keep-temp)
@@ -110,11 +119,29 @@ find_signtool() {
   die "Microsoft signtool not found. Provide --signtool or run this on a Windows machine with the Windows SDK installed."
 }
 
+find_powershell() {
+  if [[ -n "$VERIFY_POWERSHELL_PATH" ]]; then
+    [[ -x "$VERIFY_POWERSHELL_PATH" ]] || die "PowerShell not executable: $VERIFY_POWERSHELL_PATH"
+    return
+  fi
+
+  local candidate
+  for candidate in powershell.exe powershell pwsh.exe pwsh; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      VERIFY_POWERSHELL_PATH="$(command -v "$candidate")"
+      return
+    fi
+  done
+
+  die "PowerShell not found. It is required to extract the primary Authenticode signer certificate for certificate pinning."
+}
+
 ensure_verify_tools() {
   require_tool perl
   require_tool cmp
   require_tool diff
   find_signtool
+  find_powershell
   # Keep Git Bash/MSYS from rewriting signtool's slash-prefixed options into filesystem paths when it launches the native Windows executable.
   export MSYS2_ARG_CONV_EXCL="${MSYS2_ARG_CONV_EXCL:-};/v;/debug;/pa"
   init_sha256_tool
@@ -154,6 +181,71 @@ resolve_local_file() {
   printf '%s\n' "$local_path"
 }
 
+normalize_cert_sha1() {
+  local value="$1"
+  printf '%s' "$value" | tr '[:lower:]' '[:upper:]' | tr -cd 'A-F0-9'
+}
+
+absolute_path() {
+  local path="$1"
+  local dir base
+  dir="$(cd -- "$(dirname -- "$path")" && pwd -P)" || return 1
+  base="$(basename -- "$path")"
+  printf '%s/%s\n' "$dir" "$base"
+}
+
+path_for_powershell() {
+  local path="$1"
+  local abs_path
+  abs_path="$(absolute_path "$path")" || return 1
+
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w "$abs_path"
+    return
+  fi
+
+  printf '%s\n' "$abs_path"
+}
+
+primary_signer_certificate_info() {
+  local release_path="$1"
+  local ps_path ps_output
+  ps_path="$(path_for_powershell "$release_path")" || die "Failed to resolve release path for PowerShell: $release_path"
+
+  if ! ps_output="$(VERIFY_RELEASE_PATH_PS="$ps_path" "$VERIFY_POWERSHELL_PATH" -NoProfile -NonInteractive -Command '
+    $ErrorActionPreference = "Stop"
+    $sig = Get-AuthenticodeSignature -LiteralPath $env:VERIFY_RELEASE_PATH_PS
+    if ($null -eq $sig.SignerCertificate) {
+      throw "No primary signer certificate was returned by Get-AuthenticodeSignature"
+    }
+    $cert = $sig.SignerCertificate
+    Write-Output ("status`t{0}" -f $sig.Status)
+    Write-Output ("subject`t{0}" -f $cert.Subject)
+    Write-Output ("simple_name`t{0}" -f $cert.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false))
+    Write-Output ("thumbprint`t{0}" -f $cert.Thumbprint)
+  ' 2>&1)"; then
+    printf '%s\n' "$ps_output" >&2
+    die "Failed to inspect primary Authenticode signer certificate: $release_path"
+  fi
+
+  printf '%s\n' "$ps_output"
+}
+
+verify_primary_signer_certificate_pin() {
+  local release_path="$1"
+  local cert_info simple_name thumbprint expected_sha1
+  cert_info="$(primary_signer_certificate_info "$release_path")"
+  simple_name="$(awk -F'\t' '$1 == "simple_name" { print $2; exit }' <<<"$cert_info")"
+  thumbprint="$(awk -F'\t' '$1 == "thumbprint" { print $2; exit }' <<<"$cert_info")"
+  expected_sha1="$(normalize_cert_sha1 "$VERIFY_EXPECTED_CERT_SHA1")"
+  thumbprint="$(normalize_cert_sha1 "$thumbprint")"
+
+  [[ -n "$simple_name" ]] || die "Primary signer certificate is missing a subject common name: $release_path"
+  [[ "$simple_name" == "$VERIFY_EXPECTED_SUBJECT" ]] || die "Release signer mismatch: expected ${VERIFY_EXPECTED_SUBJECT}, got ${simple_name}"
+  [[ -n "$thumbprint" ]] || die "Primary signer certificate is missing a thumbprint: $release_path"
+  [[ "$thumbprint" == "$expected_sha1" ]] || die "Release signer certificate thumbprint mismatch: expected ${expected_sha1}, got ${thumbprint}"
+}
+
 verify_release_signing_policy() {
   local release_path="$1"
   [[ -f "$release_path" ]] || die "Release artifact not found: $release_path"
@@ -172,8 +264,8 @@ verify_release_signing_policy() {
   grep -q 'The signature is timestamped:' <<<"$verify_output" || die "Release signature is missing a trusted timestamp: $release_path"
   grep -q 'Timestamp Verified by:' <<<"$verify_output" || die "Release timestamp chain was not verified: $release_path"
 
-  # Pin the signing identity so a validly signed installer from some other publisher does not pass this check.
-  grep -q "Issued to: ${VERIFY_EXPECTED_SUBJECT}" <<<"$verify_output" || die "Release signer mismatch: expected ${VERIFY_EXPECTED_SUBJECT}"
+  # Pin the primary signer certificate structurally through the Windows Authenticode API, rather than by grepping signtool text output.
+  verify_primary_signer_certificate_pin "$release_path"
 
   printf '%s\n' "$verify_output"
 }
@@ -399,6 +491,7 @@ main() {
   echo "- Local unsigned artifact : $local_file"
   echo "- Release input           : $VERIFY_RELEASE_PATH"
   echo "- Signer                  : $VERIFY_EXPECTED_SUBJECT"
+  echo "- Signer cert SHA1        : $VERIFY_EXPECTED_CERT_SHA1"
   echo "- Release SHA256          : $release_sha"
   echo "- Normalized PE SHA256    : $release_normalized"
   echo "- Byte comparison         : all normalized bytes match"
