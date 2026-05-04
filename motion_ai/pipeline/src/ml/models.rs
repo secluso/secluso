@@ -27,6 +27,9 @@ static MODEL_CONFIG: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/m
 /// Loads the model ONNX files directory into the binary when compiling
 static MODEL_DATA_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/onnx_models");
 
+// The location of libonnxruntime within Secluso OS
+const DYLIB_PATH: &str = "/usr/lib/libonnxruntime.so";
+
 /// Associates an ONNX session with the model path it was built from, to detect changes.
 struct SessionEntry {
     path: String,
@@ -103,6 +106,13 @@ fn build_session(path: &str) -> Result<Session, ort::Error> {
 
 /// Loads model file paths from `models.toml` and registers them for later lookup.
 pub fn init_model_paths() -> Result<bool, ModelError> {
+    // Sourced documentation from https://ort.pyke.io/setup/linking
+    // Initialize ort with the path to the dylib. This **must** be called before any other usage of `ort`!
+    // `init_from` returns a `Result<EnvironmentBuilder>` which you can use to further configure the environment
+    // before `.commit()`ing; see the Environment docs for more information on what you can configure.
+    // `init_from` will return an `Err` if it fails to load the dylib.
+    ort::init_from(DYLIB_PATH)?.commit();
+
     let raw: toml::Value = toml::from_str(MODEL_CONFIG)
         .map_err(|e| ModelError::Inference(format!("Failed to parse TOML: {}", e)))?;
     let tbl = raw["models"]
