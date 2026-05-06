@@ -10,13 +10,12 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread::sleep;
-use std::time::{Duration, SystemTime, UNIX_EPOCH, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use secluso_update::{
     build_github_client, default_signers, download_and_verify_component, fetch_latest_release,
-    get_current_version, github_token_from_env, parse_sig_keys,
-    require_release_is_immutable, write_current_version, Component,
-    DEFAULT_OWNER_REPO,
+    get_current_version, github_token_from_env, parse_sig_keys, require_release_is_immutable,
+    write_current_version, Component, DEFAULT_OWNER_REPO,
 };
 
 const USAGE: &str = r#"
@@ -36,7 +35,7 @@ Options:
   --interval-secs N             Poll interval seconds [default: 60].
   --github-timeout-secs N       HTTP timeout seconds [default: 20].
   --github-repo <OWNER/REPO>    GitHub repo to poll for releases [default: secluso/secluso].
-  --sig-key <NAME:GITHUB_USER[:FINGERPRINT]>  Signature label + GitHub user, with optional pinned fingerprint (repeatable).
+  --sig-key <NAME:GITHUB_USER[:FINGERPRINT]>  Signature label + GitHub user for the top-level sha256sums signature, with optional pinned fingerprint (repeatable).
   --once                        Run a single update check then exit.
   --bundle-path PATH            Use a local bundle zip instead of downloading from GitHub.
   --update-hint-path PATH       Path for the local update hint file (optional).
@@ -136,8 +135,7 @@ fn main() -> ! {
         if args.flag_interval_secs % args.flag_hint_check_interval_secs != 0 {
             eprintln!(
                 "flag_interval_secs ({}) must be divisible by flag_update_hint_interval_secs ({})",
-                args.flag_interval_secs,
-                args.flag_hint_check_interval_secs
+                args.flag_interval_secs, args.flag_hint_check_interval_secs
             );
             std::process::exit(1);
         }

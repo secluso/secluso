@@ -4,12 +4,12 @@ set -euo pipefail
 usage() {
   cat <<EOF
 Usage:
-  $0 --tag vX.Y.Z --workdir ./release_work --labels labelA,labelB --artifact-dir /path/to/builder_out
+  $0 --tag vX.Y.Z --workdir ./release_work --artifact-dir /path/to/builder_out
 
 What it does (manager step):
 - copies the builder's manifest.json into <workdir>/<tag>/manifest.json (no rewriting)
 - writes <workdir>/<tag>/manifest.sha256 (sha256 of manifest.json)
-- prints what to send to signers
+- prints what to review before bundling
 
 Notes:
 - The builder is the source of truth for manifest.json.
@@ -28,7 +28,6 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --tag) TAG="$2"; shift 2;;
     --workdir) WORKDIR="$2"; shift 2;;
-    --labels) LABELS="$2"; shift 2;;
     --artifact-dir) ARTIFACT_DIR="$2"; shift 2;;
     --manifest-name) MANIFEST_NAME="$2"; shift 2;;
     -h|--help) usage;;
@@ -36,7 +35,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$TAG" && -n "$WORKDIR" && -n "$LABELS" && -n "$ARTIFACT_DIR" ]] || usage
+[[ -n "$TAG" && -n "$WORKDIR" && -n "$ARTIFACT_DIR" ]] || usage
 [[ -d "$ARTIFACT_DIR" ]] || { echo "Missing --artifact-dir directory: $ARTIFACT_DIR" >&2; exit 1; }
 
 SRC_MANIFEST="$ARTIFACT_DIR/$MANIFEST_NAME"
@@ -68,8 +67,6 @@ echo "Copied manifest from: $SRC_MANIFEST"
 echo "Manifest: $DEST_MANIFEST"
 echo "SHA256: $SHA"
 echo
-echo "Send BOTH of these to each signer:"
+echo "Review these before building the release bundle:"
 echo " - $DEST_MANIFEST"
 echo " - $SHA_FILE"
-echo
-echo "Labels (must match updater expectations): $LABELS"

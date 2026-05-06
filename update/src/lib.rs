@@ -48,8 +48,16 @@ pub struct Signer {
 
 /// Primary use point here two signatures, two github contributors, two different keys.
 const DEFAULT_SIGNERS: [(&str, &str, &str); 2] = [
-    ("jkaczman", "jkaczman", "7785755F1A24FF04CE0E12575DF5E79230C57C4A"),
-    ("arrdalan", "arrdalan", "1A9A1BA3090FA78E946DC0C0301497925DCCE876"),
+    (
+        "jkaczman",
+        "jkaczman",
+        "7785755F1A24FF04CE0E12575DF5E79230C57C4A",
+    ),
+    (
+        "arrdalan",
+        "arrdalan",
+        "1A9A1BA3090FA78E946DC0C0301497925DCCE876",
+    ),
 ];
 
 #[derive(Debug, Deserialize, Clone)]
@@ -299,9 +307,9 @@ pub fn fetch_latest_release(client: &Client, owner_repo: &str) -> Result<GhRelea
 
 // Enforces the full trust chain before returning any installable bytes.
 // 1) release policy checks (published, non-draft, immutable)
-// 2) bundle integrity check against GitHub asset digest
-// 3) detached signature verification over manifest.json bound to GitHub users public keys
-// 4) artifact hash validation against the signed manifest entry
+// 2) detached signature verification over the top-level checksum file
+// 3) bundle integrity check against the signed checksum file
+// 4) artifact hash validation against the manifest inside the authenticated bundle
 // Returning both component bytes and bundle bytes allows deploy to reuse verified material without
 // repeating network fetches in less controlled execution environments.
 pub fn download_and_verify_component(
@@ -344,101 +352,81 @@ fn download_and_verify_component_with_key_base(
     };
 
     // Source selection policy:
-    // - If a local bundle path is provided, we trust only local file I/O and still perform full
-    // manifest/signature/artifact verification below.
-    // - Otherwise we download the release asset and first bind it to GitHub's digest metadata.
+    // - The checksum file is a top-level release asset, and its detached signatures are top-level release assets too.
+    //    The zip itself contains no .asc files.
+    // - If a local bundle path is provided, we trust only local file I/O for the zip bytes but still verify those bytes against the signed release checksum file.
+    // - Otherwise we download the release zip asset and also check GitHub's asset digest metadata.
+    let bundle_asset = release
+        .assets
+        .iter()
+        .find(|a| is_bundle_zip_asset(&a.name))
+        .cloned()
+        .ok_or_else(|| anyhow!("could not find bundle zip asset in latest release"))?;
+
     let zip_bytes: Bytes = if let Some(path) = bundle_path.map(str::trim).filter(|v| !v.is_empty())
     {
         Bytes::from(fs::read(path).with_context(|| format!("Failed reading bundle at {}", path))?)
     } else {
-        let bundle = release
-            .assets
-            .iter()
-            .find(|a| is_bundle_zip_asset(&a.name))
-            .cloned()
-            .ok_or_else(|| anyhow!("could not find bundle zip asset in latest release"))?;
-
-        let bundle_digest = bundle
+        let bundle_digest = bundle_asset
             .digest
             .as_deref()
-            .ok_or_else(|| anyhow!("github asset {} missing digest field", bundle.name))?;
+            .ok_or_else(|| anyhow!("github asset {} missing digest field", bundle_asset.name))?;
 
-        let downloaded = fetch_bytes(client, &bundle.browser_download_url)
-            .with_context(|| format!("Failed downloading {}", bundle.name))?;
+        let downloaded = fetch_bytes(client, &bundle_asset.browser_download_url)
+            .with_context(|| format!("Failed downloading {}", bundle_asset.name))?;
 
-        require_asset_sha256_digest_matches_download(&bundle.name, bundle_digest, &downloaded)?;
+        require_asset_sha256_digest_matches_download(
+            &bundle_asset.name,
+            bundle_digest,
+            &downloaded,
+        )?;
         downloaded
     };
 
-    // From this point forward, all trust decisions are based on archive contents plus detached
-    // signatures and key material fetched from GitHub users configured in signer policy.
+    let checksum_asset_name = checksum_asset_name_for_bundle(&bundle_asset.name)?;
+    let checksum_asset = find_release_asset(release, &checksum_asset_name)?;
+    let checksum_bytes = fetch_release_asset_bytes(client, &checksum_asset)?;
+
+    let mut sigs: Vec<(Signer, Vec<u8>)> = Vec::with_capacity(required_signers.len());
+    for signer in &required_signers {
+        let sig_name = checksum_sig_asset_name_for(&checksum_asset.name, &signer.label);
+        let sig_asset = find_release_asset(release, &sig_name)?;
+        let sig_bytes = fetch_release_asset_bytes(client, &sig_asset)
+            .with_context(|| format!("Downloading checksum signature {}", sig_name))?;
+        sigs.push((signer.clone(), sig_bytes.to_vec()));
+    }
+
+    verify_signed_payload_with_github_keys(
+        client,
+        &checksum_bytes,
+        &sigs,
+        key_base_url,
+        &checksum_asset.name,
+    )?;
+
+    let checksums = parse_sha256sums(&checksum_bytes)
+        .with_context(|| format!("Parsing {}", checksum_asset.name))?;
+
+    let expected_zip_sha = checksums
+        .get(bundle_asset.name.as_str())
+        .ok_or_else(|| anyhow!("checksum file missing entry for {}", bundle_asset.name))?;
+    let got_zip_sha = sha256_hex(&zip_bytes);
+    if expected_zip_sha != &got_zip_sha {
+        bail!(
+            "sha256 mismatch for {}: expected={}, got={}",
+            bundle_asset.name,
+            expected_zip_sha,
+            got_zip_sha
+        );
+    }
+
+    // The signed checksum file authenticates the entire zip
     let mut zip =
         ZipArchive::new(Cursor::new(zip_bytes.clone())).context("Failed to parse zip archive")?;
 
     let manifest_bytes =
         read_zip_file(&mut zip, MANIFEST_PATH).context("Missing manifest.json in bundle")?;
 
-    let mut sigs: Vec<(Signer, Vec<u8>)> = Vec::with_capacity(required_signers.len());
-    for signer in &required_signers {
-        let sig_path = manifest_sig_path_for(&signer.label);
-        let sig_bytes = read_zip_file(&mut zip, &sig_path)
-            .with_context(|| format!("Missing signature file in zip: {}", sig_path))?;
-        sigs.push((signer.clone(), sig_bytes));
-    }
-
-    // Keyring cache avoids refetching the same GitHub user's keys when multiple labels map to one user.
-    let mut key_cache: HashMap<String, (Vec<Cert>, HashSet<Fingerprint>)> = HashMap::new();
-
-    for (signer, sig_bytes) in &sigs {
-        let (certs, fetched_fprs) = match key_cache.get(&signer.github_user) {
-            Some(v) => v.clone(),
-            None => {
-                let v = fetch_github_user_keyring(client, &signer.github_user, key_base_url)?;
-                key_cache.insert(signer.github_user.clone(), v.clone());
-                v
-            }
-        };
-        let allowed_fprs = if let Some(required_fpr_hex) = signer.fingerprint.as_deref() {
-            let required_fpr = Fingerprint::from_hex(required_fpr_hex).with_context(|| {
-                format!(
-                    "configured signer fingerprint is invalid (label={}, github_user={})",
-                    signer.label, signer.github_user
-                )
-            })?;
-
-            if !fetched_fprs.contains(&required_fpr) {
-                bail!(
-                    "Configured fingerprint {} was not found in {}'s GitHub keyring (label={})",
-                    required_fpr.to_hex(),
-                    signer.github_user,
-                    signer.label
-                );
-            }
-
-            HashSet::from([required_fpr])
-        } else {
-            fetched_fprs
-        };
-
-        verify_manifest_sig_requires_user(
-            &manifest_bytes,
-            sig_bytes,
-            &certs,
-            &allowed_fprs,
-            &signer.github_user,
-            &signer.label,
-        )
-        .with_context(|| {
-            format!(
-                "Signature verification failed (label={}, github_user={}, fingerprint={})",
-                signer.label,
-                signer.github_user,
-                signer.fingerprint.as_deref().unwrap_or("<any>")
-            )
-        })?;
-    }
-
-    // The manifest itself is signed, so version checks and artifact lookup operate on authenticated data.
     let manifest: Manifest =
         serde_json::from_slice(&manifest_bytes).context("manifest.json is not valid JSON")?;
 
@@ -469,10 +457,10 @@ fn download_and_verify_component_with_key_base(
     let expected = normalize_hex(&art.sha256);
     let got = sha256_hex(&target_bytes);
 
-    if expected != normalize_hex(&got) {
+    if expected != got {
         bail!(
             "sha256 mismatch for {}: expected={}, got={}",
-            art.bin_path,
+            target_path,
             art.sha256,
             got
         );
@@ -489,11 +477,90 @@ fn download_and_verify_component_with_key_base(
 }
 
 fn is_bundle_zip_asset(name: &str) -> bool {
-    name.starts_with("secluso-v") && name.ends_with(".zip")
+    name.starts_with("secluso-runtime-v") && name.ends_with(".zip")
 }
 
-fn manifest_sig_path_for(label: &str) -> String {
-    format!("{}.{}.asc", MANIFEST_PATH, label)
+fn checksum_asset_name_for_bundle(bundle_name: &str) -> Result<String> {
+    let base = bundle_name
+        .strip_suffix(".zip")
+        .ok_or_else(|| anyhow!("bundle asset {} does not end with .zip", bundle_name))?;
+    Ok(format!("{}-sha256sums.txt", base))
+}
+
+fn checksum_sig_asset_name_for(checksum_asset_name: &str, label: &str) -> String {
+    format!("{}.{}.asc", checksum_asset_name, label)
+}
+
+fn find_release_asset(release: &GhRelease, name: &str) -> Result<GhAsset> {
+    release
+        .assets
+        .iter()
+        .find(|a| a.name == name)
+        .cloned()
+        .ok_or_else(|| anyhow!("could not find release asset {}", name))
+}
+
+fn fetch_release_asset_bytes(client: &Client, asset: &GhAsset) -> Result<Bytes> {
+    let bytes = fetch_bytes(client, &asset.browser_download_url)
+        .with_context(|| format!("Failed downloading {}", asset.name))?;
+    let digest = asset
+        .digest
+        .as_deref()
+        .ok_or_else(|| anyhow!("github asset {} missing digest field", asset.name))?;
+    require_asset_sha256_digest_matches_download(&asset.name, digest, &bytes)?;
+    Ok(bytes)
+}
+
+fn parse_sha256sums(bytes: &[u8]) -> Result<HashMap<String, String>> {
+    let text = std::str::from_utf8(bytes).context("checksum file is not valid UTF-8")?;
+    let mut checksums = HashMap::new();
+
+    for (idx, raw_line) in text.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let mut parts = line.split_whitespace();
+        let digest = parts
+            .next()
+            .ok_or_else(|| anyhow!("missing digest on checksum line {}", idx + 1))?;
+        let path = parts
+            .next()
+            .ok_or_else(|| anyhow!("missing path on checksum line {}", idx + 1))?;
+        if parts.next().is_some() {
+            bail!(
+                "checksum line {} has extra fields; paths with whitespace are not supported",
+                idx + 1
+            );
+        }
+
+        let digest = normalize_hex(digest);
+        if digest.len() != 64 || !digest.chars().all(|c| c.is_ascii_hexdigit()) {
+            bail!("invalid SHA-256 digest on checksum line {}", idx + 1);
+        }
+
+        let path = normalize_checksum_path(path);
+        if path.is_empty() {
+            bail!("empty path on checksum line {}", idx + 1);
+        }
+        if checksums.insert(path.clone(), digest).is_some() {
+            bail!("duplicate checksum entry for {}", path);
+        }
+    }
+
+    if checksums.is_empty() {
+        bail!("checksum file contains no entries");
+    }
+
+    Ok(checksums)
+}
+
+fn normalize_checksum_path(path: &str) -> String {
+    path.trim()
+        .trim_start_matches('*')
+        .trim_start_matches("./")
+        .to_string()
 }
 
 // enforcement:
@@ -665,12 +732,74 @@ impl VerificationHelper for Helper {
     }
 }
 
+fn verify_signed_payload_with_github_keys(
+    client: &Client,
+    payload: &[u8],
+    sigs: &[(Signer, Vec<u8>)],
+    key_base_url: &str,
+    payload_name: &str,
+) -> Result<()> {
+    let mut key_cache: HashMap<String, (Vec<Cert>, HashSet<Fingerprint>)> = HashMap::new();
+
+    for (signer, sig_bytes) in sigs {
+        let (certs, fetched_fprs) = match key_cache.get(&signer.github_user) {
+            Some(v) => v.clone(),
+            None => {
+                let v = fetch_github_user_keyring(client, &signer.github_user, key_base_url)?;
+                key_cache.insert(signer.github_user.clone(), v.clone());
+                v
+            }
+        };
+        let allowed_fprs = if let Some(required_fpr_hex) = signer.fingerprint.as_deref() {
+            let required_fpr = Fingerprint::from_hex(required_fpr_hex).with_context(|| {
+                format!(
+                    "configured signer fingerprint is invalid (label={}, github_user={})",
+                    signer.label, signer.github_user
+                )
+            })?;
+
+            if !fetched_fprs.contains(&required_fpr) {
+                bail!(
+                    "Configured fingerprint {} was not found in {}'s GitHub keyring (label={})",
+                    required_fpr.to_hex(),
+                    signer.github_user,
+                    signer.label
+                );
+            }
+
+            HashSet::from([required_fpr])
+        } else {
+            fetched_fprs
+        };
+
+        verify_detached_sig_requires_user(
+            payload,
+            sig_bytes,
+            &certs,
+            &allowed_fprs,
+            &signer.github_user,
+            &signer.label,
+        )
+        .with_context(|| {
+            format!(
+                "Signature verification failed for {} (label={}, github_user={}, fingerprint={})",
+                payload_name,
+                signer.label,
+                signer.github_user,
+                signer.fingerprint.as_deref().unwrap_or("<any>")
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
 // A signature is accepted only if:
-// 1) Sequoia validates the detached signature over manifest bytes, and
+// 1) Sequoia validates the detached signature over the expected payload bytes, and
 // 2) at least one reported signing fingerprint belongs to the configured GitHub user's keyring.
 // This ties signature validity to explicit signer identity rather than trusting any locally available key.
-fn verify_manifest_sig_requires_user(
-    manifest: &[u8],
+fn verify_detached_sig_requires_user(
+    payload: &[u8],
     sig: &[u8],
     certs: &[Cert],
     allowed_fprs: &HashSet<Fingerprint>,
@@ -689,8 +818,8 @@ fn verify_manifest_sig_requires_user(
         .with_policy(policy, None, helper)
         .context("Building verifier failed")?;
 
-    v.verify_bytes(manifest)
-        .context("Feeding manifest into verifier failed")?;
+    v.verify_bytes(payload)
+        .context("Feeding payload into verifier failed")?;
 
     let helper = v.into_helper();
 
