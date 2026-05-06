@@ -64,7 +64,7 @@ The checksum file always includes the runtime zip and, when present in `--releas
 - Secluso-Deploy-0.4.0-linux-arm64.AppImage
 - Secluso-Deploy-0.4.0-linux-x64.AppImage
 - Secluso-Deploy-0.4.0-windows-x64-setup.exe
-- secluso-pi-image-v0.4.0.img.xz
+- secluso-pi-image-v0.4.0.wic
 
 ### Step 3 - Sign the checksum file
 
@@ -79,6 +79,11 @@ Signer B runs:
 - GitHub -> Releases -> Draft new release
 - tag v0.4.0
 - upload secluso-runtime-v0.4.0.zip
+- upload Secluso-Deploy-0.4.0-macos-arm64.app.zip
+- upload Secluso-Deploy-0.4.0-linux-arm64.AppImage
+- upload Secluso-Deploy-0.4.0-linux-x64.AppImage
+- upload Secluso-Deploy-0.4.0-windows-x64-setup.exe
+- upload secluso-pi-image-v0.4.0.wic
 - upload secluso-runtime-v0.4.0-sha256sums.txt
 - upload secluso-runtime-v0.4.0-sha256sums.txt.jkaczman.asc
 - upload secluso-runtime-v0.4.0-sha256sums.txt.arrdalan.asc

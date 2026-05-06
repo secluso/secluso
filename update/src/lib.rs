@@ -9,8 +9,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{Cursor, Read};
-use std::path::Path;
+use std::io::{Cursor, Read, Write};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use zip::ZipArchive;
 
@@ -137,6 +137,14 @@ pub struct VerifiedComponent {
     pub component_path: String,
     pub component_bytes: Vec<u8>,
     pub bundle_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VerifiedReleaseFile {
+    pub release_tag: String,
+    pub asset_name: String,
+    pub path: PathBuf,
+    pub sha256: String,
 }
 
 impl Component {
@@ -331,6 +339,76 @@ pub fn download_and_verify_component(
     )
 }
 
+pub fn download_and_verify_release_asset_to_path(
+    client: &Client,
+    release: &GhRelease,
+    asset_name: &str,
+    output_path: &Path,
+    signers: &[Signer],
+) -> Result<VerifiedReleaseFile> {
+    download_and_verify_release_asset_to_path_with_key_base(
+        client,
+        release,
+        asset_name,
+        output_path,
+        signers,
+        "https://github.com",
+    )
+}
+
+fn download_and_verify_release_asset_to_path_with_key_base(
+    client: &Client,
+    release: &GhRelease,
+    asset_name: &str,
+    output_path: &Path,
+    signers: &[Signer],
+    key_base_url: &str,
+) -> Result<VerifiedReleaseFile> {
+    require_release_is_immutable(release)?;
+
+    // Arbitrary release assets such as the WIC image are authenticated by the same signed checksum file that authenticates the runtime bundle.
+    // GitHub's release asset API includes the digest metadata we check in addition to the signed checksum file, (see API documentation at https://docs.github.com/en/rest/releases/assets?apiVersion=2022-11-28)
+    let bundle_asset = release
+        .assets
+        .iter()
+        .find(|a| is_bundle_zip_asset(&a.name))
+        .cloned()
+        .ok_or_else(|| anyhow!("could not find runtime bundle zip asset in latest release"))?;
+
+    let checksums = verified_release_checksums_for_bundle(
+        client,
+        release,
+        &bundle_asset,
+        signers,
+        key_base_url,
+    )?;
+    let expected = checksums
+        .get(asset_name)
+        .ok_or_else(|| anyhow!("checksum file missing entry for {}", asset_name))?;
+    let asset = find_release_asset(release, asset_name)?;
+    // Large release assets are streamed to disk while hashing so the deploy tool can verify WIC images without keeping the whole image in memory.
+    // The resulting hash is compared against the signed checksum entry after GitHub's own asset digest metadata has also been checked
+    let got = download_asset_to_path_and_hash(client, &asset, output_path)
+        .with_context(|| format!("Downloading {}", asset.name))?;
+
+    if expected != &got {
+        let _ = fs::remove_file(output_path);
+        bail!(
+            "sha256 mismatch for {}: expected={}, got={}",
+            asset.name,
+            expected,
+            got
+        );
+    }
+
+    Ok(VerifiedReleaseFile {
+        release_tag: release.tag_name.clone(),
+        asset_name: asset.name,
+        path: output_path.to_path_buf(),
+        sha256: got,
+    })
+}
+
 fn download_and_verify_component_with_key_base(
     client: &Client,
     release: &GhRelease,
@@ -345,11 +423,6 @@ fn download_and_verify_component_with_key_base(
     require_release_is_immutable(release)?;
 
     let latest_version = release.parsed_version()?;
-    let required_signers: Vec<Signer> = if signers.is_empty() {
-        default_signers()
-    } else {
-        signers.to_vec()
-    };
 
     // Source selection policy:
     // - The checksum file is a top-level release asset, and its detached signatures are top-level release assets too.
@@ -383,29 +456,13 @@ fn download_and_verify_component_with_key_base(
         downloaded
     };
 
-    let checksum_asset_name = checksum_asset_name_for_bundle(&bundle_asset.name)?;
-    let checksum_asset = find_release_asset(release, &checksum_asset_name)?;
-    let checksum_bytes = fetch_release_asset_bytes(client, &checksum_asset)?;
-
-    let mut sigs: Vec<(Signer, Vec<u8>)> = Vec::with_capacity(required_signers.len());
-    for signer in &required_signers {
-        let sig_name = checksum_sig_asset_name_for(&checksum_asset.name, &signer.label);
-        let sig_asset = find_release_asset(release, &sig_name)?;
-        let sig_bytes = fetch_release_asset_bytes(client, &sig_asset)
-            .with_context(|| format!("Downloading checksum signature {}", sig_name))?;
-        sigs.push((signer.clone(), sig_bytes.to_vec()));
-    }
-
-    verify_signed_payload_with_github_keys(
+    let checksums = verified_release_checksums_for_bundle(
         client,
-        &checksum_bytes,
-        &sigs,
+        release,
+        &bundle_asset,
+        signers,
         key_base_url,
-        &checksum_asset.name,
     )?;
-
-    let checksums = parse_sha256sums(&checksum_bytes)
-        .with_context(|| format!("Parsing {}", checksum_asset.name))?;
 
     let expected_zip_sha = checksums
         .get(bundle_asset.name.as_str())
@@ -501,6 +558,9 @@ fn find_release_asset(release: &GhRelease, name: &str) -> Result<GhAsset> {
 }
 
 fn fetch_release_asset_bytes(client: &Client, asset: &GhAsset) -> Result<Bytes> {
+    // Small metadata-like assets are still downloaded into memory because signatures and checksum files are tiny (& needs to be passed to OpenPGP verifier as byte slices)
+    // GitHub release assets expose a digest field. Checking it here catches transport or mirror corruption
+    // Release asset digest field is part of GitHub's release asset response (https://docs.github.com/en/rest/releases/assets?apiVersion=2022-11-28)
     let bytes = fetch_bytes(client, &asset.browser_download_url)
         .with_context(|| format!("Failed downloading {}", asset.name))?;
     let digest = asset
@@ -509,6 +569,119 @@ fn fetch_release_asset_bytes(client: &Client, asset: &GhAsset) -> Result<Bytes> 
         .ok_or_else(|| anyhow!("github asset {} missing digest field", asset.name))?;
     require_asset_sha256_digest_matches_download(&asset.name, digest, &bytes)?;
     Ok(bytes)
+}
+
+fn effective_signers(signers: &[Signer]) -> Vec<Signer> {
+    if signers.is_empty() {
+        default_signers()
+    } else {
+        signers.to_vec()
+    }
+}
+
+fn verified_release_checksums_for_bundle(
+    client: &Client,
+    release: &GhRelease,
+    bundle_asset: &GhAsset,
+    signers: &[Signer],
+    key_base_url: &str,
+) -> Result<HashMap<String, String>> {
+    // The checksum file is a top-level release asset, each required signer has a detached .asc signature beside it, and the payload is verified against the signers GitHub-published keys before any checksum entry is trusted.
+    // GitHub's user GPG key API used for signer key discovery is documented here: https://docs.github.com/en/rest/users/gpg-keys?apiVersion=2026-03-10
+    let checksum_asset_name = checksum_asset_name_for_bundle(&bundle_asset.name)?;
+    let checksum_asset = find_release_asset(release, &checksum_asset_name)?;
+    let checksum_bytes = fetch_release_asset_bytes(client, &checksum_asset)?;
+    let required_signers = effective_signers(signers);
+
+    let mut sigs: Vec<(Signer, Vec<u8>)> = Vec::with_capacity(required_signers.len());
+    for signer in &required_signers {
+        let sig_name = checksum_sig_asset_name_for(&checksum_asset.name, &signer.label);
+        let sig_asset = find_release_asset(release, &sig_name)?;
+        let sig_bytes = fetch_release_asset_bytes(client, &sig_asset)
+            .with_context(|| format!("Downloading checksum signature {}", sig_name))?;
+        sigs.push((signer.clone(), sig_bytes.to_vec()));
+    }
+
+    verify_signed_payload_with_github_keys(
+        client,
+        &checksum_bytes,
+        &sigs,
+        key_base_url,
+        &checksum_asset.name,
+    )?;
+
+    parse_sha256sums(&checksum_bytes).with_context(|| format!("Parsing {}", checksum_asset.name))
+}
+
+fn download_asset_to_path_and_hash(
+    client: &Client,
+    asset: &GhAsset,
+    output_path: &Path,
+) -> Result<String> {
+    // This is for large release assets where loading the entire file into memory isn't ideal
+    // Streams bytes from GitHub to the requested output file, updates a SHA-256 hasher with the exact bytes written, fsyncs the result, and deletes the output on digest mismatch
+    let digest = asset
+        .digest
+        .as_deref()
+        .ok_or_else(|| anyhow!("github asset {} missing digest field", asset.name))?;
+    if !digest.trim().to_ascii_lowercase().starts_with("sha256:") {
+        bail!(
+            "Refusing update: asset {} has unsupported digest format {}",
+            asset.name,
+            digest
+        );
+    }
+    let expected_github_digest = normalize_hex(digest);
+
+    if let Some(parent) = output_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("creating output dir {}", parent.display()))?;
+        }
+    }
+
+    let mut resp = client
+        .get(&asset.browser_download_url)
+        .header("Accept", "application/octet-stream")
+        .send()?
+        .error_for_status()?;
+    let mut out = fs::File::create(output_path)
+        .with_context(|| format!("creating {}", output_path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 1024 * 128];
+
+    loop {
+        let n = resp
+            .read(&mut buf)
+            .with_context(|| format!("reading {}", asset.name))?;
+        if n == 0 {
+            break;
+        }
+        out.write_all(&buf[..n])
+            .with_context(|| format!("writing {}", output_path.display()))?;
+        hasher.update(&buf[..n]);
+    }
+    out.sync_all()
+        .with_context(|| format!("syncing {}", output_path.display()))?;
+
+    let digest_bytes = hasher.finalize();
+    let mut got = String::with_capacity(digest_bytes.len() * 2);
+    for b in digest_bytes {
+        use std::fmt::Write as _;
+        write!(&mut got, "{:02x}", b).unwrap();
+    }
+
+    if expected_github_digest != got {
+        let _ = fs::remove_file(output_path);
+        bail!(
+            "Refusing update: GitHub asset digest mismatch for {}: expected={}, got=sha256:{}",
+            asset.name,
+            digest,
+            got
+        );
+    }
+
+    Ok(got)
 }
 
 fn parse_sha256sums(bytes: &[u8]) -> Result<HashMap<String, String>> {

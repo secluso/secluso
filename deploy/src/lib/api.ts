@@ -60,26 +60,9 @@ export type ProvisionEvent =
   | { type: "log"; run_id: string; level: "info" | "warn" | "error"; step?: string; line: string }
   | { type: "done"; run_id: string; ok: boolean };
 
-export interface RequirementStatus {
-  name: string;
-  ok: boolean;
-  version?: string;
-  hint: string;
-}
-
-export interface DockerStatus {
-  ok: boolean;
-  version?: string;
-  message?: string;
-}
-
-export interface ImageBuildRequest {
-  variant?: "official" | "diy";
-  cache: boolean;
+export interface PrepareImageRequest {
   qrOutputPath: string;
   imageOutputPath: string;
-  sshEnabled?: boolean;
-  wifi?: { country: string; ssid: string; psk: string };
   binariesRepo?: string;
   sigKeys?: { name: string; githubUser: string; fingerprint?: string }[];
   githubToken?: string;
@@ -100,16 +83,8 @@ export async function provisionServer(
   return invoke("provision_server", { target, plan });
 }
 
-export async function buildImage(req: ImageBuildRequest): Promise<JobStart> {
-  return invoke("build_image", { req });
-}
-
-export async function checkDocker(): Promise<DockerStatus> {
-  return invoke("check_docker");
-}
-
-export async function checkRequirements(): Promise<RequirementStatus[]> {
-  return invoke("check_requirements");
+export async function prepareImage(req: PrepareImageRequest): Promise<JobStart> {
+  return invoke("prepare_image", { req });
 }
 
 export async function openExternalUrl(url: string): Promise<void> {

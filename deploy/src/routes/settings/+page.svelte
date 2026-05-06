@@ -5,11 +5,6 @@
 
   type DevSettings = {
     enabled: boolean;
-    cache: boolean;
-    wifiSsid: string;
-    wifiPsk: string;
-    wifiCountry: string;
-    sshEnabled: boolean;
     binariesSource: "main" | "custom";
     binariesRepo: string;
     key1Name: string;
@@ -18,7 +13,6 @@
     key2User: string;
     githubToken: string;
     manifestVersionOverride: string;
-    showDockerHelp: boolean;
     maskUserPathsWithDemo: boolean;
   };
 
@@ -29,11 +23,6 @@
 
   const defaultSettings: DevSettings = {
     enabled: false,
-    cache: false,
-    wifiSsid: "",
-    wifiPsk: "",
-    wifiCountry: "",
-    sshEnabled: true,
     binariesSource: "main",
     binariesRepo: "",
     key1Name: "",
@@ -42,7 +31,6 @@
     key2User: "",
     githubToken: "",
     manifestVersionOverride: "",
-    showDockerHelp: false,
     maskUserPathsWithDemo: false
   };
 
@@ -115,36 +103,6 @@
 
         <section class="option-card">
           <div class="option-header">
-            <h2>Caching</h2>
-            <span class="badge">OPTIONAL</span>
-          </div>
-          <label class="switch-row compact">
-            <span class="switch">
-              <input type="checkbox" bind:checked={devSettings.cache} />
-              <span class="switch-track"></span>
-            </span>
-            <span class="option-label">Enable caching for generated image</span>
-          </label>
-          <p>Only applies when developer mode is on.</p>
-        </section>
-
-        <section class="option-card">
-          <div class="option-header">
-            <h2>UI Testing</h2>
-            <span class="badge">OPTIONAL</span>
-          </div>
-          <label class="switch-row compact">
-            <span class="switch">
-              <input type="checkbox" bind:checked={devSettings.showDockerHelp} />
-              <span class="switch-track"></span>
-            </span>
-            <span class="option-label">Force Docker help panel</span>
-          </label>
-          <p>Shows the Docker install panel even when Docker is installed.</p>
-        </section>
-
-        <section class="option-card">
-          <div class="option-header">
             <h2>Demo</h2>
             <span class="badge">OPTIONAL</span>
           </div>
@@ -156,65 +114,6 @@
             <span class="option-label">Hide username in paths with "demo"</span>
           </label>
           <p>Masks displayed macOS home paths as <code>/Users/demo</code> in fields, errors, and copied logs.</p>
-        </section>
-
-        <section class="option-card">
-          <div class="option-header">
-            <h2>Image Builder</h2>
-            <span class="badge">OPTIONAL</span>
-          </div>
-          <label class="switch-row compact">
-            <span class="switch">
-              <input type="checkbox" bind:checked={devSettings.sshEnabled} />
-              <span class="switch-track"></span>
-            </span>
-            <span class="option-label">Enable SSH in generated image</span>
-          </label>
-          <p>Only applies when developer mode is on.</p>
-        </section>
-
-        <section class="option-card wifi-card">
-          <div class="option-header">
-            <h2>Wi-Fi</h2>
-            <span class="badge">OPTIONAL</span>
-          </div>
-
-          <label class="field">
-            <span>Wi-Fi SSID</span>
-            <input
-              bind:value={devSettings.wifiSsid}
-              placeholder="SpectrumSetup-7800"
-              autocorrect="off"
-              autocapitalize="off"
-              spellcheck="false"
-            />
-          </label>
-          <p>Used only for the first boot.</p>
-
-          <label class="field">
-            <span>Wi-Fi password</span>
-            <input
-              type="password"
-              bind:value={devSettings.wifiPsk}
-              placeholder=""
-              autocorrect="off"
-              autocapitalize="off"
-              spellcheck="false"
-            />
-          </label>
-          <p>Must match the SSID above.</p>
-
-          <label class="field">
-            <span>Wi-Fi country</span>
-            <input
-              bind:value={devSettings.wifiCountry}
-              placeholder="us"
-              autocorrect="off"
-              autocapitalize="off"
-              spellcheck="false"
-            />
-          </label>
-          <p>Two-letter country code.</p>
         </section>
 
         <section class="option-card binaries-card">
@@ -589,7 +488,6 @@
     color: rgba(255, 255, 255, 0.4);
   }
 
-  .wifi-card,
   .token-card {
     padding-bottom: 18px;
   }

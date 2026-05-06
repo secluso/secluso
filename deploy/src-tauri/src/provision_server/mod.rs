@@ -4,7 +4,7 @@ mod preflight;
 mod provision;
 mod script;
 mod ssh;
-mod types;
+pub(crate) mod types;
 
 use crate::provision_server::events::{emit, log_line, step_error, step_ok, step_start, ProvisionEvent};
 use crate::provision_server::preflight::run_preflight;

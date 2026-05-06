@@ -3,7 +3,7 @@
 
 mod pi_hub_provision;
 mod provision_server;
-mod requirements;
+mod release_config;
 mod open_external;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -12,10 +12,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            pi_hub_provision::check_docker,
-            pi_hub_provision::build_image,
+            pi_hub_provision::prepare_image,
             pi_hub_provision::generate_user_credentials,
-            requirements::check_requirements,
             open_external::open_external_url,
             provision_server::fetch_server_host_key,
             provision_server::test_server_ssh,

@@ -3,44 +3,11 @@
   import { onMount } from "svelte";
   import { save } from "@tauri-apps/plugin-dialog";
   import { goto } from "$app/navigation";
-  import { browser } from "$app/environment";
-  import { buildImage, checkDocker, checkRequirements, openExternalUrl, type RequirementStatus } from "$lib/api";
+  import { prepareImage } from "$lib/api";
   import { maskDemoText } from "$lib/demoDisplay";
-
-  // variants data model
-  type VariantKey = "official" | "diy";
-  interface VariantDef { value: VariantKey; title: string; subtitle?: string; bullets: string[] }
-
-  const variantDefs: VariantDef[] = [
-    {
-      value: "official",
-      title: "Official",
-      subtitle: "Production camera",
-      bullets: [
-        "LED and button hardware supported.",
-        "Night-vision IR auto-toggle service.",
-        "Auto-updater enabled.",
-        "Production config & indicators."
-      ]
-    },
-    {
-      value: "diy",
-      title: "DIY",
-      subtitle: "Simple Pi setup",
-      bullets: [
-        "No button, LED, or integrated night-vision controller.",
-        "Auto-updater enabled.",
-      ]
-    }
-  ];
 
   type DevSettings = {
     enabled: boolean;
-    cache: boolean;
-    wifiSsid: string;
-    wifiPsk: string;
-    wifiCountry: string;
-    sshEnabled: boolean;
     binariesSource: "main" | "custom";
     binariesRepo: string;
     key1Name: string;
@@ -48,7 +15,6 @@
     key2Name: string;
     key2User: string;
     githubToken: string;
-    showDockerHelp: boolean;
     maskUserPathsWithDemo: boolean;
   };
 
@@ -56,10 +22,6 @@
   const FIRST_TIME_KEY = "secluso-first-time";
   const imageBackIcon = "/deploy-assets/image-back-latest.svg";
   const imageHeroArt = "/deploy-assets/image-hero-latest.svg";
-  const officialIcon = "/deploy-assets/image-official-icon-latest.svg";
-  const diyIcon = "/deploy-assets/image-diy-icon-latest.svg";
-  const selectedIcon = "/deploy-assets/image-selected-icon-latest.svg";
-  const tipIcon = "/deploy-assets/image-tip-icon-latest.svg";
   const imageLocationIcon = "/deploy-assets/image-output-icon-latest.svg";
   const pickerIcon = "/deploy-assets/image-picker-icon-latest.svg";
   const qrLocationIcon = "/deploy-assets/image-qr-icon-latest.svg";
@@ -67,16 +29,10 @@
   const buildArrowIcon = "/deploy-assets/image-build-arrow-latest.svg";
 
   // config state
-  let productVariant: VariantKey = "diy";
   let qrOutputPath = "";           // full file path from the os save dialog
   let imageOutputPath = "";        // full file path from the os save dialog
   let devSettings: DevSettings = {
     enabled: false,
-    cache: false,
-    wifiSsid: "",
-    wifiPsk: "",
-    wifiCountry: "",
-    sshEnabled: true,
     binariesSource: "main",
     binariesRepo: "",
     key1Name: "",
@@ -84,51 +40,14 @@
     key2Name: "",
     key2User: "",
     githubToken: "",
-    showDockerHelp: false,
     maskUserPathsWithDemo: false
   };
 
   // progress state
-  let building = false;
+  let preparing = false;
   let errorMsg = "";
   let firstTimeOn = false;
-  let requirements: RequirementStatus[] = [];
-  let missingRequirements: RequirementStatus[] = [];
-  let checkingRequirements = true;
-  $: dockerMissing = missingRequirements.some((req) => req.name === "Docker");
-  $: buildxMissing = missingRequirements.some((req) => req.name === "Docker Buildx");
-  $: showDockerHelp = dockerMissing || buildxMissing || (devSettings.enabled && devSettings.showDockerHelp);
-  $: sshStatusText = !devSettings.enabled
-    ? "SSH disabled."
-    : devSettings.sshEnabled
-    ? "SSH enabled (developer options)."
-    : "SSH disabled (developer options).";
-  $: imageOutputPlaceholder = effectiveSshEnabled()
-    ? "Choose file (e.g., secluso-rpi-ssh-enabled.img)"
-    : "Choose file (e.g., secluso-rpi.img)";
-
-  function effectiveSshEnabled(): boolean {
-    return devSettings.enabled && devSettings.sshEnabled;
-  }
-
-  function normalizeSshSuffix(path: string, sshEnabled: boolean): string {
-    if (!path.endsWith(".img")) return path;
-    if (sshEnabled) {
-      if (path.endsWith("-ssh-enabled.img")) return path;
-      return `${path.slice(0, -4)}-ssh-enabled.img`;
-    }
-    if (path.endsWith("-ssh-enabled.img")) {
-      return `${path.slice(0, -"-ssh-enabled.img".length)}.img`;
-    }
-    return path;
-  }
-
-  $: if (imageOutputPath) {
-    const normalized = normalizeSshSuffix(imageOutputPath, effectiveSshEnabled());
-    if (normalized !== imageOutputPath) {
-      imageOutputPath = normalized;
-    }
-  }
+  $: imageOutputPlaceholder = "Choose file (e.g., secluso-rpi.wic)";
 
   async function pickQrOutput() {
     const path = await save({
@@ -149,27 +68,20 @@
       String(now.getHours()).padStart(2, "0"),
       String(now.getMinutes()).padStart(2, "0")
     ].join("");
-    const defaultPath = normalizeSshSuffix(`secluso-rpi-${stamp}.img`, effectiveSshEnabled());
+    const defaultPath = `secluso-rpi-${stamp}.wic`;
     const path = await save({
       title: "Save Raspberry Pi image as…",
       defaultPath,
-      filters: [ { name: "Disk image", extensions: ["img"] } ]
+      filters: [ { name: "WIC image", extensions: ["wic"] } ]
     });
     if (typeof path === "string" && path.length) imageOutputPath = path;
   }
 
   function validate(): string | null {
     if (!qrOutputPath) return "Please choose where to save the QR code.";
-    if (!imageOutputPath) return "Please choose where to save the image (.img).";
-    if (!imageOutputPath.endsWith(".img")) return "Output image must end with .img";
+    if (!imageOutputPath) return "Please choose where to save the image (.wic).";
+    if (!imageOutputPath.endsWith(".wic")) return "Output image must end with .wic";
     if (!qrOutputPath.endsWith(".png")) return "QR code must end with .png";
-    if (devSettings.enabled) {
-      const hasAny = !!(devSettings.wifiSsid || devSettings.wifiPsk || devSettings.wifiCountry);
-      const hasAll = !!(devSettings.wifiSsid && devSettings.wifiPsk && devSettings.wifiCountry);
-      if (hasAny && !hasAll) {
-        return "Developer Wi-Fi needs SSID, password, and country.";
-      }
-    }
     if (devSettings.enabled && devSettings.binariesSource === "custom") {
       if (!devSettings.binariesRepo.trim()) return "Custom repo URL is required.";
       if (!devSettings.key1Name.trim() || !devSettings.key1User.trim()) {
@@ -184,44 +96,15 @@
 
   async function startBuild() {
     errorMsg = "";
-    if (checkingRequirements) {
-      errorMsg = "Checking required tools. Try again in a moment.";
-      return;
-    }
-    if (missingRequirements.length > 0) {
-      errorMsg = `Missing required tools: ${missingRequirements.map((req) => req.name).join(", ")}.`;
-      return;
-    }
     const err = validate();
     if (err) { errorMsg = err; return; }
 
-    building = true;
+    preparing = true;
 
     try {
-      const dockerStatus = await checkDocker();
-      if (!dockerStatus.ok) {
-        errorMsg = dockerStatus.message ?? "Docker is installed, but the Docker daemon is not reachable. Start Docker and try again.";
-        return;
-      }
-
-      const sshEnabled = effectiveSshEnabled();
-      const outputWithSuffix = normalizeSshSuffix(imageOutputPath, sshEnabled);
-      if (outputWithSuffix !== imageOutputPath) {
-        imageOutputPath = outputWithSuffix;
-      }
-
-      const devWifiEnabled =
-        devSettings.enabled &&
-        devSettings.wifiSsid.trim() &&
-        devSettings.wifiPsk.trim() &&
-        devSettings.wifiCountry.trim();
-
-      const { run_id } = await buildImage({
-        variant: productVariant,
-        cache: devSettings.cache,
+      const { run_id } = await prepareImage({
         qrOutputPath,
-        imageOutputPath: outputWithSuffix,
-        sshEnabled,
+        imageOutputPath,
         binariesRepo: devSettings.binariesSource === "custom" ? devSettings.binariesRepo.trim() : undefined,
         githubToken: devSettings.enabled && devSettings.githubToken.trim() ? devSettings.githubToken.trim() : undefined,
         sigKeys:
@@ -230,20 +113,13 @@
                 { name: devSettings.key1Name.trim(), githubUser: devSettings.key1User.trim() },
                 { name: devSettings.key2Name.trim(), githubUser: devSettings.key2User.trim() }
               ]
-            : undefined,
-        wifi: devWifiEnabled
-          ? {
-              ssid: devSettings.wifiSsid.trim(),
-              psk: devSettings.wifiPsk.trim(),
-              country: devSettings.wifiCountry.trim()
-            }
-          : undefined
+            : undefined
       });
       goto(`/status?mode=image&runId=${encodeURIComponent(run_id)}`);
     } catch (e: any) {
-      errorMsg = e?.toString() ?? "Build failed.";
+      errorMsg = e?.toString() ?? "Image preparation failed.";
     } finally {
-      building = false;
+      preparing = false;
     }
   }
 
@@ -258,11 +134,6 @@
     } catch {
         devSettings = {
           enabled: false,
-          cache: false,
-          wifiSsid: "",
-          wifiPsk: "",
-          wifiCountry: "",
-          sshEnabled: true,
           binariesSource: "main",
           binariesRepo: "",
           key1Name: "",
@@ -270,7 +141,6 @@
           key2Name: "",
           key2User: "",
           githubToken: "",
-          showDockerHelp: false,
           maskUserPathsWithDemo: false
         };
     }
@@ -289,28 +159,6 @@
     firstTimeOn = !firstTimeOn;
     localStorage.setItem(FIRST_TIME_KEY, String(firstTimeOn));
   }
-
-  async function openExternal(url: string) {
-    if (!browser) return;
-    try {
-      await openExternalUrl(url);
-    } catch (err) {
-      console.warn("Failed to open external link via shell opener.", err);
-      window.open(url, "_blank", "noopener,noreferrer");
-    }
-  }
-
-  onMount(async () => {
-    try {
-      requirements = await checkRequirements();
-      missingRequirements = requirements.filter((req) => !req.ok);
-    } catch {
-      requirements = [];
-      missingRequirements = [];
-    } finally {
-      checkingRequirements = false;
-    }
-  });
 </script>
 
 <main class="page">
@@ -335,44 +183,11 @@
 
     <div class="hero">
       <div class="hero-copy">
-        <h1>Build Raspberry Pi Image</h1>
-        <p>Generate a custom Pi OS image and camera pairing QR code.</p>
+        <h1>Prepare Raspberry Pi Image</h1>
+        <p>Download a verified Pi image and add the camera pairing secret.</p>
       </div>
       <img class="hero-art" src={imageHeroArt} alt="" />
     </div>
-
-    <section class="section-block">
-      <div class="label">Hardware Type</div>
-
-      {#each variantDefs as v}
-        <label class="hardware-card {productVariant === v.value ? 'selected' : ''}">
-          <input type="radio" name="variant" value={v.value} bind:group={productVariant} />
-          <span class="hardware-icon {v.value}">
-            <img src={v.value === "official" ? officialIcon : diyIcon} alt="" />
-          </span>
-          <span class="hardware-copy">
-            <strong>{v.value === "official" ? "Official Hardware" : "DIY Setup"}</strong>
-            <small>{v.value === "official" ? "LED, night vision, hardware buttons" : "Any Raspberry Pi with camera module"}</small>
-          </span>
-          <span class="hardware-check">
-            {#if productVariant === v.value}
-              <span class="selected-pill"><img src={selectedIcon} alt="" /></span>
-            {:else}
-              <span class="empty-pill"></span>
-            {/if}
-          </span>
-        </label>
-      {/each}
-
-      {#if firstTimeOn}
-        <section class="tip-banner">
-          <img src={tipIcon} alt="" />
-          <p>
-            Choose <span>Official</span> if you bought a Secluso camera. Choose <span>DIY</span> for custom Pi builds.
-          </p>
-        </section>
-      {/if}
-    </section>
 
     <section class="section-block outputs">
       <div class="label">Output Locations</div>
@@ -380,7 +195,7 @@
       <div class="output-row">
         <div class="field-label">
           <img src={imageLocationIcon} alt="" />
-          <span>Save Pi image (.img) to</span>
+          <span>Save Pi image (.wic) to</span>
         </div>
         <div class="output-picker">
           <div class="output-input">
@@ -410,45 +225,20 @@
       {#if firstTimeOn}
         <div class="info-banner">
           <img src={outputHelpIcon} alt="" />
-          <p>The <span>.img file</span> is flashed to your SD card. The <span>QR code</span> is scanned by the mobile app to connect securely.</p>
+          <p>The <span>.wic file</span> is flashed to your SD card. The <span>QR code</span> is scanned by the mobile app to connect securely.</p>
         </div>
       {/if}
     </section>
-
-    {#if checkingRequirements}
-      <section class="status-panel">
-        <p>Checking local tools…</p>
-      </section>
-    {:else if missingRequirements.length > 0}
-      <section class="status-panel error-panel">
-        <ul class="req-list">
-          {#each missingRequirements as req}
-            <li><strong>{req.name}:</strong> {maskDemoText(req.hint)}</li>
-          {/each}
-        </ul>
-      </section>
-    {/if}
-
-    {#if showDockerHelp}
-      <section class="status-panel">
-        <p>Docker is required for image builds.</p>
-        <div class="help-links">
-          <a href="https://docs.docker.com/desktop/install/windows-install/" on:click|preventDefault={() => openExternal("https://docs.docker.com/desktop/install/windows-install/")}>Windows</a>
-          <a href="https://docs.docker.com/desktop/install/mac-install/" on:click|preventDefault={() => openExternal("https://docs.docker.com/desktop/install/mac-install/")}>macOS</a>
-          <a href="https://docs.docker.com/engine/install/" on:click|preventDefault={() => openExternal("https://docs.docker.com/engine/install/")}>Linux</a>
-        </div>
-      </section>
-    {/if}
 
     {#if errorMsg}
       <div class="alert error">{maskDemoText(errorMsg)}</div>
     {/if}
 
-    <button class="primary" disabled={building || checkingRequirements || missingRequirements.length > 0} on:click={startBuild}>
-      <span>{building ? "Building…" : "Build Image"}</span>
+    <button class="primary" disabled={preparing} on:click={startBuild}>
+      <span>{preparing ? "Preparing…" : "Prepare Image"}</span>
       <img src={buildArrowIcon} alt="" />
     </button>
-    <p class="caption">This generates a downloadable .img file for Raspberry Pi Imager</p>
+    <p class="caption">This prepares a downloadable .wic file for Raspberry Pi Imager</p>
   </section>
 </main>
 
@@ -478,17 +268,6 @@
     background:
       radial-gradient(780px 420px at 50% 132px, rgba(255, 255, 255, 0.016), transparent 68%),
       linear-gradient(180deg, rgba(3, 3, 3, 0.98), #030303 46%);
-  }
-
-  .appbar {
-    height: 57px;
-    margin-bottom: 32px;
-    position: sticky;
-    top: 0;
-    z-index: 20;
-    background: rgba(3, 3, 3, 0.9);
-    backdrop-filter: blur(12px);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
   }
 
   .frame {
@@ -644,125 +423,6 @@
     margin-top: 24px;
   }
 
-  .hardware-card {
-    position: relative;
-    display: grid;
-    grid-template-columns: 40px 1fr auto;
-    align-items: center;
-    gap: 16px;
-    min-height: 83px;
-    padding: 0 20px;
-    border-radius: 20px;
-    border: 1px solid rgba(255, 255, 255, 0.04);
-    background: rgba(255, 255, 255, 0.02);
-    cursor: pointer;
-  }
-
-  .hardware-card + .hardware-card {
-    margin-top: 16px;
-  }
-
-  .hardware-card.selected {
-    background: rgba(59, 130, 246, 0.06);
-    border-color: rgba(59, 130, 246, 0.25);
-  }
-
-  .hardware-card input {
-    position: absolute;
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  .hardware-icon {
-    width: 40px;
-    height: 40px;
-    border-radius: 12px;
-    display: grid;
-    place-items: center;
-    background: rgba(255, 255, 255, 0.03);
-  }
-
-  .hardware-icon img {
-    width: 20px;
-    height: 20px;
-    display: block;
-  }
-
-  .hardware-icon.diy {
-    background: rgba(43, 127, 255, 0.15);
-  }
-
-  .hardware-copy {
-    display: grid;
-    gap: 5px;
-  }
-
-  .hardware-copy strong {
-    font-size: 14px;
-    line-height: 21px;
-    font-weight: 500;
-  }
-
-  .hardware-copy small {
-    color: rgba(255, 255, 255, 0.4);
-    font-size: 12px;
-    line-height: 18px;
-  }
-
-  .selected-pill,
-  .empty-pill {
-    width: 20px;
-    height: 20px;
-    border-radius: 999px;
-    display: grid;
-    place-items: center;
-  }
-
-  .selected-pill {
-    background: #2b7fff;
-  }
-
-  .selected-pill img {
-    width: 12px;
-    height: 12px;
-    display: block;
-  }
-
-  .empty-pill {
-    border: 1px solid rgba(255, 255, 255, 0.1);
-  }
-
-  .tip-banner {
-    margin-top: 16px;
-    min-height: 45.5px;
-    padding: 0 12px;
-    border-radius: 16px;
-    border: 1px solid rgba(43, 127, 255, 0.1);
-    background: rgba(43, 127, 255, 0.05);
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    cursor: pointer;
-  }
-
-  .tip-banner img {
-    width: 16px;
-    height: 16px;
-    display: block;
-    flex: 0 0 auto;
-  }
-
-  .tip-banner p {
-    margin: 0;
-    color: rgba(255, 255, 255, 0.5);
-    font-size: 12px;
-    line-height: 19.5px;
-  }
-
-  .tip-banner span {
-    color: rgba(255, 255, 255, 0.7);
-  }
-
   .outputs {
     margin-top: 42px;
   }
@@ -868,52 +528,6 @@
     color: rgba(255, 255, 255, 0.6);
   }
 
-  .status-panel {
-    margin-top: 18px;
-    padding: 14px 16px;
-    border-radius: 16px;
-    border: 1px solid rgba(255, 255, 255, 0.04);
-    background: rgba(255, 255, 255, 0.02);
-  }
-
-  .status-panel p {
-    margin: 0;
-    color: rgba(255, 255, 255, 0.55);
-    font-size: 13px;
-    line-height: 19.5px;
-  }
-
-  .req-list {
-    margin: 0;
-    padding-left: 18px;
-    color: rgba(255, 255, 255, 0.65);
-    font-size: 13px;
-    line-height: 19.5px;
-  }
-
-  .req-list li + li {
-    margin-top: 4px;
-  }
-
-  .help-links {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    margin-top: 10px;
-  }
-
-  .help-links a {
-    color: #51a2ff;
-    text-decoration: none;
-    font-size: 12px;
-    line-height: 18px;
-  }
-
-  .error-panel {
-    border-color: rgba(248, 113, 113, 0.2);
-    background: rgba(127, 29, 29, 0.16);
-  }
-
   .primary {
     width: 100%;
     height: 49px;
@@ -964,10 +578,6 @@
   }
 
   @media (max-width: 640px) {
-    .appbar-inner {
-      padding-inline: 14px;
-    }
-
     .frame {
       width: calc(100% - 28px);
     }

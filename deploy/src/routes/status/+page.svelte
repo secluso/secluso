@@ -21,11 +21,9 @@
     ],
     image: [
       { key: "validate", title: "Validate inputs" },
-      { key: "docker_check", title: "Check Docker" },
-      { key: "docker_build", title: "Pull base image" },
       { key: "credentials", title: "Generate secrets" },
-      { key: "config", title: "Write config" },
-      { key: "docker_run", title: "Build image" },
+      { key: "image_download", title: "Fetch verified image" },
+      { key: "inject", title: "Inject config" },
       { key: "verify", title: "Finalize" }
     ]
   };
@@ -264,7 +262,7 @@
     {#if !runId}
       <section class="missing-card">
         <h1>Missing run ID</h1>
-        <p>Start a provisioning or image build task first, then return here.</p>
+        <p>Start a provisioning or image preparation task first, then return here.</p>
       </section>
     {:else if showLogs}
       <div class="logs-view">

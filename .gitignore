@@ -25,6 +25,7 @@ test_data
 cameras.yaml
 credentials_full
 *.sh
+!update/scripts/secluso_sign_checksums.sh
 
 # Firebase Service Files
 google-services.json
@@ -41,3 +42,4 @@ secluso-v*
 # Exclude local release staging outputs and imported signing material
 /releases/release_assets/
 *.p12
+__pycache__

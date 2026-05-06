@@ -52,7 +52,6 @@
     key2User: string;
     githubToken: string;
     manifestVersionOverride: string;
-    showDockerHelp: boolean;
     maskUserPathsWithDemo: boolean;
   };
 
@@ -68,7 +67,6 @@
     key2User: "",
     githubToken: "",
     manifestVersionOverride: "",
-    showDockerHelp: false,
     maskUserPathsWithDemo: false
   };
   let devSettings: DevSettings | null = null;

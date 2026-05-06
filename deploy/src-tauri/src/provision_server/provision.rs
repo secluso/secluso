@@ -8,11 +8,11 @@ use crate::provision_server::ssh::{
   cleanup_remote_path, connect_ssh, create_remote_temp_dir, exec_remote_script_streaming, scp_upload_bytes, sudo_prefix,
 };
 use crate::provision_server::types::{ServerPlan, ServerSecrets, SshTarget};
+use crate::release_config::{normalize_repo, resolve_signers};
 use anyhow::{bail, Context, Result};
 use reqwest::blocking::Client;
 use secluso_update::{
-  build_github_client, default_signers, download_and_verify_component, fetch_latest_release, Component as ReleaseComponent,
-  Signer,
+  build_github_client, download_and_verify_component, fetch_latest_release, Component as ReleaseComponent,
 };
 use secluso_client_server_lib::auth::parse_user_credentials;
 use std::fs;
@@ -38,35 +38,6 @@ fn remote_stage_path(stage_dir: &str, name: &str) -> String {
   format!("{stage_dir}/{name}")
 }
 
-fn normalize_repo(input: &str) -> String {
-  let trimmed = input.trim().trim_end_matches('/');
-  if let Some(idx) = trimmed.find("github.com/") {
-    let repo = &trimmed[idx + "github.com/".len()..];
-    return repo.trim_end_matches(".git").to_string();
-  }
-  trimmed.trim_end_matches(".git").to_string()
-}
-
-fn resolve_signers(sig_keys: &[crate::provision_server::types::SigKey]) -> Vec<Signer> {
-  if sig_keys.is_empty() {
-    return default_signers();
-  }
-
-  sig_keys
-    .iter()
-    .map(|key| Signer {
-      label: key.name.trim().to_string(),
-      github_user: key.github_user.trim().to_string(),
-      fingerprint: key
-        .fingerprint
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(ToOwned::to_owned),
-    })
-    .collect()
-}
-
 fn download_verified_artifacts(
   app: &AppHandle,
   run_id: Uuid,
@@ -75,7 +46,7 @@ fn download_verified_artifacts(
   sig_keys: &[crate::provision_server::types::SigKey],
   github_token: Option<&str>,
 ) -> Result<DownloadedArtifacts> {
-  let signers = resolve_signers(sig_keys);
+  let signers = resolve_signers(Some(sig_keys));
   let client = build_github_client(20, github_token, "secluso-deploy")?;
   let release = fetch_latest_release(&client, owner_repo)
     .with_context(|| format!("Fetching latest release metadata for {owner_repo}"))?;
