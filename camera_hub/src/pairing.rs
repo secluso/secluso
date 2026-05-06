@@ -70,7 +70,7 @@ fn read_varying_len(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
         return Err(io::Error::new(
             ErrorKind::InvalidInput,
             "Intended message length is too large",
-        ))
+        ));
     }
 
     let mut msg = vec![0u8; len as usize];
@@ -125,7 +125,11 @@ fn perform_pairing_handshake(
 }
 
 pub fn get_input_camera_secret() -> Vec<u8> {
-    let pathname = "./camera_secret";
+    let pathname = match std::env::var("SECLUSO_USE_PROVISION").as_deref() {
+        Ok("1") => "/provision/camera_secret",
+        _ => "./camera_secret",
+    };
+
     let file = File::open(pathname).expect(
         "Could not open file \"camera_secret\". You can generate this with the config_tool",
     );
@@ -138,7 +142,10 @@ pub fn get_input_camera_secret() -> Vec<u8> {
 
 // Read the WiFi password contents from file to use for the hotspot
 pub fn get_input_wifi_password() -> String {
-    let pathname = "./wifi_password";
+    let pathname = match std::env::var("SECLUSO_USE_PROVISION").as_deref() {
+        Ok("1") => "/provision/wifi_password",
+        _ => "./wifi_password",
+    };
     let contents = fs::read_to_string(pathname).expect("Failed to read from \"wifi_password\" file. You can generate this in config tool");
     return contents;
 }
