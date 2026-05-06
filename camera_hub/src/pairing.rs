@@ -596,16 +596,40 @@ fn bring_hotspot_back_up() -> io::Result<()> {
 }
 
 pub fn create_wifi_hotspot() {
-    // less fragile than shell parsing to use argv
-    let _ = Command::new("nmcli")
-        .args([
-            "device", "wifi", "hotspot", "ssid", "Secluso", "password", get_input_wifi_password().as_str(),
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap()
-        .wait();
+    let password = get_input_wifi_password();
+
+    loop {
+        // less fragile than shell parsing to use argv
+        match Command::new("nmcli")
+            .args([
+                "device",
+                "wifi",
+                "hotspot",
+                "ssid",
+                "Secluso",
+                "password",
+                password.as_str(),
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(mut child) => match child.wait() {
+                Ok(status) if status.success() => return,
+                Ok(status) => {
+                    debug!("[Pairing] Failed to create WiFi hotspot; nmcli exited with {status}");
+                }
+                Err(e) => {
+                    debug!("[Pairing] Failed to wait for WiFi hotspot creation: {e}");
+                }
+            },
+            Err(e) => {
+                debug!("[Pairing] Failed to start WiFi hotspot creation: {e}");
+            }
+        }
+
+        thread::sleep(Duration::from_secs(2));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
