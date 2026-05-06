@@ -5,6 +5,7 @@
 use crate::initialize_mls_clients;
 use crate::notification_target::persist_notification_target;
 use crate::traits::Camera;
+use crate::version::camera_version_info;
 use cfg_if::cfg_if;
 use openmls::prelude::KeyPackage;
 use rand::Rng;
@@ -197,8 +198,9 @@ fn receive_credentials_full(stream: &mut TcpStream, mls_client: &mut MlsClient) 
 }
 
 fn send_firmware_version(stream: &mut TcpStream) -> io::Result<()> {
-    let msg = format!("v{}", env!("CARGO_PKG_VERSION"));
-    write_varying_len(stream, &msg.as_bytes())?;
+    let msg = serde_json::to_vec(&camera_version_info()?)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    write_varying_len(stream, &msg)?;
 
     Ok(())
 }

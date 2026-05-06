@@ -60,6 +60,8 @@ mod config;
 
 use crate::config::process_config_command;
 
+mod version;
+
 mod notification_target;
 
 use crate::notification_target::send_notification;

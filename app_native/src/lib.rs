@@ -8,7 +8,7 @@ use log::{debug, error, info};
 use rand::distr::Alphanumeric;
 use rand::Rng;
 use secluso_client_lib::config::{
-    Heartbeat, HeartbeatRequest, HeartbeatResult, OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE,
+    CameraVersionInfo, Heartbeat, HeartbeatRequest, HeartbeatResult, OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE,
     AddAppRequest, AddAppResponseCommon, AddAppResponseDedicated, OPCODE_ADD_APP_REQUEST, OPCODE_ADD_APP_RESPONSE,
 };
 use secluso_client_lib::mls_client::{Contact, MlsClient, ClientType};
@@ -43,6 +43,13 @@ const CAMERA_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const CAMERA_IO_TIMEOUT: Duration = Duration::from_secs(12);
 const CAMERA_CONNECT_RETRIES: usize = 3;
 const CAMERA_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(350);
+
+#[derive(Serialize)]
+struct HeartbeatStatus {
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version_info: Option<CameraVersionInfo>,
+}
 
 #[flutter_rust_bridge::frb]
 pub struct Clients {
@@ -199,14 +206,14 @@ fn send_credentials_full(
     Ok(())
 }
 
-fn receive_firmware_version(
+fn receive_camera_version_info(
     stream: &mut TcpStream,
-) -> anyhow::Result<String> {
-    info!("Sending credentials_full");
-    let firmware_version_bytes = read_varying_len(stream)?;
-    let firmware_version = String::from_utf8(firmware_version_bytes)?;
+) -> anyhow::Result<CameraVersionInfo> {
+    info!("Receiving camera version info");
+    let version_info_bytes = read_varying_len(stream)?;
+    let version_info = serde_json::from_slice::<CameraVersionInfo>(&version_info_bytes)?;
 
-    Ok(firmware_version)
+    Ok(version_info)
 }
 
 fn send_timestamp(
@@ -371,9 +378,9 @@ pub fn add_camera(
     }
 
     info!("Waiting for firmware version from camera");
-    let firmware_version =
-        match receive_firmware_version(&mut stream) {
-            Ok(version) => version,
+    let version_info =
+        match receive_camera_version_info(&mut stream) {
+            Ok(version_info) => version_info,
             Err(e) => {
                 info!("Error (firmware): {e}");
                 return "Error".to_string();
@@ -381,8 +388,11 @@ pub fn add_camera(
         };
 
     let app_native_version = format!("v{}", env!("CARGO_PKG_VERSION"));
-    info!("Camera version = {}, app native version = {}", firmware_version, app_native_version);
-    if app_native_version != firmware_version {
+    info!(
+        "Camera firmware version = {}, camera OS version = {}, app native version = {}",
+        version_info.firmware_version, version_info.os_version, app_native_version
+    );
+    if app_native_version != version_info.firmware_version {
         return "PairVersionIncompatible".to_string();
     }
 
@@ -425,7 +435,13 @@ pub fn add_camera(
         }
     }
 
-    firmware_version
+    match serde_json::to_string(&version_info) {
+        Ok(version_info_json) => version_info_json,
+        Err(e) => {
+            info!("Error (version-info-json): {e}");
+            "Error".to_string()
+        }
+    }
 }
 
 pub fn initialize(
@@ -725,11 +741,28 @@ pub fn process_heartbeat_config_response(
 
                     match heartbeat_result {
                         HeartbeatResult::HealthyHeartbeat(_timestamp) => {
-                            Ok(format!("healthy_{}", heartbeat.firmware_version))
+                            let status = HeartbeatStatus {
+                                status: "healthy".to_string(),
+                                version_info: Some(CameraVersionInfo {
+                                    firmware_version: heartbeat.firmware_version,
+                                    os_version: heartbeat.os_version,
+                                }),
+                            };
+                            serde_json::to_string(&status)
+                                .map_err(|e| io::Error::other(e.to_string()))
                         }
-                        HeartbeatResult::InvalidTimestamp => Ok("invalid timestamp".to_string()),
-                        HeartbeatResult::InvalidCiphertext => Ok("invalid ciphertext".to_string()),
-                        HeartbeatResult::InvalidEpoch => Ok("invalid epoch".to_string()),
+                        HeartbeatResult::InvalidTimestamp => Ok(serde_json::to_string(&HeartbeatStatus {
+                            status: "invalid timestamp".to_string(),
+                            version_info: None,
+                        }).unwrap()),
+                        HeartbeatResult::InvalidCiphertext => Ok(serde_json::to_string(&HeartbeatStatus {
+                            status: "invalid ciphertext".to_string(),
+                            version_info: None,
+                        }).unwrap()),
+                        HeartbeatResult::InvalidEpoch => Ok(serde_json::to_string(&HeartbeatStatus {
+                            status: "invalid epoch".to_string(),
+                            version_info: None,
+                        }).unwrap()),
                     }
                 }
                 _ => {

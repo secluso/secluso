@@ -4,6 +4,7 @@
 
 use crate::DeliveryMonitor;
 use crate::pairing::get_names;
+use crate::version::camera_version_info;
 use secluso_client_lib::config::{
     Heartbeat, HeartbeatRequest, OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE,
     AddAppRequest, AddAppResponseCommon, AddAppResponseDedicated, OPCODE_ADD_APP_REQUEST, OPCODE_ADD_APP_RESPONSE,
@@ -108,12 +109,7 @@ fn send_heartbeat_response(
     timestamp: u64,
     http_client: &HttpClient,
 ) -> io::Result<()> {
-    let heartbeat = Heartbeat::generate(
-        clients_com,
-        clients_ded,
-        timestamp,
-        format!("v{}", env!("CARGO_PKG_VERSION")),
-    )?;
+    let heartbeat = Heartbeat::generate(clients_com, clients_ded, timestamp, camera_version_info()?)?;
 
     let mut config_msg = vec![OPCODE_HEARTBEAT_RESPONSE];
     config_msg.extend(bincode::serialize(&heartbeat).unwrap());

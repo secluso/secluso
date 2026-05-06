@@ -344,19 +344,11 @@ fn heartbeat(
         config_response.clone(),
         timestamp,
     ) {
-        Ok(response) if response.contains("healthy") => {
+        Ok(response) if response.contains("\"status\":\"healthy\"") => {
             println!("Healthy heartbeat");
-
-            if let Some((_, firmware_version)) = response.split_once('_') {
-                println!("firmware_version = {firmware_version}");
-            } else {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("Error: unknown firmware version."),
-                ));
-            }
+            println!("{response}");
         }
-        Ok(response) if response == "invalid ciphertext".to_string() => {
+        Ok(response) if response.contains("\"status\":\"invalid ciphertext\"") => {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 format!("The connection to the camera is corrupted. Pair the app with the camera again."),

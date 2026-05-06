@@ -82,9 +82,16 @@ impl HeartbeatRequest {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CameraVersionInfo {
+    pub firmware_version: String,
+    pub os_version: u64,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct Heartbeat {
     pub firmware_version: String,
+    pub os_version: u64,
     pub timestamp: u64,
     pub epochs: Vec<u64>,          //for motion and livestream MLS clients
     pub ciphertexts: Vec<Vec<u8>>, //for all MLS clients except for config
@@ -95,7 +102,7 @@ impl Heartbeat {
         clients_com: &mut MlsClientsCommon,
         clients_ded: &mut MlsClientsDedicated,
         timestamp: u64,
-        firmware_version: String,
+        version_info: CameraVersionInfo,
     ) -> io::Result<Self> {
         let mut ciphertexts: Vec<Vec<u8>> = vec![];
         let mut epochs: Vec<u64> = vec![];
@@ -123,7 +130,8 @@ impl Heartbeat {
         epochs.push(epoch);
 
         Ok(Self {
-            firmware_version,
+            firmware_version: version_info.firmware_version,
+            os_version: version_info.os_version,
             timestamp,
             epochs,
             ciphertexts,
