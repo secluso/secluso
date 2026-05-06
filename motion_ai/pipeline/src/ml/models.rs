@@ -28,7 +28,7 @@ static MODEL_CONFIG: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/m
 static MODEL_DATA_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/onnx_models");
 
 // The location of libonnxruntime within Secluso OS
-const DYLIB_PATH: &str = "/usr/lib/libonnxruntime.so";
+const DYLIB_PATH: &str = "/usr/lib/libonnxruntime.so.1";
 
 /// Associates an ONNX session with the model path it was built from, to detect changes.
 struct SessionEntry {
