@@ -39,6 +39,7 @@
   let accessMode: AccessMode = "direct";
   let directPublicAddress = "";
   let directListenPort = 8000;
+  let allowUfwRule = false;
   let proxyPublicUrl = "";
   let proxyListenPort = 18000;
 
@@ -238,13 +239,15 @@
       return {
         exposureMode: "proxy",
         bindAddress: "127.0.0.1",
-        listenPort: proxyListenPort
+        listenPort: proxyListenPort,
+        allowUfwRule: false
       };
     }
     return {
       exposureMode: "direct",
       bindAddress: "0.0.0.0",
-      listenPort: directListenPort
+      listenPort: directListenPort,
+      allowUfwRule
     };
   }
 
@@ -715,6 +718,13 @@
           <img src="/deploy-assets/server-info.svg" alt="" />
           <span>Most users should leave this off. Simple mode works great on a spare VPS or home server.</span>
         </div>
+      {/if}
+
+      {#if effectiveAccessMode() === "direct"}
+        <label class="switch-row">
+          <input type="checkbox" bind:checked={allowUfwRule} />
+          <span>Allow Secluso to add a ufw rule for the server port if the firewall is active</span>
+        </label>
       {/if}
 
       {#if buildCredentialsServerUrl()}

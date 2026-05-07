@@ -154,7 +154,7 @@ pub fn run_preflight(
 
   verify_outbound_network(app, run_id, step, sess)?;
 
-  let remote_has_bin = remote_success(sess, "test -x /opt/secluso/bin/secluso-server", None)?;
+  let remote_has_bin = remote_success(sess, "test -x /usr/bin/secluso-server", None)?;
   let remote_has_unit = remote_success(
     sess,
     "systemctl list-unit-files --type=service | awk '{print $1}' | grep -qx 'secluso-server.service'",
@@ -165,7 +165,7 @@ pub fn run_preflight(
   let version = if remote_has_bin {
     let out = remote_shell(
       sess,
-      "if [ -x /opt/secluso/bin/secluso-server ]; then /opt/secluso/bin/secluso-server --version 2>/dev/null | head -n1; fi",
+      "if [ -x /usr/bin/secluso-server ]; then /usr/bin/secluso-server --version 2>/dev/null | head -n1; fi",
       None,
     )?;
     let trimmed = out.stdout.trim();
@@ -227,7 +227,7 @@ pub fn run_preflight(
   let port_in_use = !port_lines.is_empty();
   let mut occupied_by_secluso =
     port_probe.stdout.contains("secluso-server")
-      || port_probe.stdout.contains("/opt/secluso/bin/secluso-server")
+      || port_probe.stdout.contains("/usr/bin/secluso-server")
       || service_active;
   if port_in_use {
     for line in &port_lines {
@@ -276,7 +276,7 @@ pub fn run_preflight(
     log_line(app, run_id, "info", Some(step), format!("Port {listen_port} is free on the server."));
   }
 
-  check_firewall(app, run_id, step, sess, runtime)?;
+  check_firewall(app, run_id, step, sess, target, runtime)?;
   verify_public_http_reachability(
     app,
     run_id,
@@ -821,9 +821,17 @@ fn verify_outbound_network(app: &AppHandle, run_id: Uuid, step: &str, sess: &Ses
   Ok(())
 }
 
-fn check_firewall(app: &AppHandle, run_id: Uuid, step: &str, sess: &Session, runtime: Option<&ServerRuntimePlan>) -> Result<()> {
+fn check_firewall(
+  app: &AppHandle,
+  run_id: Uuid,
+  step: &str,
+  sess: &Session,
+  target: &SshTarget,
+  runtime: Option<&ServerRuntimePlan>,
+) -> Result<()> {
   let exposure_mode = runtime.map(|value| value.exposure_mode.as_str()).unwrap_or("direct");
   let listen_port = runtime.map(|value| value.listen_port).unwrap_or(DEFAULT_SERVER_HTTP_PORT);
+  let allow_ufw_rule = runtime.map(|value| value.allow_ufw_rule).unwrap_or(false);
   if exposure_mode == "proxy" {
     if remote_success(sess, "command -v nginx >/dev/null 2>&1 || command -v caddy >/dev/null 2>&1 || command -v apache2 >/dev/null 2>&1", None)? {
       log_line(
@@ -856,7 +864,18 @@ fn check_firewall(app: &AppHandle, run_id: Uuid, step: &str, sess: &Session, run
     return Ok(());
   }
 
-  let ufw = remote_shell(sess, "ufw status", None)?;
+  let uses_sudo = target.user != "root";
+  let ufw = remote_shell_for_probe(sess, target, "ufw status", uses_sudo)?;
+  if ufw.exit != 0 {
+    log_line(
+      app,
+      run_id,
+      "warn",
+      Some(step),
+      format!("Could not inspect ufw status. {}", summarize_remote_failure(&ufw)),
+    );
+    return Ok(());
+  }
   let status = ufw.stdout.to_lowercase();
   if status.contains("inactive") {
     log_line(
@@ -868,18 +887,51 @@ fn check_firewall(app: &AppHandle, run_id: Uuid, step: &str, sess: &Session, run
         "ufw is inactive. That is fine locally, but you may still need to open TCP port {listen_port} in your provider firewall or security group."
       ),
     );
-  } else if status.contains(&listen_port.to_string()) && status.contains("allow") {
+  } else if ufw_allows_tcp_port(&status, listen_port) {
     log_line(app, run_id, "info", Some(step), format!("ufw appears to allow TCP port {listen_port}."));
-  } else {
+  } else if allow_ufw_rule {
     log_line(
       app,
       run_id,
       "warn",
       Some(step),
-      format!("ufw is active and does not obviously allow TCP port {listen_port}. Remote app access may fail until you open that port."),
+      format!("ufw is active and does not allow TCP port {listen_port}; adding an allow rule with user permission."),
+    );
+    let add_rule = remote_shell_for_probe(
+      sess,
+      target,
+      &format!("ufw allow {listen_port}/tcp comment 'Secluso server'"),
+      uses_sudo,
+    )?;
+    if add_rule.exit != 0 {
+      bail!(
+        "ufw is active, but Secluso could not add an allow rule for TCP port {listen_port}. {}",
+        summarize_remote_failure(&add_rule)
+      );
+    }
+
+    let updated = remote_shell_for_probe(sess, target, "ufw status", uses_sudo)?;
+    if updated.exit != 0 || !ufw_allows_tcp_port(&updated.stdout.to_lowercase(), listen_port) {
+      bail!("Secluso ran ufw allow for TCP port {listen_port}, but could not verify the resulting ufw rule.");
+    }
+    log_line(app, run_id, "info", Some(step), format!("Added ufw allow rule for TCP port {listen_port}."));
+  } else {
+    bail!(
+      "ufw is active and does not allow TCP port {listen_port}. Enable permission to add a ufw rule, or run this on the server: sudo ufw allow {listen_port}/tcp"
     );
   }
   Ok(())
+}
+
+fn ufw_allows_tcp_port(status: &str, listen_port: u16) -> bool {
+  let port_tcp = format!("{listen_port}/tcp");
+  let port_any = listen_port.to_string();
+  status.lines().any(|line| {
+    let line = line.trim();
+    line.contains("allow")
+      && (line.split_whitespace().any(|field| field == port_tcp)
+        || line.split_whitespace().any(|field| field == port_any))
+  })
 }
 
 fn parse_os_release_field(contents: &str, key: &str) -> Option<String> {

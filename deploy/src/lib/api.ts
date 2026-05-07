@@ -36,6 +36,7 @@ export interface ServerRuntimePlan {
   exposureMode: "direct" | "proxy";
   bindAddress: string;
   listenPort: number;
+  allowUfwRule?: boolean;
 }
 
 export interface ServerPlan {

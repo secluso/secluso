@@ -346,7 +346,7 @@ pub fn create_remote_temp_dir(sess: &Session, prefix: &str) -> Result<String> {
   let template = format!("/tmp/{prefix}.XXXXXX");
   let cmd = format!(
     "stage_dir=\"$(mktemp -d {})\" && chmod 700 \"$stage_dir\" && printf '%s' \"$stage_dir\"",
-    shell_escape(&template)
+    shell_word(&template)
   );
   let result = remote_shell(sess, &cmd, None)?;
   if result.exit != 0 {
@@ -366,7 +366,7 @@ pub fn create_remote_temp_dir(sess: &Session, prefix: &str) -> Result<String> {
 
 pub fn cleanup_remote_path(sess: &Session, remote_path: &str) -> Result<()> {
   // Best to clear staged inputs once the provisioning run is over.
-  let cmd = format!("rm -rf -- {}", shell_escape(remote_path));
+  let cmd = format!("rm -rf -- {}", shell_word(remote_path));
   let result = remote_shell(sess, &cmd, None)?;
   if result.exit != 0 {
     bail!(
@@ -379,7 +379,7 @@ pub fn cleanup_remote_path(sess: &Session, remote_path: &str) -> Result<()> {
 }
 
 fn remote_shell(sess: &Session, cmd: &str, stdin: Option<&str>) -> Result<RemoteExecResult> {
-  let full = format!("bash -lc '{}'", shell_escape(cmd));
+  let full = format!("bash -lc '{}'", shell_single_quote_inner(cmd));
   let mut channel = sess.channel_session().context("Failed to open SSH channel")?;
   channel.exec(&full).with_context(|| format!("Remote exec failed: {cmd}"))?;
   if let Some(stdin) = stdin {
@@ -412,7 +412,11 @@ fn summarize_remote_failure(result: &RemoteExecResult) -> String {
   format!("command exited with status {}", result.exit)
 }
 
-fn shell_escape(s: &str) -> String {
+fn shell_single_quote_inner(s: &str) -> String {
+  s.replace('\'', r#"'\''"#)
+}
+
+fn shell_word(s: &str) -> String {
   if s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '/' | ':' | '@')) {
     s.to_string()
   } else {

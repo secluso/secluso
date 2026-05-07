@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # expected env vars
-#   install_prefix, owner_repo
+#   install_bin_dir, version_root, owner_repo
 #   server_unit, updater_service, update_interval_secs
 #   sudo_cmd ("" or "sudo -S -p ''" or "sudo"), enable_updater ("1"/"0")
 #   bind_address, listen_port, first_install, overwrite
@@ -24,7 +24,8 @@ else
   emit "info" "sudo" "No sudo wrapper (running as root)"
 fi
 
-INSTALL_PREFIX="${INSTALL_PREFIX:-/opt/secluso}"
+INSTALL_BIN_DIR="${INSTALL_BIN_DIR:-/usr/bin}"
+VERSION_ROOT="${VERSION_ROOT:-/var/lib/secluso/current_version}"
 STATE_DIR="${STATE_DIR:-/var/lib/secluso}"
 SERVICE_USER="${SERVICE_USER:-secluso}"
 RELEASE_TAG="${RELEASE_TAG:-unknown}"
@@ -41,7 +42,8 @@ if [[ -n "${SIG_KEYS:-}" ]]; then
   done
 fi
 
-emit "info" "config" "INSTALL_PREFIX=$INSTALL_PREFIX"
+emit "info" "config" "INSTALL_BIN_DIR=$INSTALL_BIN_DIR"
+emit "info" "config" "VERSION_ROOT=$VERSION_ROOT"
 emit "info" "config" "STATE_DIR=$STATE_DIR"
 emit "info" "config" "OWNER_REPO=$OWNER_REPO"
 emit "info" "config" "SERVER_UNIT=$SERVER_UNIT"
@@ -68,12 +70,13 @@ USER_CREDENTIALS_STAGE="$STAGING_DIR/user_credentials"
 CREDENTIALS_FULL_STAGE="$STAGING_DIR/credentials_full"
 
 if [[ "${OVERWRITE:-0}" == "1" ]]; then
-  emit "warn" "overwrite" "Overwrite enabled: stopping services and deleting Secluso install directories"
+  emit "warn" "overwrite" "Overwrite enabled: stopping services and deleting Secluso install state"
   ${SUDO} systemctl stop "$UPDATER_SERVICE" 2>/dev/null || true
   ${SUDO} systemctl stop "$SERVER_UNIT" 2>/dev/null || true
   ${SUDO} systemctl disable "$UPDATER_SERVICE" 2>/dev/null || true
   ${SUDO} systemctl disable "$SERVER_UNIT" 2>/dev/null || true
-  ${SUDO} rm -rf "$INSTALL_PREFIX" "$STATE_DIR"
+  ${SUDO} rm -f "$INSTALL_BIN_DIR/secluso-server" "$INSTALL_BIN_DIR/secluso-update"
+  ${SUDO} rm -rf "$STATE_DIR"
 fi
 
 emit "info" "deps" "Installing minimal runtime dependencies (apt-get)..."
@@ -86,7 +89,7 @@ if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
 fi
 
 emit "info" "install" "Ensuring install and state directories..."
-${SUDO} mkdir -p "$INSTALL_PREFIX/bin" "$INSTALL_PREFIX/current_version" "$STATE_DIR" "$STATE_DIR/user_credentials"
+${SUDO} mkdir -p "$INSTALL_BIN_DIR" "$VERSION_ROOT" "$STATE_DIR" "$STATE_DIR/user_credentials"
 
 if [[ ! -f "$SERVER_STAGE" ]]; then
   emit "error" "install" "Missing staged server binary"
@@ -99,10 +102,10 @@ fi
 
 emit "info" "install" "Installing verified binaries..."
 # The uploaded files only become live binaries here.
-${SUDO} install -m 0755 "$SERVER_STAGE" "$INSTALL_PREFIX/bin/secluso-server"
-${SUDO} install -m 0755 "$UPDATER_STAGE" "$INSTALL_PREFIX/bin/secluso-update"
-printf '%s\n' "${RELEASE_TAG#v}" | ${SUDO} tee "$INSTALL_PREFIX/current_version/server" >/dev/null
-printf '%s\n' "${RELEASE_TAG#v}" | ${SUDO} tee "$INSTALL_PREFIX/current_version/updater" >/dev/null
+${SUDO} install -m 0755 "$SERVER_STAGE" "$INSTALL_BIN_DIR/secluso-server"
+${SUDO} install -m 0755 "$UPDATER_STAGE" "$INSTALL_BIN_DIR/secluso-update"
+printf '%s\n' "${RELEASE_TAG#v}" | ${SUDO} tee "$VERSION_ROOT/server" >/dev/null
+printf '%s\n' "${RELEASE_TAG#v}" | ${SUDO} tee "$VERSION_ROOT/updater" >/dev/null
 
 if [[ -f "$SERVICE_ACCOUNT_STAGE" ]]; then
   emit "info" "secrets" "Installing service account key"
@@ -129,7 +132,7 @@ Type=simple
 User=$SERVICE_USER
 Group=$SERVICE_USER
 WorkingDirectory=$STATE_DIR
-ExecStart=$INSTALL_PREFIX/bin/secluso-server --bind-address=${BIND_ADDRESS:-127.0.0.1} --port=${LISTEN_PORT:-8000}
+ExecStart=$INSTALL_BIN_DIR/secluso-server --bind-address=${BIND_ADDRESS:-127.0.0.1} --port=${LISTEN_PORT:-8000}
 Restart=always
 RestartSec=1
 Environment=RUST_LOG=info
@@ -154,7 +157,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=$INSTALL_PREFIX/bin/secluso-update --component server --interval-secs $UPDATE_INTERVAL_SECS --github-timeout-secs 20 --restart-unit $SERVER_UNIT --github-repo $OWNER_REPO$SIG_ARGS --update-hint-path $STATE_DIR/update_hint --hint-check-interval-secs $HINT_CHECK_INTERVAL_SECS
+ExecStart=$INSTALL_BIN_DIR/secluso-update --component server --interval-secs $UPDATE_INTERVAL_SECS --github-timeout-secs 20 --restart-unit $SERVER_UNIT --github-repo $OWNER_REPO$SIG_ARGS --update-hint-path $STATE_DIR/update_hint --hint-check-interval-secs $HINT_CHECK_INTERVAL_SECS
 Restart=always
 RestartSec=2
 ${GITHUB_TOKEN:+Environment=GITHUB_TOKEN=$GITHUB_TOKEN}

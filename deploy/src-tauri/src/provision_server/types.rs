@@ -78,6 +78,8 @@ pub struct ServerRuntimePlan {
   pub exposure_mode: String,
   pub bind_address: String,
   pub listen_port: u16,
+  #[serde(default)]
+  pub allow_ufw_rule: bool,
 }
 
 #[derive(Debug, Deserialize, Clone)]
