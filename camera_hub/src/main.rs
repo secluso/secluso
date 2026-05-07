@@ -92,6 +92,8 @@ cfg_if! {
 const STATE_DIR_GENERAL: &str = "state";
 const VIDEO_DIR_GENERAL: &str = "pending_videos";
 const THUMBNAIL_DIR_GENERAL: &str = "pending_thumbnails";
+const VERSION_DIR: &str = "/var/lib/secluso/current_version";
+const VERSION_FILE: &str = "/var/lib/secluso/current_version/raspberry_camera_hub";
 
 // A counter representing the amount of active camera threads
 static GLOBAL_THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -137,8 +139,9 @@ fn main() -> io::Result<()> {
     fs::create_dir_all(VIDEO_DIR_GENERAL).unwrap();
     fs::create_dir_all(THUMBNAIL_DIR_GENERAL).unwrap();
 
-    // Write current package version to a file to be used by the update service if needed.
-    fs::write("current_version", format!("v{}", env!("CARGO_PKG_VERSION")))?;
+    // Write the updater's component-scoped version marker
+    fs::create_dir_all(VERSION_DIR)?;
+    fs::write(VERSION_FILE, format!("v{}\n", env!("CARGO_PKG_VERSION")))?;
 
     cfg_if! {
         if #[cfg(feature = "manual")] {
