@@ -10,7 +10,7 @@ Usage (artifact bundle only):
 Outputs:
   <workdir>/<tag>/bundle/
   <workdir>/<tag>/out/secluso-runtime-<tag>.zip
-  <workdir>/<tag>/out/secluso-runtime-<tag>-sha256sums.txt
+  <workdir>/<tag>/out/secluso-<tag>-sha256sums.txt
 EOF
   exit 1
 }
@@ -111,7 +111,7 @@ fi
 # a non-existent nested location.
 ABS_OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 ZIP_PATH="$ABS_OUT_DIR/secluso-runtime-${TAG}.zip"
-SUMS_PATH="$ABS_OUT_DIR/secluso-runtime-${TAG}-sha256sums.txt"
+SUMS_PATH="$ABS_OUT_DIR/secluso-${TAG}-sha256sums.txt"
 rm -f "$ZIP_PATH"
 rm -f "$SUMS_PATH"
 

@@ -4,11 +4,11 @@ set -euo pipefail
 usage() {
   cat <<EOF
 Usage:
-  $0 --checksums /path/to/secluso-runtime-vX.Y.Z-sha256sums.txt \\
+  $0 --checksums /path/to/secluso-vX.Y.Z-sha256sums.txt \\
      --label LABEL --key KEYID_OR_FPR --outdir /path/to/output
 
 Produces:
-  <outdir>/secluso-runtime-vX.Y.Z-sha256sums.txt.<label>.asc
+  <outdir>/secluso-vX.Y.Z-sha256sums.txt.<label>.asc
 
 LABEL must match the updater's --sig-key label.
 EOF

@@ -3,9 +3,9 @@
 These scripts build the zip you upload to GitHub Releases:
 
 - secluso-runtime-vX.Y.Z.zip
-- secluso-runtime-vX.Y.Z-sha256sums.txt
-- secluso-runtime-vX.Y.Z-sha256sums.txt.<labelA>.asc
-- secluso-runtime-vX.Y.Z-sha256sums.txt.<labelB>.asc
+- secluso-vX.Y.Z-sha256sums.txt
+- secluso-vX.Y.Z-sha256sums.txt.<labelA>.asc
+- secluso-vX.Y.Z-sha256sums.txt.<labelB>.asc
 
 That zip contains:
 - manifest.json
@@ -14,7 +14,7 @@ That zip contains:
 - artifacts/x86_64-unknown-linux-gnu/...
 
 Updater does as follows...
-- downloads the top-level secluso-runtime-vX.Y.Z-sha256sums.txt release asset
+- downloads the top-level secluso-vX.Y.Z-sha256sums.txt release asset
 - downloads and verifies the top-level .asc signatures over that checksum file
 - downloads the zip and checks its sha256 against the signed checksum file
 - picks one binary (based on input), checks its sha256 against manifest.json inside the authenticated zip
@@ -57,7 +57,7 @@ Run:
 
 Outputs:
 - ./release_work/v0.4.0/out/secluso-runtime-v0.4.0.zip
-- ./release_work/v0.4.0/out/secluso-runtime-v0.4.0-sha256sums.txt
+- ./release_work/v0.4.0/out/secluso-v0.4.0-sha256sums.txt
 
 The checksum file always includes the runtime zip and, when present in `--release-assets-dir`, this predefined top-level release set:
 - Secluso-Deploy-0.4.0-macos-arm64.app.zip
@@ -69,10 +69,10 @@ The checksum file always includes the runtime zip and, when present in `--releas
 ### Step 3 - Sign the checksum file
 
 Signer A runs:
-- ./secluso_sign_checksums.sh --checksums ./release_work/v0.4.0/out/secluso-runtime-v0.4.0-sha256sums.txt --label jkaczman --key <YOUR_KEY_FPR> --outdir ./release_work/v0.4.0/out
+- ./secluso_sign_checksums.sh --checksums ./release_work/v0.4.0/out/secluso-v0.4.0-sha256sums.txt --label jkaczman --key <YOUR_KEY_FPR> --outdir ./release_work/v0.4.0/out
 
 Signer B runs:
-- ./secluso_sign_checksums.sh --checksums ./release_work/v0.4.0/out/secluso-runtime-v0.4.0-sha256sums.txt --label arrdalan --key <YOUR_KEY_FPR> --outdir ./release_work/v0.4.0/out
+- ./secluso_sign_checksums.sh --checksums ./release_work/v0.4.0/out/secluso-v0.4.0-sha256sums.txt --label arrdalan --key <YOUR_KEY_FPR> --outdir ./release_work/v0.4.0/out
 
 ### Step 4 - Upload manually
 
@@ -84,7 +84,7 @@ Signer B runs:
 - upload Secluso-Deploy-0.4.0-linux-x64.AppImage
 - upload Secluso-Deploy-0.4.0-windows-x64-setup.exe
 - upload secluso-pi-image-v0.4.0.wic
-- upload secluso-runtime-v0.4.0-sha256sums.txt
-- upload secluso-runtime-v0.4.0-sha256sums.txt.jkaczman.asc
-- upload secluso-runtime-v0.4.0-sha256sums.txt.arrdalan.asc
+- upload secluso-v0.4.0-sha256sums.txt
+- upload secluso-v0.4.0-sha256sums.txt.jkaczman.asc
+- upload secluso-v0.4.0-sha256sums.txt.arrdalan.asc
 - publish
