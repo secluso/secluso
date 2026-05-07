@@ -9,7 +9,7 @@ use crate::version::camera_version_info;
 use cfg_if::cfg_if;
 use openmls::prelude::KeyPackage;
 use rand::Rng;
-use secluso_client_lib::http_client::HttpClient;
+use secluso_client_lib::http_client::{HttpClient, PairingStatus};
 use secluso_client_lib::mls_client::MlsClient;
 use secluso_client_lib::mls_clients::{MlsClients, CONFIG};
 use secluso_client_lib::pairing::{self, generate_ip_camera_secret, MAX_ALLOWED_MSG_LEN};
@@ -587,6 +587,34 @@ fn attempt_wifi_connection(ssid: String, password: String, server_addr: &str) ->
     )))
 }
 
+fn send_pairing_token_after_wifi_ready(
+    http_client: &HttpClient,
+    pairing_token: &str,
+) -> io::Result<PairingStatus> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let mut attempt = 1;
+    let mut last_error = None;
+
+    while std::time::Instant::now() < deadline {
+        match http_client.send_pairing_token(pairing_token) {
+            Ok(status) => return Ok(status),
+            Err(e) => {
+                debug!("[Pairing] Pairing token POST attempt {attempt} failed: {e}");
+                last_error = Some(e);
+                attempt += 1;
+                thread::sleep(Duration::from_secs(1));
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "Timed out sending pairing token after Wi-Fi became ready",
+        )
+    }))
+}
+
 fn bring_hotspot_back_up() -> io::Result<()> {
     debug!("[Pairing] Bringing hotspot back up...");
     // If pairing fails, we want the device to recover back into the discoverable state
@@ -786,10 +814,10 @@ pub fn pair_all(
                                         Ok(_) => {
                                             changed_wifi = true;
                                             debug!("[Pairing] Attempting to confirm pairing...");
-                                            match http_client
-                                                .unwrap()
-                                                .send_pairing_token(&pairing_token)
-                                            {
+                                            match send_pairing_token_after_wifi_ready(
+                                                &http_client.unwrap(),
+                                                &pairing_token,
+                                            ) {
                                                 Ok(pairing_status) => {
                                                     debug!(
                                                         "[Pairing] Pairing token acknowledged with status: {}",
