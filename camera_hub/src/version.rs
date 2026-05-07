@@ -7,13 +7,17 @@ use std::fs;
 use std::io;
 
 const OS_VERSION_PATH: &str = "/etc/secluso-os-version";
+const UNKNOWN_OS_VERSION: u64 = 0;
 
 pub fn camera_version_info() -> io::Result<CameraVersionInfo> {
-    let raw = fs::read_to_string(OS_VERSION_PATH)?;
-    let os_version = raw
-        .trim()
-        .parse::<u64>()
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    let os_version = match fs::read_to_string(OS_VERSION_PATH) {
+        Ok(raw) => raw
+            .trim()
+            .parse::<u64>()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => UNKNOWN_OS_VERSION,
+        Err(e) => return Err(e),
+    };
 
     Ok(CameraVersionInfo {
         firmware_version: format!("v{}", env!("CARGO_PKG_VERSION")),
