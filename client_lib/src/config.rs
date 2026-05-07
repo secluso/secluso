@@ -85,13 +85,13 @@ impl HeartbeatRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CameraVersionInfo {
     pub firmware_version: String,
-    pub os_version: u64,
+    pub os_version: String,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct Heartbeat {
     pub firmware_version: String,
-    pub os_version: u64,
+    pub os_version: String,
     pub timestamp: u64,
     pub epochs: Vec<u64>,          //for motion and livestream MLS clients
     pub ciphertexts: Vec<Vec<u8>>, //for all MLS clients except for config
