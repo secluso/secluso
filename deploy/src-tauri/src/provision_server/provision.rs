@@ -201,13 +201,13 @@ pub fn run_provision(
     let overwrite = plan.overwrite.unwrap_or(false);
     let sig_keys = plan.sig_keys.clone().unwrap_or_default();
 
-    // decide if this is a first install
-    let first_install = overwrite || !(remote_has_bin && remote_has_unit);
-    if !first_install && !preflight.remote_has_credentials_full {
+    let existing_install = remote_has_bin || remote_has_unit;
+    if existing_install && !overwrite {
         bail!(
-      "Existing install is missing /var/lib/secluso/credentials_full. That older server layout is no longer updated in place. Turn on Overwrite existing install to replace it cleanly."
+            "Existing Secluso install detected. Server provisioning does not perform manual update-only installs; leave auto-updater enabled or turn on Overwrite existing install to replace it cleanly."
     );
     }
+    let first_install = true;
 
     let mut generated_user_credentials: Option<Vec<u8>> = None;
     // Give each provisioning run its own remote staging dir.
@@ -324,15 +324,6 @@ pub fn run_provision(
                 &credentials_full,
             )?;
             generated_user_credentials = Some(uc);
-        } else {
-            log_line(
-                app,
-                run_id,
-                "info",
-                Some("secrets"),
-                "Existing install detected. Leaving the current server credentials unchanged."
-                    .to_string(),
-            );
         }
         step_ok(app, run_id, "secrets");
 
@@ -348,14 +339,7 @@ pub fn run_provision(
             ("BIND_ADDRESS", plan.runtime.bind_address.clone()),
             ("LISTEN_PORT", plan.runtime.listen_port.to_string()),
             ("SUDO_CMD", sudo_cmd.clone()),
-            (
-                "ENABLE_UPDATER",
-                if plan.auto_updater.enable {
-                    "1".to_string()
-                } else {
-                    "0".to_string()
-                },
-            ),
+            ("ENABLE_UPDATER", "1".to_string()),
             (
                 "OVERWRITE",
                 if overwrite {
@@ -421,7 +405,6 @@ pub fn run_provision(
         step_ok(app, run_id, "remote");
 
         step_start(app, run_id, "health", "Checking public server health");
-        if first_install {
             if let Some(uc) = generated_user_credentials.as_ref() {
                 let probe_version = plan
                     .manifest_version_override
@@ -440,15 +423,6 @@ pub fn run_provision(
                         .to_string(),
                 );
             }
-        } else {
-            log_line(
-        app,
-        run_id,
-        "info",
-        Some("health"),
-        "Skipping public health check for update-only runs because no new credentials were generated.".to_string(),
-      );
-        }
         step_ok(app, run_id, "health");
         Ok(())
     })();
@@ -532,7 +506,8 @@ fn verify_public_server_health(
         run_id,
         "info",
         Some("health"),
-        "Checking the public /status endpoint from this computer.".to_string(),
+        "Checking the public /status endpoint from this computer with generated credentials."
+            .to_string(),
     );
 
     let mut discovered_version = None;
@@ -617,20 +592,21 @@ where
     F: FnMut(usize),
     G: FnMut(&str),
 {
-    let mut discover = None;
-    let mut last_discover_err = None;
+    let mut auth = None;
+    let mut last_auth_err = None;
     for attempt in 1..=max_attempts {
         match client
             .get(status_url)
             .header("Client-Version", probe_version)
+            .basic_auth(username, Some(password))
             .send()
         {
             Ok(response) => {
-                discover = Some(response);
+                auth = Some(response);
                 break;
             }
             Err(err) => {
-                last_discover_err = Some(err);
+                last_auth_err = Some(err);
                 if attempt < max_attempts {
                     on_retry(attempt);
                     sleep(retry_delay);
@@ -639,10 +615,10 @@ where
         }
     }
 
-    let discover = match discover {
+    let auth = match auth {
         Some(response) => response,
         None => {
-            let err = last_discover_err.context("Public /status probe failed without an error.")?;
+            let err = last_auth_err.context("Public /status probe failed without an error.")?;
             return Err(unreachable_public_status_error(
                 exposure_mode,
                 listen_port,
@@ -651,30 +627,23 @@ where
         }
     };
 
-    let server_version = discover
-        .headers()
-        .get("X-Server-Version")
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_string());
-
-    let Some(server_version) = server_version else {
-        bail!("Reached the server, but it did not return X-Server-Version. This does not look like a healthy Secluso server response.");
-    };
-    on_version(&server_version);
-
-    let auth = client
-        .get(status_url)
-        .header("Client-Version", &server_version)
-        .basic_auth(username, Some(password))
-        .send()
-        .context("Authenticated health check failed.")?;
-
     if !auth.status().is_success() {
         bail!(
             "The server is reachable, but the authenticated /status check failed with HTTP {}.",
             auth.status()
         );
     }
+
+    let server_version = auth
+        .headers()
+        .get("X-Server-Version")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_string());
+
+    let Some(server_version) = server_version else {
+        bail!("Authenticated /status succeeded, but the server did not return X-Server-Version. This does not look like a healthy Secluso server response.");
+    };
+    on_version(&server_version);
 
     Ok(())
 }

@@ -33,7 +33,6 @@ pub struct PreflightReport {
   pub service_active: bool,
   pub installed_version: Option<String>,
   pub port_in_use: bool,
-  pub remote_has_credentials_full: bool,
   pub remote_arch: String,
 }
 
@@ -161,7 +160,6 @@ pub fn run_preflight(
     None,
   )?;
   let service_active = remote_success(sess, "systemctl is-active --quiet secluso-server.service", None)?;
-  let remote_has_credentials_full = remote_success(sess, "test -f /var/lib/secluso/credentials_full", None)?;
   let version = if remote_has_bin {
     let out = remote_shell(
       sess,
@@ -188,15 +186,6 @@ pub fn run_preflight(
         version.clone().unwrap_or_else(|| "unknown".to_string())
       ),
     );
-    if !remote_has_credentials_full {
-      log_line(
-        app,
-        run_id,
-        "warn",
-        Some(step),
-        "Existing install is missing /var/lib/secluso/credentials_full. This older layout is no longer upgraded in place; use Overwrite existing install for a clean reinstall.".to_string(),
-      );
-    }
   } else {
     log_line(app, run_id, "info", Some(step), "No existing Secluso server install detected.".to_string());
   }
@@ -225,38 +214,13 @@ pub fn run_preflight(
     .filter(|line| !line.is_empty())
     .collect::<Vec<_>>();
   let port_in_use = !port_lines.is_empty();
-  let mut occupied_by_secluso =
+  let occupied_by_secluso =
     port_probe.stdout.contains("secluso-server")
       || port_probe.stdout.contains("/usr/bin/secluso-server")
       || service_active;
   if port_in_use {
     for line in &port_lines {
       log_line(app, run_id, "warn", Some(step), format!("Port {listen_port} listener: {line}"));
-    }
-    if !occupied_by_secluso {
-      if let Some(status_url) = direct_status_url_for_preflight(runtime, public_server_url, listen_port)? {
-        match verify_existing_secluso_status_endpoint(app, run_id, step, status_url.as_ref()) {
-          Ok(()) => {
-            occupied_by_secluso = true;
-            log_line(
-              app,
-              run_id,
-              "info",
-              Some(step),
-              format!("Port {listen_port} is already serving a healthy Secluso endpoint."),
-            );
-          }
-          Err(err) => {
-            log_line(
-              app,
-              run_id,
-              "warn",
-              Some(step),
-              format!("Port {listen_port} is in use, and the existing listener did not look like a healthy Secluso endpoint: {err:#}"),
-            );
-          }
-        }
-      }
     }
 
     if !occupied_by_secluso {
@@ -295,7 +259,6 @@ pub fn run_preflight(
     service_active,
     installed_version: version,
     port_in_use,
-    remote_has_credentials_full,
     remote_arch,
   })
 }
@@ -447,17 +410,15 @@ fn verify_public_http_reachability(
 
   if port_in_use {
     if existing_secluso_listener {
-      let status_url = base_url.join("status").context("Preparing preflight /status probe URL")?;
       log_line(
         app,
         run_id,
         "info",
         Some(step),
         format!(
-          "Port {listen_port} is already serving Secluso. Reusing its public /status endpoint for reachability preflight."
+          "Skipping temporary public port probe because port {listen_port} is already used by the existing Secluso service."
         ),
       );
-      verify_existing_secluso_status_endpoint(app, run_id, step, status_url.as_ref())?;
       return Ok(());
     }
 
@@ -560,40 +521,6 @@ fn prepare_direct_probe_base_url(public_server_url: &str, listen_port: u16) -> R
   }
 
   Ok(parsed)
-}
-
-fn verify_existing_secluso_status_endpoint(app: &AppHandle, run_id: Uuid, step: &str, status_url: &str) -> Result<()> {
-  let client = Client::builder()
-    .timeout(PUBLIC_PROBE_HTTP_TIMEOUT)
-    .build()
-    .context("Creating HTTP client for preflight reachability check")?;
-
-  let response = client
-    .get(status_url)
-    .send()
-    .with_context(|| format!("Existing Secluso /status endpoint is not reachable from this computer at {status_url}"))?;
-
-  let server_version = response
-    .headers()
-    .get("X-Server-Version")
-    .and_then(|value| value.to_str().ok())
-    .map(str::to_string);
-
-  let Some(server_version) = server_version else {
-    bail!(
-      "Reached {}, but it did not return X-Server-Version. This does not look like a healthy Secluso /status response.",
-      status_url
-    );
-  };
-
-  log_line(
-    app,
-    run_id,
-    "info",
-    Some(step),
-    format!("Existing public Secluso /status endpoint is reachable (X-Server-Version: {server_version})."),
-  );
-  Ok(())
 }
 
 fn start_temp_http_probe(
@@ -745,24 +672,6 @@ fn probe_public_demo_endpoint(probe_url: &str, probe_token: &str, listen_port: u
   }
 
   Err(last_error.context("Public HTTP probe failed without an error.")?)
-}
-
-fn direct_status_url_for_preflight(
-  runtime: Option<&ServerRuntimePlan>,
-  public_server_url: Option<&str>,
-  listen_port: u16,
-) -> Result<Option<Url>> {
-  let exposure_mode = runtime.map(|value| value.exposure_mode.as_str()).unwrap_or("direct");
-  if exposure_mode != "direct" {
-    return Ok(None);
-  }
-
-  let Some(public_server_url) = public_server_url.map(str::trim).filter(|value| !value.is_empty()) else {
-    return Ok(None);
-  };
-
-  let base_url = prepare_direct_probe_base_url(public_server_url, listen_port)?;
-  Ok(Some(base_url.join("status").context("Preparing preflight /status probe URL")?))
 }
 
 fn verify_outbound_network(app: &AppHandle, run_id: Uuid, step: &str, sess: &Session) -> Result<()> {

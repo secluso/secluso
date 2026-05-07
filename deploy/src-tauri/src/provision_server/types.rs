@@ -51,12 +51,6 @@ pub struct HostKeyProof {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct AutoUpdaterPlan {
-  pub enable: bool,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
 pub struct SigKey {
   pub name: String,
   pub github_user: String,
@@ -85,7 +79,6 @@ pub struct ServerRuntimePlan {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerPlan {
-  pub auto_updater: AutoUpdaterPlan,
   pub runtime: ServerRuntimePlan,
   pub secrets: Option<ServerSecrets>,
   pub overwrite: Option<bool>,

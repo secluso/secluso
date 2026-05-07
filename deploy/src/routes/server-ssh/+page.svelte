@@ -30,7 +30,6 @@
   let useSameForSudo = true;
   let sudoPassword = "";
 
-  let enableAutoUpdater = true;
   let overwriteInstall = false;
   let serviceAccountKeyPath = "";
   let userCredentialsQrPath = "";
@@ -384,7 +383,6 @@
         : [];
 
     const plan: ServerPlan = {
-      autoUpdater: { enable: enableAutoUpdater },
       runtime: buildRuntimePlan(),
       secrets: {
         serviceAccountKeyPath,
@@ -776,11 +774,6 @@
           <input readonly placeholder="Choose where to save user_credentials_qr.png" value={maskDemoText(userCredentialsQrPath)} />
           <button class="ghost" type="button" on:click={pickUserCredentialsQrSave}>Choose Path</button>
         </div>
-      </label>
-
-      <label class="switch-row">
-        <input type="checkbox" bind:checked={enableAutoUpdater} />
-        <span>Enable auto-updater service</span>
       </label>
 
       <label class="switch-row">

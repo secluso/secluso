@@ -40,7 +40,6 @@ export interface ServerRuntimePlan {
 }
 
 export interface ServerPlan {
-  autoUpdater: { enable: boolean };
   runtime: ServerRuntimePlan;
   secrets?: { serviceAccountKeyPath: string; serverUrl: string; userCredentialsQrPath: string };
   overwrite?: boolean;
