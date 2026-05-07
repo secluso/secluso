@@ -37,20 +37,11 @@ resolve_build_plan() {
         *) die "Invalid profile for server: $PROFILE" ;;
       esac
       ;;
-    ipcamera)
-      TRIPLES=( "x86_64-unknown-linux-gnu" "aarch64-unknown-linux-gnu" )
-      case "$PROFILE" in
-        all) PKGS=( "ip_camera_hub" "config_tool" "server" ) ;;
-        camerahub) PKGS=( "ip_camera_hub" ) ;;
-        core) die "Profile 'core' not valid for ipcamera" ;;
-        *) die "Invalid profile for ipcamera: $PROFILE" ;;
-      esac
-      ;;
     all)
       TRIPLES=( "aarch64-unknown-linux-gnu" "x86_64-unknown-linux-gnu" )
       case "$PROFILE" in
-        all) PKGS=( "update" "reset" "raspberry_camera_hub" "ip_camera_hub" "config_tool" "server" ) ;;
-        release) PKGS=( "raspberry_camera_hub" "server" ) ;;
+        all) PKGS=( "update" "reset" "raspberry_camera_hub" "config_tool" "server" ) ;;
+        release) PKGS=( "update" "raspberry_camera_hub" "server" ) ;;
         test) PKGS=( "update" "raspberry_camera_hub" "config_tool" ) ;;
         *) die "Invalid profile for all: $PROFILE" ;;
       esac

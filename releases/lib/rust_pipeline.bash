@@ -40,9 +40,6 @@ build_and_manifest() {
       if [[ "$pkg" == "raspberry_camera_hub" ]]; then
         features_args=( --build-arg "FEATURES=--features raspberry" )
         crate_name="camera_hub"
-      elif [[ "$pkg" == "ip_camera_hub" ]]; then
-        features_args=( --build-arg "FEATURES=--features ip" )
-        crate_name="camera_hub"
       elif [[ "$pkg" == "motion_ai_cli" ]]; then
         features_args=( --build-arg "FEATURES=--features raspberry" )
         crate_name="motion_ai/cli"
@@ -117,12 +114,7 @@ build_and_manifest() {
 
       case "$pkg" in
         raspberry_camera_hub)
-          local new_bin="secluso-raspberry-camera-hub"
-          mv "$art_dir/$bin" "$art_dir/$new_bin"
-          bin="$new_bin"
-          ;;
-        ip_camera_hub)
-          local new_bin="secluso-ip-camera-hub"
+          local new_bin="secluso-camera-hub"
           mv "$art_dir/$bin" "$art_dir/$new_bin"
           bin="$new_bin"
           ;;

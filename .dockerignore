@@ -4,6 +4,7 @@
 camera_hub/pending_videos/
 camera_hub/state/
 releases/builds/
+release_work/
 motion_ai/cli/output
 camera_hub/output
 **/target

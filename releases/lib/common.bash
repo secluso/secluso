@@ -18,7 +18,7 @@
 
 usage() {
   echo "Usage:" >&2
-  echo "  ${PROGRAM_NAME} --target {raspberry|ipcamera|server|all|deploy} --profile <profile> [--test-reproduce]" >&2
+  echo "  ${PROGRAM_NAME} --target {raspberry|server|all|deploy} --profile <profile> [--test-reproduce]" >&2
   echo "  ${PROGRAM_NAME} --compare <build_dir_run1> <build_dir_run2>" >&2
   echo "" >&2
   echo "Deploy profiles:" >&2

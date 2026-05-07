@@ -23,8 +23,10 @@ use openpgp::policy::StandardPolicy;
 use openpgp::{Fingerprint, KeyHandle};
 use sequoia_openpgp as openpgp;
 
-// Binaries stored in INSTALL_ROOT/bin/BINARY_NAME
-pub const INSTALL_ROOT: &str = "/opt/secluso";
+// Secluso OS installs package-managed binaries under /usr/bin.
+pub const INSTALL_BIN_DIR: &str = "/usr/bin";
+
+pub const VERSION_ROOT: &str = "/var/lib/secluso/current_version";
 
 // Where we store camera secrets, *user credentials*, etc.
 pub const WORKING_DIRECTORY: &str = "/var/lib/secluso";
@@ -173,7 +175,7 @@ impl Component {
             (Self::Updater, _) => bail!("component=updater not supported on arch={}", arch),
 
             (Self::RaspberryCameraHub, "aarch64") => {
-                Ok("aarch64-unknown-linux-gnu/secluso-raspberry-camera-hub")
+                Ok("aarch64-unknown-linux-gnu/secluso-camera-hub")
             }
             (Self::RaspberryCameraHub, _) => {
                 bail!(
@@ -193,11 +195,11 @@ impl Component {
         let bin = match self {
             Self::Server => "secluso-server",
             Self::Updater => "secluso-update",
-            Self::RaspberryCameraHub => "secluso-raspberry-camera-hub",
+            Self::RaspberryCameraHub => "secluso-camera-hub",
             Self::ConfigTool => "secluso-config-tool",
         };
 
-        format!("{}/bin/{}", INSTALL_ROOT.trim_end_matches('/'), bin)
+        format!("{}/{}", INSTALL_BIN_DIR.trim_end_matches('/'), bin)
     }
 
     /// The version file location maintained per-component.
@@ -209,11 +211,7 @@ impl Component {
             Self::ConfigTool => "config_tool",
         };
 
-        format!(
-            "{}/current_version/{}",
-            INSTALL_ROOT.trim_end_matches('/'),
-            name
-        )
+        format!("{}/{}", VERSION_ROOT.trim_end_matches('/'), name)
     }
 }
 
@@ -541,7 +539,8 @@ fn checksum_asset_name_for_bundle(bundle_name: &str) -> Result<String> {
     let base = bundle_name
         .strip_suffix(".zip")
         .ok_or_else(|| anyhow!("bundle asset {} does not end with .zip", bundle_name))?;
-    Ok(format!("{}-sha256sums.txt", base))
+    let checksum_base = base.strip_prefix("secluso-runtime-").unwrap_or(base);
+    Ok(format!("secluso-{}-sha256sums.txt", checksum_base))
 }
 
 fn checksum_sig_asset_name_for(checksum_asset_name: &str, label: &str) -> String {
@@ -1055,4 +1054,17 @@ pub fn write_current_version(component: Component, v: Version) -> Result<()> {
         .with_context(|| format!("writing current version file: {}", p))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checksum_asset_name_drops_runtime_from_bundle_name() {
+        assert_eq!(
+            checksum_asset_name_for_bundle("secluso-runtime-v3.9.0.zip").unwrap(),
+            "secluso-v3.9.0-sha256sums.txt"
+        );
+    }
 }
