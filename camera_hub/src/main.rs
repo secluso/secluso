@@ -92,7 +92,15 @@ cfg_if! {
 const STATE_DIR_GENERAL: &str = "state";
 const VIDEO_DIR_GENERAL: &str = "pending_videos";
 const THUMBNAIL_DIR_GENERAL: &str = "pending_thumbnails";
+
+#[cfg(feature = "test")]
+const VERSION_DIR: &str = "current_version";
+#[cfg(feature = "test")]
+const VERSION_FILE: &str = "current_version/raspberry_camera_hub";
+
+#[cfg(not(feature = "test"))]
 const VERSION_DIR: &str = "/var/lib/secluso/current_version";
+#[cfg(not(feature = "test"))]
 const VERSION_FILE: &str = "/var/lib/secluso/current_version/raspberry_camera_hub";
 
 // A counter representing the amount of active camera threads
