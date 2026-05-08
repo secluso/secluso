@@ -68,6 +68,13 @@ export interface PrepareImageRequest {
   githubToken?: string;
 }
 
+export interface DeployVersionStatus {
+  currentVersion: string;
+  latestVersion: string;
+  releaseTag: string;
+  outdated: boolean;
+}
+
 export async function testServerSsh(target: SshTarget, runtime?: ServerRuntimePlan, serverUrl?: string): Promise<void> {
   await invoke("test_server_ssh", { target, runtime, serverUrl });
 }
@@ -89,6 +96,10 @@ export async function prepareImage(req: PrepareImageRequest): Promise<JobStart> 
 
 export async function openExternalUrl(url: string): Promise<void> {
   await invoke("open_external_url", { url });
+}
+
+export async function getDeployVersionStatus(): Promise<DeployVersionStatus> {
+  return invoke("get_deploy_version_status");
 }
 
 export async function listenProvisionEvents(

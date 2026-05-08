@@ -5520,6 +5520,7 @@ dependencies = [
  "secluso-client-lib",
  "secluso-client-server-lib",
  "secluso-update",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

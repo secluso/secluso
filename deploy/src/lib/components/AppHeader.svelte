@@ -1,9 +1,60 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <script lang="ts">
-  import { openExternalUrl } from "$lib/api";
+  import { onMount } from "svelte";
+  import packageInfo from "../../../package.json";
+  import { getDeployVersionStatus, openExternalUrl } from "$lib/api";
 
-  export let version = "v1.0.0";
+  type VersionPillState = "checking" | "latest" | "outdated" | "unknown";
+  type VersionStatusUpdate = {
+    state: VersionPillState;
+    currentVersion: string;
+    latestVersion: string | null;
+  };
+
+  export let version = `v${packageInfo.version}`;
   export let settingsHref = "/settings";
+  export let onVersionStatusChange: (status: VersionStatusUpdate) => void = () => {};
+
+  let versionLabel = version;
+  let latestVersion: string | null = null;
+  let pillState: VersionPillState = "checking";
+
+  $: versionLabel = versionLabel || version;
+  $: showVersionPill = pillState !== "unknown";
+  $: pillText =
+    pillState === "outdated"
+      ? "Outdated"
+      : pillState === "checking"
+        ? "Checking"
+        : "Latest version";
+  $: pillTitle =
+    pillState === "outdated" && latestVersion
+      ? `Current ${versionLabel}; latest ${latestVersion}`
+      : pillState === "latest" && latestVersion
+        ? `Current ${versionLabel}; latest ${latestVersion}`
+        : "Checking latest deploy app version";
+
+  onMount(async () => {
+    notifyVersionStatusChange();
+    try {
+      const status = await getDeployVersionStatus();
+      versionLabel = status.currentVersion;
+      latestVersion = status.latestVersion;
+      pillState = status.outdated ? "outdated" : "latest";
+      notifyVersionStatusChange();
+    } catch {
+      pillState = "unknown";
+      notifyVersionStatusChange();
+    }
+  });
+
+  function notifyVersionStatusChange() {
+    onVersionStatusChange({
+      state: pillState,
+      currentVersion: versionLabel,
+      latestVersion
+    });
+  }
 
   async function openExternal(url: string) {
     try {
@@ -19,8 +70,16 @@
     <div class="shared-header__brand">
       <img class="shared-header__mark" src="/deploy-assets/header-mark.jpeg" alt="" />
       <span class="shared-header__name">Secluso</span>
-      <small class="shared-header__version">{version}</small>
-      <span class="shared-header__pill"><i></i>Latest version</span>
+      <small class="shared-header__version">{versionLabel}</small>
+      {#if showVersionPill}
+        <span
+          class={`shared-header__pill shared-header__pill--${pillState}`}
+          title={pillTitle}
+          aria-live="polite"
+        >
+          <i></i>{pillText}
+        </span>
+      {/if}
     </div>
 
     <div class="shared-header__actions">
@@ -115,12 +174,32 @@
     white-space: nowrap;
   }
 
+  .shared-header__pill--checking {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.6);
+  }
+
+  .shared-header__pill--outdated {
+    background: rgba(245, 158, 11, 0.12);
+    border-color: rgba(245, 158, 11, 0.24);
+    color: #fbbf24;
+  }
+
   .shared-header__pill i {
     width: 6px;
     height: 6px;
     border-radius: 999px;
     background: #00d492;
     flex: 0 0 auto;
+  }
+
+  .shared-header__pill--checking i {
+    background: rgba(255, 255, 255, 0.4);
+  }
+
+  .shared-header__pill--outdated i {
+    background: #f59e0b;
   }
 
   .shared-header__actions {

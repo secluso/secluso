@@ -1,5 +1,19 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
-use secluso_update::{default_signers, Signer};
+use anyhow::{Context, Result};
+use semver::Version;
+use secluso_update::{
+    build_github_client, default_signers, fetch_latest_release, Signer, DEFAULT_OWNER_REPO,
+};
+use serde::Serialize;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeployVersionStatus {
+    current_version: String,
+    latest_version: String,
+    release_tag: String,
+    outdated: bool,
+}
 
 pub trait ReleaseSigKey {
     fn name(&self) -> &str;
@@ -71,4 +85,30 @@ pub fn resolve_signers<K: ReleaseSigKey>(sig_keys: Option<&[K]>) -> Vec<Signer> 
                 .map(ToOwned::to_owned),
         })
         .collect()
+}
+
+fn format_version(version: &Version) -> String {
+    format!("v{version}")
+}
+
+fn check_deploy_version_status() -> Result<DeployVersionStatus> {
+    let current_version = Version::parse(env!("CARGO_PKG_VERSION"))
+        .context("parsing bundled deploy app version")?;
+    let client = build_github_client(10, None, "secluso-deploy")?;
+    let release = fetch_latest_release(&client, DEFAULT_OWNER_REPO)
+        .with_context(|| format!("fetching latest release metadata for {DEFAULT_OWNER_REPO}"))?;
+    let latest_version = release.parsed_version()?;
+    let outdated = current_version < latest_version;
+
+    Ok(DeployVersionStatus {
+        current_version: format_version(&current_version),
+        latest_version: format_version(&latest_version),
+        release_tag: release.tag_name,
+        outdated,
+    })
+}
+
+#[tauri::command]
+pub fn get_deploy_version_status() -> std::result::Result<DeployVersionStatus, String> {
+    check_deploy_version_status().map_err(|err| format!("{err:#}"))
 }

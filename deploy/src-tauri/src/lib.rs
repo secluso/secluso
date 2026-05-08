@@ -15,6 +15,7 @@ pub fn run() {
             pi_hub_provision::prepare_image,
             pi_hub_provision::generate_user_credentials,
             open_external::open_external_url,
+            release_config::get_deploy_version_status,
             provision_server::fetch_server_host_key,
             provision_server::test_server_ssh,
             provision_server::provision_server,

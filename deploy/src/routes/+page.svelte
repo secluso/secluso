@@ -1,7 +1,15 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <script lang="ts">
   import { onMount, tick } from "svelte";
+  import { goto } from "$app/navigation";
   import AppHeader from "$lib/components/AppHeader.svelte";
+
+  type VersionGateState = "checking" | "latest" | "outdated" | "unknown";
+  type VersionStatusUpdate = {
+    state: VersionGateState;
+    currentVersion: string;
+    latestVersion: string | null;
+  };
 
   const FIRST_TIME_KEY = "secluso-first-time";
   const homeBackdropFill = "/deploy-assets/home-backdrop-fill-latest.svg";
@@ -18,6 +26,12 @@
 
   let firstTimeOn = false;
   let helpPanel: HTMLElement | null = null;
+  let versionGate: VersionStatusUpdate = {
+    state: "checking",
+    currentVersion: "v1.0.0",
+    latestVersion: null
+  };
+  let pendingRoute: string | null = null;
 
   onMount(() => {
     const raw = localStorage.getItem(FIRST_TIME_KEY);
@@ -45,11 +59,44 @@
       // best effort only
     }
   }
+
+  function updateVersionGate(status: VersionStatusUpdate) {
+    versionGate = status;
+  }
+
+  function openStep(event: MouseEvent, route: string) {
+    event.preventDefault();
+    if (versionGate.state === "latest") {
+      goto(route);
+      return;
+    }
+    pendingRoute = route;
+  }
+
+  function closeVersionWarning() {
+    pendingRoute = null;
+  }
+
+  function continuePastVersionWarning() {
+    const route = pendingRoute;
+    pendingRoute = null;
+    if (route) goto(route);
+  }
+
+  $: versionWarningTitle =
+    versionGate.state === "outdated" ? "Deploy tool may be outdated" : "Could not confirm latest version";
+  $: versionWarningBody =
+    versionGate.state === "outdated" && versionGate.latestVersion
+      ? `This deploy tool is ${versionGate.currentVersion}. The latest release appears to be ${versionGate.latestVersion}. Please update the deploy tool before continuing, or continue only if you have checked that this version is okay to use.`
+      : "The deploy tool has not confirmed whether it is up to date. The network check may still be running or may have failed. Please check the latest Secluso release yourself before continuing.";
+  $: if (pendingRoute && versionGate.state === "latest") {
+    continuePastVersionWarning();
+  }
 </script>
 
 <main class="page">
   <div class="page-backdrop"></div>
-  <AppHeader />
+  <AppHeader onVersionStatusChange={updateVersionGate} />
 
   <section class="home-frame">
     <div class="hero">
@@ -82,7 +129,7 @@
 
     <div class="section-label">Setup Steps</div>
 
-    <a class="step-card" href="/image">
+    <a class="step-card" href="/image" on:click={(event) => openStep(event, "/image")}>
       <img class="step-card__bg" src={homeStepOneBg} alt="" />
       <span class="step-card__icon step-card__icon--one"><img src={homeStepOneIcon} alt="" /></span>
       <span class="step-card__badge step-card__badge--one">1</span>
@@ -96,7 +143,7 @@
       <span class="step-card__arrow"><img src={homeStepArrow} alt="" /></span>
     </a>
 
-    <a class="step-card" href="/server-ssh">
+    <a class="step-card" href="/server-ssh" on:click={(event) => openStep(event, "/server-ssh")}>
       <img class="step-card__bg" src={homeStepTwoBg} alt="" />
       <span class="step-card__icon step-card__icon--two"><img src={homeStepTwoIcon} alt="" /></span>
       <span class="step-card__badge step-card__badge--two">2</span>
@@ -126,6 +173,28 @@
       </section>
     {/if}
   </section>
+
+  {#if pendingRoute}
+    <div class="version-modal-backdrop" role="presentation">
+      <div
+        class="version-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="version-warning-title"
+      >
+        <h2 id="version-warning-title">{versionWarningTitle}</h2>
+        <p>{versionWarningBody}</p>
+        <div class="version-modal__actions">
+          <button class="version-modal__button version-modal__button--secondary" type="button" on:click={closeVersionWarning}>
+            Go back
+          </button>
+          <button class="version-modal__button version-modal__button--primary" type="button" on:click={continuePastVersionWarning}>
+            Continue anyway
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </main>
 
 <style>
@@ -513,6 +582,71 @@
     text-decoration: underline;
   }
 
+  .version-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: rgba(0, 0, 0, 0.68);
+    backdrop-filter: blur(10px);
+  }
+
+  .version-modal {
+    width: min(420px, 100%);
+    padding: 22px;
+    border-radius: 18px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: #101010;
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+    box-sizing: border-box;
+  }
+
+  .version-modal h2 {
+    margin: 0;
+    color: #fff;
+    font-size: 18px;
+    font-weight: 650;
+    line-height: 24px;
+  }
+
+  .version-modal p {
+    margin: 10px 0 0;
+    color: rgba(255, 255, 255, 0.68);
+    font-size: 13px;
+    line-height: 19.5px;
+  }
+
+  .version-modal__actions {
+    margin-top: 20px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+
+  .version-modal__button {
+    height: 36px;
+    padding: 0 14px;
+    border-radius: 12px;
+    border: 1px solid transparent;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 650;
+    cursor: pointer;
+  }
+
+  .version-modal__button--secondary {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.8);
+  }
+
+  .version-modal__button--primary {
+    background: #f59e0b;
+    color: #151008;
+  }
+
   @media (max-width: 640px) {
     .home-frame {
       width: calc(100% - 16px);
@@ -534,6 +668,14 @@
     .step-card__title-row {
       flex-wrap: wrap;
       row-gap: 2px;
+    }
+
+    .version-modal__actions {
+      flex-direction: column-reverse;
+    }
+
+    .version-modal__button {
+      width: 100%;
     }
   }
 </style>

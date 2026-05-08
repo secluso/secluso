@@ -43,3 +43,4 @@ secluso-v*
 /releases/release_assets/
 *.p12
 __pycache__
+*.wic
