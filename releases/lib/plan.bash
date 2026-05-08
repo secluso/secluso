@@ -52,10 +52,9 @@ resolve_build_plan() {
       case "$PROFILE" in
         all)
           # Default deploy profiles only include artifacts we can exercise on hardware we have access to right now.
-          # macOS x86_64 and Windows arm64 are buildable but intentionally omitted as we don't have a way to test them right now
+          # macOS x86_64, Linux arm64 and Windows arm64 are buildable but intentionally omitted as we don't have a way to test them right now
           TRIPLES=(
             "x86_64-unknown-linux-gnu"
-            "aarch64-unknown-linux-gnu"
             "aarch64-apple-darwin"
             "x86_64-pc-windows-msvc"
           )
