@@ -8,7 +8,7 @@
 
 Private DIY home security for Raspberry Pi, with encrypted remote access and a 5-minute software setup.
 
-[Download Secluso Deploy](https://github.com/secluso/secluso/releases) • [Build Your Own Guide](https://secluso.com/build-your-own) • [Security Model](WHITE_PAPER.md) • [Website](https://secluso.com)
+[Download Secluso Deploy](https://github.com/secluso/secluso/releases) • [Build Your Own Guide](https://secluso.com/build-your-own) • [Security Model](WHITE_PAPER.md) • [Website](https://secluso.com) 
 
 </div>
 
@@ -54,6 +54,8 @@ TODO: A polished GIF showing Secluso Deploy
 ## Mobile App
 
 After setup, use the mobile app to check in remotely, review recent events, and open encrypted clips.
+
+[iOS Mobile App](https://apps.apple.com/us/app/secluso/id6756543429) • [Android Mobile App](https://play.google.com/store/apps/details?id=com.secluso.mobile)
 
 <p>
   <img src="https://github.com/secluso/media/blob/main/mobile_app_starting_screen.png" alt="A demo picture of our Secluso Deploy tool" width="300" />
