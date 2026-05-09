@@ -69,7 +69,7 @@ See [SECURITY.md](SECURITY.md) for the full security model, including the untrus
 
 We do distribute a prebuilt Raspberry Pi image called "Secluso OS". Secluso Deploy generates unique credentials on your machine and injects them into this prebuilt image. Secluso OS, the deploy tool, our runtime binaries, and our Android app are completely reproducible.
 
-See [releases/README.md](releases/README.md) for the reproducibility checker for the binaries and deploy tool. See [https://github.com/secluso/mobile_client/blob/main/tool/repro/README.md](mobile_client/tool/repro/README.md) for the reproducibility checker for the Android mobile app. See [https://github.com/secluso/os](os/README.md) for the reproducibility checker for Secluso OS. The image must be checked before the deploy tool modifies it (download from our releases directly).
+See [releases/README.md](releases/README.md) for the reproducibility checker for the binaries and deploy tool. See [mobile_client/tool/repro/README.md](https://github.com/secluso/mobile_client/blob/main/tool/repro/README.md) for the reproducibility checker for the Android mobile app. See [os/README.md](https://github.com/secluso/os) for the reproducibility checker for Secluso OS. The image must be checked before the deploy tool modifies it (download from our releases directly).
 
 ## Documentation and Help
 
