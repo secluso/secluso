@@ -14,7 +14,9 @@ Private DIY home security for Raspberry Pi, with encrypted remote access and a 5
 
 Secluso is a private home security camera system for Raspberry Pi. Watch live video, get alerts, and open recordings from your phone without handing your footage to a cloud provider.
 
-Secluso is developed by Secluso, Inc. and co-founded by Ardalan Amiri Sani, a UC Irvine professor with expertise in computer security and privacy.
+Secluso is developed by Secluso, Inc. and co-founded by:
+- Ardalan Amiri Sani, a UC Irvine professor with expertise in computer security and privacy,
+- John Kaczman, an open source and privacy enthusiast with experience in automation, systems, and AI.
 
 ## Features
 
@@ -78,13 +80,6 @@ Need hardware suggestions, a starter VPS, or a short BYO walkthrough? See [Build
 ## Contributing
 
 Questions and contributions are welcome. Contributions are made under the project license in [LICENSE](LICENSE).
-
-## Project Founders
-
-- Ardalan Amiri Sani (UC Irvine professor focused on computer security and privacy)
-- John Kaczman (Open source and privacy enthusiast with experience in automation, systems, and AI)
-
-Secluso is developed and supported by Secluso, Inc.
 
 ## Disclaimers
 
