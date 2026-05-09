@@ -1,7 +1,7 @@
 <div align="center">
 
 <p>
-  <img src="media/banner-private-home-security.png" alt="Private home security without cloud surveillance" width="1200" />
+  <img src="https://github.com/secluso/media/blob/main/secluso-banner.png" alt="Private home security without cloud surveillance" width="1200" />
 </p>
 
 # Secluso
