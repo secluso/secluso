@@ -65,7 +65,7 @@ TODO: A polished GIF of multiple views of the mobile app
 
 ## Security
 
-See [SECURITY.md](SECURITY.md) for the full security model, including the untrusted-relay design, forward secrecy, and post-compromise security.
+See [WHITE_PAPER.md](WHITE_PAPER.md) for the full security model, including the untrusted-relay design, forward secrecy, and post-compromise security. See [SECURITY.md](SECURITY.md) for how to report a vulnerability.
 
 ## Reproducible Builds
 
