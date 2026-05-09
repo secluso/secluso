@@ -39,7 +39,7 @@ Secluso is developed by Secluso, Inc. and co-founded by:
 3. Let Secluso Deploy provision your relay over SSH, or email us if you want free beta relay hosting while testing.
 4. Boot the Pi and pair it in the mobile app.
 
-If you are still choosing hardware or a VPS, [Build Your Own Guide](https://secluso.com/build-your-own) gives you hardware suggestions and a simple starting path.
+If you need help choosing hardware or a VPS, [Build Your Own Guide](https://secluso.com/build-your-own) gives you hardware suggestions and a simple starting path.
 
 
 <p>
@@ -73,13 +73,12 @@ We do distribute a prebuilt Raspberry Pi image called "Secluso OS". Secluso Depl
 
 See [releases/README.md](releases/README.md) for the reproducibility checker for the binaries and deploy tool. See [mobile_client/tool/repro/README.md](https://github.com/secluso/mobile_client/blob/main/tool/repro/README.md) for the reproducibility checker for the Android mobile app. See [os/README.md](https://github.com/secluso/os) for the reproducibility checker for Secluso OS. The image must be checked before the deploy tool modifies it (download from our releases directly).
 
-## Documentation and Help
-
-Need hardware suggestions, a starter VPS, or a short BYO walkthrough? See [Build Your Own](https://secluso.com/build-your-own). If you get stuck, email [secluso@proton.me](mailto:secluso@proton.me). We are happy to help whether or not you ever buy from us.
-
 ## Contributing
 
 Questions and contributions are welcome. Contributions are made under the project license in [LICENSE](LICENSE).
+
+## Contact
+If you need help with anything else, please feel free to contact us at secluso@proton.me
 
 ## Disclaimers
 
