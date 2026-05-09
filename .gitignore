@@ -26,6 +26,7 @@ cameras.yaml
 credentials_full
 *.sh
 !update/scripts/secluso_sign_checksums.sh
+!update/scripts/secluso_sign_image_checksums.sh
 
 # Firebase Service Files
 google-services.json
