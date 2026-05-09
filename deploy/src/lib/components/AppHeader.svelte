@@ -85,7 +85,7 @@
     <div class="shared-header__actions">
       <a
         class="shared-header__store shared-header__store--ios"
-        href="https://apps.apple.com/app/id0000000000"
+        href="https://apps.apple.com/us/app/secluso/id6756543429"
         on:click|preventDefault={() => openExternal("https://apps.apple.com/us/app/secluso/id6756543429")}
       >
         <img src="/deploy-assets/header-ios-latest.svg" alt="" />
