@@ -8,7 +8,7 @@
 
 Private DIY home security for Raspberry Pi, with encrypted remote access and a 5-minute software setup.
 
-[Download Secluso Deploy](https://github.com/secluso/secluso/releases) • [Build Your Own Guide](https://secluso.com/build-your-own) • [Security Model](SECURITY.md) • [Website](https://secluso.com)
+[Download Secluso Deploy](https://github.com/secluso/secluso/releases) • [Build Your Own Guide](https://secluso.com/build-your-own) • [Security Model](WHITE_PAPER.md) • [Website](https://secluso.com)
 
 </div>
 
