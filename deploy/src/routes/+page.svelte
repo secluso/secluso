@@ -3,6 +3,7 @@
   import { onMount, tick } from "svelte";
   import { goto } from "$app/navigation";
   import AppHeader from "$lib/components/AppHeader.svelte";
+  import { openExternalUrl } from "$lib/api";
 
   type VersionGateState = "checking" | "latest" | "outdated" | "unknown";
   type VersionStatusUpdate = {
@@ -57,6 +58,15 @@
       sessionStorage.setItem("secluso-help-ref", window.location.pathname);
     } catch {
       // best effort only
+    }
+  }
+
+  async function openExternal(url: string) {
+    setHelpRef();
+    try {
+      await openExternalUrl(url);
+    } catch {
+      window.open(url, "_blank", "noopener,noreferrer");
     }
   }
 
@@ -167,8 +177,7 @@
         </ol>
 
         <div class="help-links">
-          <a class="help-link" href="/hardware-help" on:click={setHelpRef}>Recommended hardware guide</a>
-          <a class="help-link" href="/ionos-help" on:click={setHelpRef}>Ionos VPS setup guide</a>
+          <a class="help-link" href="https://secluso.com/build-your-own" on:click|preventDefault={() => openExternal("https://secluso.com/build-your-own")}>Bring your own setup guide</a>
         </div>
       </section>
     {/if}
