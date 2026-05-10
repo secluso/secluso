@@ -72,7 +72,10 @@ RUN set -eux; \
 
 COPY --from=proj . .
 COPY lib/docker_deploy /opt/secluso-docker-deploy
-RUN chmod +x /opt/secluso-docker-deploy/*.bash
+RUN set -eux; \
+    chmod +x /opt/secluso-docker-deploy/*.bash; \
+    find /app/deploy/src-tauri/icons -type d -exec chmod 0755 {} +; \
+    find /app/deploy/src-tauri/icons -type f -exec chmod 0644 {} +
 
 WORKDIR /app/deploy
 
