@@ -3,12 +3,23 @@
 // so we will use adapter-static to prerender the app (SSG)
 // See: https://v2.tauri.app/start/frontend/sveltekit/ for more info
 import adapter from "@sveltejs/adapter-static";
+import { readFileSync } from "node:fs";
 import { vitePreprocess } from "@sveltejs/vite-plugin-svelte";
 
-// SvelteKit's default version hash is build-time dependent. Pin it so static
-// asset names are reproducible across identical source/toolchain builds.
-const deterministicVersion =
-  process.env.SOURCE_DATE_EPOCH ?? process.env.npm_package_version ?? "0";
+function readReleaseVersion() {
+  const releaseVersion = readFileSync(
+    new URL("./release-version.txt", import.meta.url),
+    "utf8",
+  ).trim();
+  if (!releaseVersion) {
+    throw new Error("deploy/release-version.txt must contain a release version");
+  }
+  return releaseVersion;
+}
+
+// SvelteKit's default version hash is build-time dependent.
+// We pin it to a manually bumped release value so unrelated commits (e.g. README changes) do not rename assets.
+const deterministicVersion = readReleaseVersion();
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {

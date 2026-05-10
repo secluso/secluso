@@ -496,15 +496,21 @@ build_deploy_and_manifest() {
     [[ -n "$supported_bundles" ]] || die "Could not determine supported Tauri bundle types from local CLI after install. Run: cd ${deploy_dir} && pnpm tauri build --help"
   fi
 
-  local deploy_source_date_epoch="${SOURCE_DATE_EPOCH:-}"
-  if [[ -z "$deploy_source_date_epoch" ]]; then
-    if command -v git >/dev/null 2>&1 && git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      deploy_source_date_epoch="$(git -C "$PROJECT_ROOT" log -1 --pretty=%ct 2>/dev/null || true)"
-    fi
-  fi
-  if [[ -z "$deploy_source_date_epoch" ]]; then
-    deploy_source_date_epoch="1704067200"
-  fi
+  local deploy_source_date_epoch_file="$deploy_dir/release-source-date-epoch.txt"
+  [[ -f "$deploy_source_date_epoch_file" ]] || die "Missing deploy source date epoch file: $deploy_source_date_epoch_file"
+  local deploy_source_date_epoch
+  deploy_source_date_epoch="$(
+    awk '
+      {
+        gsub(/[[:space:]]/, "")
+      }
+      $0 !~ /^#/ && $0 != "" {
+        print
+        exit
+      }
+    ' "$deploy_source_date_epoch_file"
+  )"
+  [[ -n "$deploy_source_date_epoch" ]] || die "Empty deploy source date epoch file: $deploy_source_date_epoch_file"
   [[ "$deploy_source_date_epoch" =~ ^[0-9]+$ ]] || die "Invalid SOURCE_DATE_EPOCH value: $deploy_source_date_epoch"
 
   local deterministic_rustflags="${RUSTFLAGS:-}"
