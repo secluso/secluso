@@ -10,9 +10,9 @@ If you only want to verify a release, use the commands in the next section. If y
 
 For the deploy-tool release, authenticate the release files you downloaded before comparing any build output. From the deploy-tool release-asset directory shown in this guide, verify the maintainer-signed checksum file first, then verify the files named by that checksum file:
 
-    gpg --verify deploy-tool-SHA256SUMS.txt.jkaczman.asc deploy-tool-SHA256SUMS.txt
-    gpg --verify deploy-tool-SHA256SUMS.txt.arrdalan.asc deploy-tool-SHA256SUMS.txt
-    sha256sum -c deploy-tool-SHA256SUMS.txt
+    gpg --verify secluso-vX.Y.Z-sha256sums.txt.jkaczman.asc secluso-vX.Y.Z-sha256sums.txt
+    gpg --verify secluso-vX.Y.Z-sha256sums.txt.arrdalan.asc secluso-vX.Y.Z-sha256sums.txt
+    sha256sum -c secluso-vX.Y.Z-sha256sums.txt
 
 Both checksum signatures should be checked for complete assurance. The signing keys are the same project co-founder keys listed in SECURITY.md: Ardalan Amiri Sani, fingerprint 1A9A1BA3090FA78E946DC0C0301497925DCCE876, and John Kaczman, fingerprint 7785755F1A24FF04CE0E12575DF5E79230C57C4A. This step proves that the files on disk are the files covered by the signed checksum statement. Use the same pattern for regular binary release bundles. The reproducible-build checks below then prove what those files correspond to.
 
