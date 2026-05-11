@@ -33,7 +33,7 @@ jobs:
           while IFS='=' read -r name value; do
             case "$name" in
               ''|\#*) continue ;;
-              MACOS_HOST_*|RUST_DIGEST__*)
+              DEPLOY_*|MACOS_HOST_*|RUST_DIGEST__*)
                 export "$name=$value"
                 echo "$name=$value" >> "$GITHUB_ENV"
                 ;;
@@ -43,7 +43,8 @@ jobs:
           : "${MACOS_HOST_RUSTC_VERSION:?}"
           : "${MACOS_HOST_CARGO_VERSION:?}"
           : "${MACOS_HOST_NODE_VERSION:?}"
-          : "${MACOS_HOST_PNPM_VERSION:?}"
+          : "${DEPLOY_PNPM_VERSION:?}"
+          : "${DEPLOY_PNPM_TARBALL_INTEGRITY:?}"
           : "${MACOS_HOST_TAURI_CLI_VERSION:?}"
           : "${MACOS_HOST_CLANG_VERSION:?}"
           : "${MACOS_HOST_XCODE_VERSION:?}"
@@ -53,7 +54,7 @@ jobs:
             echo "rustc=${MACOS_HOST_RUSTC_VERSION}"
             echo "cargo=${MACOS_HOST_CARGO_VERSION}"
             echo "node=${MACOS_HOST_NODE_VERSION}"
-            echo "pnpm=${MACOS_HOST_PNPM_VERSION}"
+            echo "pnpm=${DEPLOY_PNPM_VERSION}"
             echo "tauri_cli=${MACOS_HOST_TAURI_CLI_VERSION}"
             echo "clang=${MACOS_HOST_CLANG_VERSION}"
             echo "xcode=${MACOS_HOST_XCODE_VERSION}"
@@ -64,7 +65,7 @@ jobs:
           printf '  rustc=%s\n' "$MACOS_HOST_RUSTC_VERSION"
           printf '  cargo=%s\n' "$MACOS_HOST_CARGO_VERSION"
           printf '  node=%s\n' "$MACOS_HOST_NODE_VERSION"
-          printf '  pnpm=%s\n' "$MACOS_HOST_PNPM_VERSION"
+          printf '  pnpm=%s\n' "$DEPLOY_PNPM_VERSION"
           printf '  tauri-cli=%s\n' "$MACOS_HOST_TAURI_CLI_VERSION"
           printf '  apple-clang=%s\n' "$MACOS_HOST_CLANG_VERSION"
           printf '  xcode=%s\n' "$MACOS_HOST_XCODE_VERSION"
@@ -91,8 +92,15 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          corepack enable
-          corepack prepare "pnpm@${MACOS_HOST_PNPM_VERSION}" --activate
+          pnpm_tgz="${RUNNER_TEMP}/pnpm-${DEPLOY_PNPM_VERSION}.tgz"
+          curl -fsSL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 \
+            "https://registry.npmjs.org/pnpm/-/pnpm-${DEPLOY_PNPM_VERSION}.tgz" \
+            -o "$pnpm_tgz"
+
+          node -e 'const crypto=require("crypto"); const fs=require("fs"); const [file, integrity]=process.argv.slice(1); const [algo, expected]=integrity.split("-"); const actual=crypto.createHash(algo).update(fs.readFileSync(file)).digest("base64"); if (actual !== expected) { console.error(`Integrity mismatch for ${file}\nexpected: ${integrity}\nactual:   ${algo}-${actual}`); process.exit(1); }' \
+            "$pnpm_tgz" "$DEPLOY_PNPM_TARBALL_INTEGRITY"
+          npm install -g --no-audit --no-fund "$pnpm_tgz"
+          rm -f "$pnpm_tgz"
 
           node --version
           pnpm --version

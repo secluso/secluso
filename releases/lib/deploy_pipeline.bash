@@ -100,7 +100,7 @@ enforce_locked_macos_host_toolchain() {
   require_locked_host_version "MACOS_HOST_RUSTC_VERSION" "$rustc_version" "rustc"
   require_locked_host_version "MACOS_HOST_CARGO_VERSION" "$cargo_version" "cargo"
   require_locked_host_version "MACOS_HOST_NODE_VERSION" "$node_version" "node"
-  require_locked_host_version "MACOS_HOST_PNPM_VERSION" "$pnpm_version" "pnpm"
+  require_locked_host_version "DEPLOY_PNPM_VERSION" "$pnpm_version" "pnpm"
   require_locked_host_version "MACOS_HOST_TAURI_CLI_VERSION" "$tauri_cli_version" "tauri-cli"
   require_locked_host_version "MACOS_HOST_CLANG_VERSION" "$clang_version" "apple-clang"
   require_locked_host_version "MACOS_HOST_XCODE_VERSION" "$xcode_version" "xcode"
@@ -303,6 +303,9 @@ run_docker_deploy_bundle_for_triple() {
   local docker_bundle_targets_json
   docker_bundle_targets_json="$(deploy_bundle_targets_json_for_triple "$triple")"
 
+  [[ -n "${DEPLOY_PNPM_VERSION:-}" ]] || die "Missing DEPLOY_PNPM_VERSION in ${DIGESTS_LOCK_FILE}"
+  [[ -n "${DEPLOY_PNPM_TARBALL_INTEGRITY:-}" ]] || die "Missing DEPLOY_PNPM_TARBALL_INTEGRITY in ${DIGESTS_LOCK_FILE}"
+
   local docker_debug="${DEBUG:-0}"
 
   local tmp_art_dir
@@ -347,6 +350,8 @@ run_docker_deploy_bundle_for_triple() {
     --build-arg "RUST_HASH=${docker_digest}" \
     --build-arg "TAURI_TARGET=${triple}" \
     --build-arg "TAURI_RUNNER=${docker_runner}" \
+    --build-arg "PNPM_VERSION=${DEPLOY_PNPM_VERSION}" \
+    --build-arg "PNPM_TARBALL_INTEGRITY=${DEPLOY_PNPM_TARBALL_INTEGRITY}" \
     --build-arg "TAURI_BUNDLE_TARGETS_JSON=${docker_bundle_targets_json}" \
     --build-arg "SOURCE_DATE_EPOCH=${source_date_epoch}" \
     --build-arg "DEBUG=${docker_debug}" \

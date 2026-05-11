@@ -4,8 +4,8 @@ ARG RUST_HASH="5861091755a3298619c94a6cbf0534062cfeb9afcda9f698a13df3ef64e2dd8b"
 ARG TAURI_TARGET=""
 ARG TAURI_RUNNER="cargo"
 ARG CARGO_XWIN_VERSION="0.21.4"
-ARG PNPM_VERSION="10.29.1"
-ARG PNPM_TARBALL_INTEGRITY="sha512-SNriM2NaZFdoowKNGVRcrMFohjnusfNzTkLW1rlxr78iqhrJr1Khc9nDogwVhXz6QA8ZmU15ovYm/Mc/zNqbvA=="
+ARG PNPM_VERSION
+ARG PNPM_TARBALL_INTEGRITY
 ARG TAURI_BUNDLE_TARGETS_JSON='["appimage","deb","rpm"]'
 ARG SOURCE_DATE_EPOCH="1704067200"
 ARG DEBUG="0"
@@ -60,6 +60,8 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
+    : "${PNPM_VERSION:?missing PNPM_VERSION build arg}"; \
+    : "${PNPM_TARBALL_INTEGRITY:?missing PNPM_TARBALL_INTEGRITY build arg}"; \
     pnpm_tgz="/tmp/pnpm-${PNPM_VERSION}.tgz"; \
     curl -fsSL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 \
       "https://registry.npmjs.org/pnpm/-/pnpm-${PNPM_VERSION}.tgz" \
