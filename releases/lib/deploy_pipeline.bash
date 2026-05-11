@@ -217,19 +217,30 @@ prepare_deterministic_macos_source_tree() {
 
   rm -rf "$source_dir"
   mkdir -p "$source_dir"
-  rsync -a --delete \
-    --exclude '/.git/' \
-    --exclude '/target/' \
-    --exclude '/.svelte-kit/' \
-    --exclude '/build/' \
-    --exclude '/deploy/node_modules/' \
-    --exclude '/deploy/.svelte-kit/' \
-    --exclude '/deploy/build/' \
-    --exclude '/deploy/src-tauri/target/' \
-    --exclude '/releases/builds/' \
-    --exclude '/releases/.repro-work/' \
-    "${PROJECT_ROOT}/" \
-    "${source_dir}/"
+
+  local staged_path
+  for staged_path in deploy update client_lib client_server_lib; do
+    [[ -d "$PROJECT_ROOT/$staged_path" ]] || die "Missing macOS deploy source path: $PROJECT_ROOT/$staged_path"
+    mkdir -p "$source_dir/$staged_path"
+    rsync -rltp --delete --delete-excluded \
+      --exclude '.DS_Store' \
+      --exclude 'target/' \
+      --exclude 'node_modules/' \
+      --exclude '.svelte-kit/' \
+      --exclude 'build/' \
+      "${PROJECT_ROOT}/${staged_path}/" \
+      "${source_dir}/${staged_path}/"
+  done
+
+  local required_manifest
+  for required_manifest in \
+    deploy/src-tauri/Cargo.toml \
+    update/Cargo.toml \
+    client_lib/Cargo.toml \
+    client_server_lib/Cargo.toml
+  do
+    [[ -f "$source_dir/$required_manifest" ]] || die "Staged macOS deploy source is missing required manifest: $source_dir/$required_manifest"
+  done
 
   printf '%s' "$source_dir"
 }
