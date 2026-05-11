@@ -1,0 +1,229 @@
+name: macOS Deploy App
+
+# Runs only when manually dispatched for the purpose of double checking reproducibility.
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-deploy-app-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build macos-arm64
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'run-macos-deploy'
+    runs-on: macos-26
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Load pinned macOS tool versions
+        id: pins
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          while IFS='=' read -r name value; do
+            case "$name" in
+              ''|\#*) continue ;;
+              MACOS_HOST_*|RUST_DIGEST__*)
+                export "$name=$value"
+                echo "$name=$value" >> "$GITHUB_ENV"
+                ;;
+            esac
+          done < releases/digests.lock.env
+
+          : "${MACOS_HOST_RUSTC_VERSION:?}"
+          : "${MACOS_HOST_CARGO_VERSION:?}"
+          : "${MACOS_HOST_NODE_VERSION:?}"
+          : "${MACOS_HOST_PNPM_VERSION:?}"
+          : "${MACOS_HOST_TAURI_CLI_VERSION:?}"
+          : "${MACOS_HOST_CLANG_VERSION:?}"
+          : "${MACOS_HOST_XCODE_VERSION:?}"
+          : "${MACOS_HOST_SDK_VERSION:?}"
+
+          {
+            echo "rustc=${MACOS_HOST_RUSTC_VERSION}"
+            echo "cargo=${MACOS_HOST_CARGO_VERSION}"
+            echo "node=${MACOS_HOST_NODE_VERSION}"
+            echo "pnpm=${MACOS_HOST_PNPM_VERSION}"
+            echo "tauri_cli=${MACOS_HOST_TAURI_CLI_VERSION}"
+            echo "clang=${MACOS_HOST_CLANG_VERSION}"
+            echo "xcode=${MACOS_HOST_XCODE_VERSION}"
+            echo "sdk=${MACOS_HOST_SDK_VERSION}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Pinned macOS host versions:"
+          printf '  rustc=%s\n' "$MACOS_HOST_RUSTC_VERSION"
+          printf '  cargo=%s\n' "$MACOS_HOST_CARGO_VERSION"
+          printf '  node=%s\n' "$MACOS_HOST_NODE_VERSION"
+          printf '  pnpm=%s\n' "$MACOS_HOST_PNPM_VERSION"
+          printf '  tauri-cli=%s\n' "$MACOS_HOST_TAURI_CLI_VERSION"
+          printf '  apple-clang=%s\n' "$MACOS_HOST_CLANG_VERSION"
+          printf '  xcode=%s\n' "$MACOS_HOST_XCODE_VERSION"
+          printf '  macOS SDK=%s\n' "$MACOS_HOST_SDK_VERSION"
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          rustup toolchain install "$MACOS_HOST_RUSTC_VERSION" --profile minimal --target aarch64-apple-darwin
+          rustup default "$MACOS_HOST_RUSTC_VERSION"
+
+          rustc -V
+          cargo -V
+
+      - name: Install pinned Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.pins.outputs.node }}
+
+      - name: Install pinned pnpm
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          corepack enable
+          corepack prepare "pnpm@${MACOS_HOST_PNPM_VERSION}" --activate
+
+          node --version
+          pnpm --version
+
+      - name: Select and verify pinned Xcode
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          xcode_minor="${MACOS_HOST_XCODE_VERSION%.*}"
+          candidate_paths=(
+            "/Applications/Xcode_${MACOS_HOST_XCODE_VERSION}.app"
+            "/Applications/Xcode_${xcode_minor}.app"
+            "/Applications/Xcode.app"
+          )
+
+          selected_xcode=""
+          for candidate in "${candidate_paths[@]}"; do
+            if [[ -d "$candidate" ]]; then
+              selected_xcode="$candidate"
+              break
+            fi
+          done
+
+          if [[ -n "$selected_xcode" ]]; then
+            sudo xcode-select -s "$selected_xcode/Contents/Developer"
+          fi
+
+          actual_xcode="$(xcodebuild -version | awk '/^Xcode /{print $2; exit}')"
+          actual_sdk="$(xcrun --show-sdk-version)"
+          actual_clang="$(clang --version | sed -nE 's/^Apple clang version ([0-9.]+).*/\1/p' | head -n 1)"
+
+          if [[ "$actual_xcode" != "$MACOS_HOST_XCODE_VERSION" ]]; then
+            echo "Pinned Xcode mismatch: expected $MACOS_HOST_XCODE_VERSION, got $actual_xcode" >&2
+            echo "Installed Xcode apps:" >&2
+            ls -1 /Applications | grep '^Xcode' >&2 || true
+            exit 1
+          fi
+
+          if [[ "$actual_sdk" != "$MACOS_HOST_SDK_VERSION" ]]; then
+            echo "Pinned macOS SDK mismatch: expected $MACOS_HOST_SDK_VERSION, got $actual_sdk" >&2
+            exit 1
+          fi
+
+          if [[ "$actual_clang" != "$MACOS_HOST_CLANG_VERSION" ]]; then
+            echo "Pinned Apple clang mismatch: expected $MACOS_HOST_CLANG_VERSION, got $actual_clang" >&2
+            exit 1
+          fi
+
+          xcodebuild -version
+          xcrun --show-sdk-version
+          clang --version | head -n 1
+
+      - name: Build unsigned macOS deploy app
+        id: build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          build_log="${RUNNER_TEMP}/secluso-macos-deploy-build.log"
+
+          mkdir -p releases/builds
+          before_file="${RUNNER_TEMP}/secluso-builds-before.txt"
+          after_file="${RUNNER_TEMP}/secluso-builds-after.txt"
+
+          find releases/builds -mindepth 1 -maxdepth 1 -type d -print | LC_ALL=C sort > "$before_file"
+
+          ./releases/build.sh --target deploy --profile macos-arm64 2>&1 | tee "$build_log"
+
+          find releases/builds -mindepth 1 -maxdepth 1 -type d -print | LC_ALL=C sort > "$after_file"
+          run_dir="$(comm -13 "$before_file" "$after_file" | tail -n 1)"
+          if [[ -z "$run_dir" ]]; then
+            run_dir="$(find releases/builds -mindepth 1 -maxdepth 1 -type d -print | LC_ALL=C sort | tail -n 1)"
+          fi
+          [[ -n "$run_dir" && -d "$run_dir" ]] || { echo "Could not resolve release build output directory" >&2; exit 1; }
+          [[ -f "$run_dir/manifest.json" ]] || { echo "Missing manifest in build output: $run_dir" >&2; exit 1; }
+
+          echo "run_dir=$run_dir" >> "$GITHUB_OUTPUT"
+          echo "Build output: $run_dir"
+
+      - name: Package downloadable app artifact
+        id: package
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          run_dir="${{ steps.build.outputs.run_dir }}"
+          triple="aarch64-apple-darwin"
+          arch_label="arm64"
+
+          app_dir="${run_dir}/artifacts/${triple}/app/Secluso Deploy.app"
+          [[ -d "$app_dir" ]] || { echo "Missing app bundle: $app_dir" >&2; exit 1; }
+
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_dir/Contents/Info.plist")"
+          artifact_dir="${RUNNER_TEMP}/secluso-deploy-macos-artifact"
+          rm -rf "$artifact_dir"
+          mkdir -p "$artifact_dir"
+
+          app_zip="${artifact_dir}/Secluso-Deploy-${version}-macos-${arch_label}.app.zip"
+          run_zip="${artifact_dir}/secluso-deploy-macos-arm64-verification-run.zip"
+
+          ditto -c -k --keepParent --norsrc "$app_dir" "$app_zip"
+          ditto -c -k --keepParent --norsrc "$run_dir" "$run_zip"
+          cp "$run_dir/manifest.json" "$artifact_dir/manifest.json"
+
+          (
+            cd "$artifact_dir"
+            shasum -a 256 \
+              "$(basename "$app_zip")" \
+              "$(basename "$run_zip")" \
+              manifest.json \
+              > SHA256SUMS.txt
+          )
+
+          echo "artifact_dir=$artifact_dir" >> "$GITHUB_OUTPUT"
+          echo "app_zip=$app_zip" >> "$GITHUB_OUTPUT"
+          echo "Packaged app: $app_zip"
+
+      - name: Upload deploy app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: secluso-deploy-macos-arm64-${{ github.sha }}
+          path: ${{ steps.package.outputs.artifact_dir }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: secluso-deploy-macos-arm64-${{ github.sha }}-build-log
+          path: ${{ runner.temp }}/secluso-macos-deploy-build.log
+          if-no-files-found: ignore
+          retention-days: 14
