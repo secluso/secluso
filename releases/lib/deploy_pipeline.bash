@@ -138,10 +138,22 @@ append_rustflag_once() {
   fi
 }
 
+deterministic_macos_deploy_target_dir() {
+  local target_dir="${MACOS_DEPLOY_REPRO_TARGET_DIR:-/private/tmp/secluso-deploy-target}"
+  case "$target_dir" in
+    /*) ;;
+    *) die "MACOS_DEPLOY_REPRO_TARGET_DIR must be an absolute path for reproducible builds: $target_dir" ;;
+  esac
+
+  printf '%s' "$target_dir"
+}
+
 deterministic_macos_rustflags() {
   local deterministic_rustflags="${RUSTFLAGS:-}"
   local cargo_home_path="${CARGO_HOME:-$HOME/.cargo}"
   local rustup_home_path="${RUSTUP_HOME:-$HOME/.rustup}"
+  local macos_deploy_target_dir
+  macos_deploy_target_dir="$(deterministic_macos_deploy_target_dir)"
   local rust_sysroot
   rust_sysroot="$(rustc --print sysroot)"
   local rust_commit
@@ -158,6 +170,7 @@ deterministic_macos_rustflags() {
   append_rustflag_once deterministic_rustflags "--remap-path-prefix=${cargo_home_path}=/cargo-home"
   append_rustflag_once deterministic_rustflags "--remap-path-prefix=${rust_sysroot}/lib/rustlib/src/rust=/rustc/${rust_commit}"
   append_rustflag_once deterministic_rustflags "--remap-path-prefix=${PROJECT_ROOT}=."
+  append_rustflag_once deterministic_rustflags "--remap-path-prefix=${macos_deploy_target_dir}=/cargo-target"
 
   printf '%s' "$deterministic_rustflags"
 }
@@ -273,11 +286,14 @@ assert_no_macos_host_path_leaks() {
   if [[ "$PROJECT_ROOT" == "$HOME/"* ]]; then
     project_under_home="${PROJECT_ROOT#"$HOME"/}"
   fi
+  local macos_deploy_target_dir
+  macos_deploy_target_dir="$(deterministic_macos_deploy_target_dir)"
 
   # If these strings are present, source-path metadata is inside
   local patterns=(
     "$PROJECT_ROOT"
     "$HOME"
+    "$macos_deploy_target_dir"
     "/Users/runner"
     "/home/runner/work"
     "/home/user/.cargo"
@@ -830,7 +846,8 @@ build_deploy_and_manifest() {
       if ! selected_bundle="$(pick_supported_bundle "$bundle_candidates" "$supported_bundles" 2>/dev/null)"; then
         die "Target $triple requires macOS host bundling. Supported on this host: $supported_bundles"
       fi
-      local run_target_dir="${RELEASES_DIR}/.repro-work/deploy-target"
+      local run_target_dir
+      run_target_dir="$(deterministic_macos_deploy_target_dir)"
       run_host_deploy_bundle_for_triple \
         "$run_id" \
         "$triple" \
