@@ -74,8 +74,146 @@ require_locked_host_version() {
   fi
 }
 
+ensure_locked_macos_rustup_toolchain() {
+  require_tool rustup
+
+  [[ -n "${MACOS_HOST_RUSTC_VERSION:-}" ]] || die "Missing MACOS_HOST_RUSTC_VERSION in ${DIGESTS_LOCK_FILE}"
+
+  # "stable-aarch64-apple-darwin" and "1.90.0-aarch64-apple-darwin" can compile with the same rustc version, but still come from different sysroot paths
+  # Thus, we select the locked toolchain inside this process with RUSTUP_TOOLCHAIN
+  echo "==> Selecting pinned Rust toolchain ${MACOS_HOST_RUSTC_VERSION} for macOS host build"
+
+  local installed_toolchain=0
+  local listed_toolchain
+  while IFS= read -r listed_toolchain; do
+    listed_toolchain="${listed_toolchain%% *}"
+    case "$listed_toolchain" in
+      "$MACOS_HOST_RUSTC_VERSION"|"$MACOS_HOST_RUSTC_VERSION"-*)
+        installed_toolchain=1
+        break
+        ;;
+    esac
+  done < <(rustup toolchain list)
+
+  if [[ "$installed_toolchain" -eq 0 ]]; then
+    local install_args=( "$MACOS_HOST_RUSTC_VERSION" --profile minimal )
+    local install_triple
+    for install_triple in "$@"; do
+      [[ -n "$install_triple" ]] || continue
+      install_args+=( --target "$install_triple" )
+    done
+    rustup toolchain install "${install_args[@]}"
+  fi
+
+  export RUSTUP_TOOLCHAIN="$MACOS_HOST_RUSTC_VERSION"
+
+  local active_toolchain
+  active_toolchain="$(rustup show active-toolchain 2>/dev/null | awk '{print $1}' || true)"
+  case "$active_toolchain" in
+    "$MACOS_HOST_RUSTC_VERSION"|"$MACOS_HOST_RUSTC_VERSION"-*) ;;
+    *)
+      die "Pinned Rust toolchain was not selected: expected ${MACOS_HOST_RUSTC_VERSION}, got ${active_toolchain:-<unavailable>}"
+      ;;
+  esac
+
+  for triple in "$@"; do
+    [[ -n "$triple" ]] || continue
+    if ! rustup target list --toolchain "$MACOS_HOST_RUSTC_VERSION" --installed | grep -Fx "$triple" >/dev/null 2>&1; then
+      rustup target add --toolchain "$MACOS_HOST_RUSTC_VERSION" "$triple"
+    fi
+    if ! rustup target list --toolchain "$MACOS_HOST_RUSTC_VERSION" --installed | grep -Fx "$triple" >/dev/null 2>&1; then
+      die "Pinned Rust toolchain ${MACOS_HOST_RUSTC_VERSION} is missing target ${triple}"
+    fi
+  done
+}
+
+append_rustflag_once() {
+  local var_name="$1"
+  local flag="$2"
+  local current="${!var_name:-}"
+
+  [[ -n "$flag" ]] || return
+  if [[ " $current " != *" $flag "* ]]; then
+    printf -v "$var_name" '%s' "${current:+$current }$flag"
+  fi
+}
+
+deterministic_macos_rustflags() {
+  local deterministic_rustflags="${RUSTFLAGS:-}"
+  local cargo_home_path="${CARGO_HOME:-$HOME/.cargo}"
+  local rustup_home_path="${RUSTUP_HOME:-$HOME/.rustup}"
+  local rust_sysroot
+  rust_sysroot="$(rustc --print sysroot)"
+  local rust_commit
+  rust_commit="$(rustc -Vv | awk '/^commit-hash:/{value=$2} END{print value}')"
+
+  [[ -n "$rust_sysroot" ]] || die "Could not resolve rustc sysroot for deterministic remapping"
+  [[ -n "$rust_commit" ]] || die "Could not resolve rustc commit hash for deterministic remapping"
+
+  # Rust uses the last matching --remap-path-prefix.
+  # So if the broad HOME remap comes after the project/cargo/rust-src remaps, it wins and leaves machine "shaped" paths in the binary
+  # Thus we put broad paths first and specific paths later.
+  append_rustflag_once deterministic_rustflags "--remap-path-prefix=${HOME}=/home/user"
+  append_rustflag_once deterministic_rustflags "--remap-path-prefix=${rustup_home_path}=/rustup-home"
+  append_rustflag_once deterministic_rustflags "--remap-path-prefix=${cargo_home_path}=/cargo-home"
+  append_rustflag_once deterministic_rustflags "--remap-path-prefix=${rust_sysroot}/lib/rustlib/src/rust=/rustc/${rust_commit}"
+  append_rustflag_once deterministic_rustflags "--remap-path-prefix=${PROJECT_ROOT}=."
+
+  printf '%s' "$deterministic_rustflags"
+}
+
+macos_host_toolchain_identity() {
+  local deploy_dir="$1"
+  shift
+
+  local rustc_version rustc_commit rustc_host rustc_release rustc_llvm cargo_version node_version pnpm_version tauri_cli_version
+  rustc_version="$(rustc -V 2>/dev/null | awk '{print $2}' || true)"
+  rustc_commit="$(rustc -Vv 2>/dev/null | awk '/^commit-hash:/{value=$2} END{print value}' || true)"
+  rustc_host="$(rustc -Vv 2>/dev/null | awk '/^host:/{value=$2} END{print value}' || true)"
+  rustc_release="$(rustc -Vv 2>/dev/null | awk '/^release:/{value=$2} END{print value}' || true)"
+  rustc_llvm="$(rustc -Vv 2>/dev/null | awk '/^LLVM version:/{value=$3} END{print value}' || true)"
+  cargo_version="$(cargo -V 2>/dev/null | awk '{print $2}' || true)"
+  node_version="$(node --version 2>/dev/null | sed 's/^v//' || true)"
+  pnpm_version="$(pnpm --version 2>/dev/null || true)"
+  tauri_cli_version="$({
+    cd "$deploy_dir" || exit 1
+    node -e 'try{process.stdout.write(require("@tauri-apps/cli/package.json").version || "")}catch(_){process.stdout.write("")}'
+  } 2>/dev/null || true)"
+
+  # Raw tool output can include local filesystem details like clang's InstalledDir or rustup's sysroot location.
+  #
+  # Thus, hash the pinned facts we care about.
+  # If the locked contract changes, compare will see that and say so
+  {
+    printf 'rustup_toolchain=%s\n' "${RUSTUP_TOOLCHAIN:-}"
+    printf 'rustc_version=%s\n' "$rustc_version"
+    printf 'rustc_commit=%s\n' "$rustc_commit"
+    printf 'rustc_host=%s\n' "$rustc_host"
+    printf 'rustc_release=%s\n' "$rustc_release"
+    printf 'rustc_llvm=%s\n' "$rustc_llvm"
+    printf 'cargo_version=%s\n' "$cargo_version"
+    printf 'node_version=%s\n' "$node_version"
+    printf 'pnpm_version=%s\n' "$pnpm_version"
+    printf 'tauri_cli_version=%s\n' "$tauri_cli_version"
+    printf 'apple_clang_version=%s\n' "${MACOS_HOST_CLANG_VERSION:-}"
+    printf 'xcode_version=%s\n' "${MACOS_HOST_XCODE_VERSION:-}"
+    printf 'macos_sdk_version=%s\n' "${MACOS_HOST_SDK_VERSION:-}"
+    printf 'apple_targets=%s\n' "$*"
+  }
+}
+
 enforce_locked_macos_host_toolchain() {
   local deploy_dir="$1"
+  shift
+
+  local active_toolchain
+  active_toolchain="$(rustup show active-toolchain 2>/dev/null | awk '{print $1}' || true)"
+  case "$active_toolchain" in
+    "$MACOS_HOST_RUSTC_VERSION"|"$MACOS_HOST_RUSTC_VERSION"-*) ;;
+    *)
+      die "Pinned Rust toolchain mismatch: expected ${MACOS_HOST_RUSTC_VERSION}, got ${active_toolchain:-<unavailable>}"
+      ;;
+  esac
 
   local rustc_version
   rustc_version="$(rustc -V 2>/dev/null | awk '{print $2}' || true)"
@@ -105,6 +243,67 @@ enforce_locked_macos_host_toolchain() {
   require_locked_host_version "MACOS_HOST_CLANG_VERSION" "$clang_version" "apple-clang"
   require_locked_host_version "MACOS_HOST_XCODE_VERSION" "$xcode_version" "xcode"
   require_locked_host_version "MACOS_HOST_SDK_VERSION" "$sdk_version" "macOS SDK"
+
+  local rust_sysroot
+  rust_sysroot="$(rustc --print sysroot 2>/dev/null || true)"
+  local rust_sysroot_name
+  rust_sysroot_name="$(basename "$rust_sysroot")"
+  case "$rust_sysroot_name" in
+    "$MACOS_HOST_RUSTC_VERSION"|"$MACOS_HOST_RUSTC_VERSION"-*) ;;
+    *)
+      die "Pinned Rust sysroot mismatch: expected a ${MACOS_HOST_RUSTC_VERSION} sysroot, got ${rust_sysroot:-<unavailable>}"
+      ;;
+  esac
+
+  local triple
+  for triple in "$@"; do
+    [[ -n "$triple" ]] || continue
+    if ! rustup target list --toolchain "$MACOS_HOST_RUSTC_VERSION" --installed | grep -Fx "$triple" >/dev/null 2>&1; then
+      die "Pinned Rust toolchain ${MACOS_HOST_RUSTC_VERSION} is missing target ${triple}"
+    fi
+  done
+}
+
+assert_no_macos_host_path_leaks() {
+  local file_path="$1"
+  [[ -f "$file_path" ]] || return
+  require_tool strings
+
+  local project_under_home=""
+  if [[ "$PROJECT_ROOT" == "$HOME/"* ]]; then
+    project_under_home="${PROJECT_ROOT#"$HOME"/}"
+  fi
+
+  # If these strings are present, source-path metadata is inside
+  local patterns=(
+    "$PROJECT_ROOT"
+    "$HOME"
+    "/Users/runner"
+    "/home/runner/work"
+    "/home/user/.cargo"
+    "/home/user/.rustup"
+    "/home/user/work/"
+  )
+  if [[ -n "$project_under_home" ]]; then
+    patterns+=( "/home/user/$project_under_home" )
+  fi
+
+  local grep_args=()
+  local pattern
+  for pattern in "${patterns[@]}"; do
+    [[ -n "$pattern" ]] || continue
+    grep_args+=( -e "$pattern" )
+  done
+
+  local leak_report
+  leak_report="$(mktemp)"
+  if strings -a "$file_path" | LC_ALL=C grep -F "${grep_args[@]}" > "$leak_report"; then
+    echo "FAIL: host-specific path strings leaked into $(basename "$file_path"):" >&2
+    head -n 20 "$leak_report" >&2
+    rm -f "$leak_report"
+    die "Refusing to record non-reproducible macOS artifact with host-specific path leaks: $file_path"
+  fi
+  rm -f "$leak_report"
 }
 
 record_macos_app_payload_artifacts() {
@@ -132,6 +331,7 @@ record_macos_app_payload_artifacts() {
     local info_rel="app/${app_name}/Contents/Info.plist"
     mkdir -p "$art_dir/app/${app_name}/Contents"
     cp "$info_plist" "$art_dir/$info_rel"
+    assert_no_macos_host_path_leaks "$art_dir/$info_rel"
     local info_sha
     info_sha="$(sha256_file "$art_dir/$info_rel")"
 
@@ -157,6 +357,7 @@ record_macos_app_payload_artifacts() {
     cp "$payload_file" "$art_dir/$rel_path_within_triple"
 
     local copied_path="$art_dir/$rel_path_within_triple"
+    assert_no_macos_host_path_leaks "$copied_path"
     local bin_sha
     bin_sha="$(sha256_file "$copied_path")"
 
@@ -207,6 +408,7 @@ run_host_deploy_bundle_for_triple() {
   (
     cd "$deploy_dir" || exit 1
     SOURCE_DATE_EPOCH="$source_date_epoch" \
+      RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-}" \
       TZ=UTC \
       LC_ALL=C \
       LANG=C \
@@ -472,6 +674,20 @@ build_deploy_and_manifest() {
 
   ensure_deploy_workspace_inputs "$deploy_tauri_dir" "$deploy_cargo_lock" "$deploy_node_lock"
 
+  local requires_apple_host=0
+  local apple_triples=()
+  local plan_triple
+  for plan_triple in "${TRIPLES[@]}"; do
+    if is_apple_triple "$plan_triple"; then
+      requires_apple_host=1
+      apple_triples+=( "$plan_triple" )
+    fi
+  done
+
+  if [[ "$requires_apple_host" -eq 1 ]]; then
+    ensure_locked_macos_rustup_toolchain "${apple_triples[@]}"
+  fi
+
   local deploy_version
   deploy_version="$({
     cargo metadata --no-deps --format-version 1 --manifest-path "$deploy_tauri_dir/Cargo.toml"
@@ -481,14 +697,6 @@ build_deploy_and_manifest() {
   local deploy_lock_sha
   deploy_lock_sha="$({ cat "$deploy_cargo_lock"; cat "$deploy_node_lock"; } | sha256_stdin)"
 
-  local requires_apple_host=0
-  local plan_triple
-  for plan_triple in "${TRIPLES[@]}"; do
-    if is_apple_triple "$plan_triple"; then
-      requires_apple_host=1
-      break
-    fi
-  done
   local supported_bundles=""
   if [[ "$requires_apple_host" -eq 1 ]]; then
     echo "==> [run $run_id] Installing deploy UI deps (pnpm install --frozen-lockfile)"
@@ -496,7 +704,7 @@ build_deploy_and_manifest() {
       cd "$deploy_dir" || exit 1
       CI=true pnpm install --frozen-lockfile
     )
-    enforce_locked_macos_host_toolchain "$deploy_dir"
+    enforce_locked_macos_host_toolchain "$deploy_dir" "${apple_triples[@]}"
     supported_bundles="$(detect_supported_tauri_bundles "$deploy_dir")"
     [[ -n "$supported_bundles" ]] || die "Could not determine supported Tauri bundle types from local CLI after install. Run: cd ${deploy_dir} && pnpm tauri build --help"
   fi
@@ -519,30 +727,11 @@ build_deploy_and_manifest() {
   [[ "$deploy_source_date_epoch" =~ ^[0-9]+$ ]] || die "Invalid SOURCE_DATE_EPOCH value: $deploy_source_date_epoch"
 
   local deterministic_rustflags="${RUSTFLAGS:-}"
-  local remap_flag="--remap-path-prefix=${PROJECT_ROOT}=."
-  if [[ "$deterministic_rustflags" != *"$remap_flag"* ]]; then
-    deterministic_rustflags="${deterministic_rustflags:+$deterministic_rustflags }$remap_flag"
+  local host_toolchain_sha=""
+  if [[ "$requires_apple_host" -eq 1 ]]; then
+    deterministic_rustflags="$(deterministic_macos_rustflags)"
+    host_toolchain_sha="$(macos_host_toolchain_identity "$deploy_dir" "${apple_triples[@]}" | sha256_stdin)"
   fi
-  local cargo_home_path="${CARGO_HOME:-$HOME/.cargo}"
-  local cargo_remap_flag="--remap-path-prefix=${cargo_home_path}=/cargo-home"
-  if [[ "$deterministic_rustflags" != *"$cargo_remap_flag"* ]]; then
-    deterministic_rustflags="${deterministic_rustflags:+$deterministic_rustflags }$cargo_remap_flag"
-  fi
-  local home_remap_flag="--remap-path-prefix=${HOME}=/home/user"
-  if [[ "$deterministic_rustflags" != *"$home_remap_flag"* ]]; then
-    deterministic_rustflags="${deterministic_rustflags:+$deterministic_rustflags }$home_remap_flag"
-  fi
-
-  local host_toolchain_sha
-  host_toolchain_sha="$({
-    rustc -Vv || true
-    cargo -V || true
-    node --version || true
-    pnpm --version || true
-    clang --version || true
-    xcodebuild -version || true
-    xcrun --show-sdk-version || true
-  } | sha256_stdin)"
 
   if [[ "$BUILD_KIND" == "deploy" && "$DEPLOY_REQUIRES_DOCKER" -eq 1 && ! -f "${RELEASES_DIR}/Dockerfile.deploy" ]]; then
     die "Missing ${RELEASES_DIR}/Dockerfile.deploy required for deploy cross-platform builds."

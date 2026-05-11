@@ -129,6 +129,7 @@ ensure_required_tools_for_mode() {
 
   require_tool rustc
   if [[ "$requires_host_cc" -eq 1 ]]; then
+    require_tool rustup
     require_tool cc
     require_tool node
     require_tool pnpm
