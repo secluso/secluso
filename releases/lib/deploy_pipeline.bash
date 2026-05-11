@@ -331,6 +331,33 @@ normalize_macos_vendored_openssl_paths() {
   ' "$file_path"
 }
 
+strip_macos_macho_symbols() {
+  local file_path="$1"
+  [[ -f "$file_path" ]] || return
+  require_tool file
+
+  if ! file -b "$file_path" | grep -q 'Mach-O'; then
+    return
+  fi
+
+  require_tool strip
+
+  # Rust/ld leave local and exported implementation symbols in the Mach-O.
+  # The executable bytes can be identical while disassembly still differs because tools resolve branch targets through hash-suffixed symbol names.
+  # Thus, we strip them out for reproducibility
+  strip "$file_path"
+}
+
+sign_macos_app_payload() {
+  local app_dir="$1"
+  [[ -d "$app_dir" ]] || return
+  require_tool codesign
+
+  # Stripping and path normalization mutate bytes covered by Mach-O code directories.
+  # Re-seal the complete copied bundle after every resource is in place so macOS can execute it
+  codesign --force --deep --sign - "$app_dir"
+}
+
 record_macos_app_payload_artifacts() {
   local app_dir="$1"
   local art_dir="$2"
@@ -350,24 +377,13 @@ record_macos_app_payload_artifacts() {
   # Keep the app bundle intact enough to launch locally by preserving resources such as icon.icns.
   # Exclude signing metadata from comparisons.
   local copied_any=0
+  local copied_app_dir="$art_dir/app/$app_name"
   local info_plist="$contents_dir/Info.plist"
   if [[ -f "$info_plist" ]]; then
     copied_any=1
     local info_rel="app/${app_name}/Contents/Info.plist"
     mkdir -p "$art_dir/app/${app_name}/Contents"
     cp "$info_plist" "$art_dir/$info_rel"
-    assert_no_macos_host_path_leaks "$art_dir/$info_rel"
-    local info_sha
-    info_sha="$(sha256_file "$art_dir/$info_rel")"
-
-    record_deploy_artifact \
-      "$artifacts_json" \
-      "$triple" \
-      "$info_rel" \
-      "$info_sha" \
-      "$deploy_version" \
-      "$deploy_lock_sha" \
-      "$digest"
   fi
 
   while IFS= read -r payload_file; do
@@ -382,8 +398,33 @@ record_macos_app_payload_artifacts() {
     cp "$payload_file" "$art_dir/$rel_path_within_triple"
 
     local copied_path="$art_dir/$rel_path_within_triple"
+    strip_macos_macho_symbols "$copied_path"
     normalize_macos_vendored_openssl_paths "$copied_path"
+  done < <(
+    find "$contents_dir" -type f \
+      ! -path '*/Info.plist' \
+      ! -path '*/_CodeSignature/*' \
+      ! -name 'CodeResources' \
+      ! -name '.DS_Store' \
+      | LC_ALL=C sort
+  )
+
+  [[ "$copied_any" -eq 1 ]] || die "No macOS app payload files found under $contents_dir"
+
+  sign_macos_app_payload "$copied_app_dir"
+
+  while IFS= read -r copied_path; do
+    [[ -z "$copied_path" ]] && continue
     assert_no_macos_host_path_leaks "$copied_path"
+  done < <(
+    find "$copied_app_dir/Contents" -type f \
+      | LC_ALL=C sort
+  )
+
+  while IFS= read -r copied_path; do
+    [[ -z "$copied_path" ]] && continue
+
+    local rel_path_within_triple="${copied_path#${art_dir}/}"
     local bin_sha
     bin_sha="$(sha256_file "$copied_path")"
 
@@ -396,15 +437,12 @@ record_macos_app_payload_artifacts() {
       "$deploy_lock_sha" \
       "$digest"
   done < <(
-    find "$contents_dir" -type f \
-      ! -path '*/Info.plist' \
+    find "$copied_app_dir/Contents" -type f \
       ! -path '*/_CodeSignature/*' \
       ! -name 'CodeResources' \
       ! -name '.DS_Store' \
       | LC_ALL=C sort
   )
-
-  [[ "$copied_any" -eq 1 ]] || die "No macOS app payload files found under $contents_dir"
 }
 
 run_host_deploy_bundle_for_triple() {
