@@ -340,7 +340,9 @@ verify_macho_signature_tail_matches_local() {
   # Most of that region is Apple signing data, but we also see it leaves trailing bytes after the declared SuperBlob length.
   # Those bytes are not executable code, but we still want them checked somehow.
   #
-  # So when the signed artifact has a tail beyond the parsed SuperBlob, require that tail to be inherited unchanged from the local build at the same file offsets and within the local build's own LC_CODE_SIGNATURE region.
+  # So when the signed artifact has a tail beyond the parsed SuperBlob, require the overlapping bytes to be inherited unchanged from the local build.
+  # Developer ID signing can allocate a slightly larger LC_CODE_SIGNATURE region than the "ad-hoc" build did
+  # Thus, we allow only zero padding in that extra area to ensure it's safe.
   if ! perl -e '
     use strict;
     use warnings;
@@ -427,14 +429,22 @@ verify_macho_signature_tail_matches_local() {
 
     die "release signature tail starts before local LC_CODE_SIGNATURE in $release_path\n"
       if $tail_off < $local_sig_off;
-    die "release signature tail exceeds local LC_CODE_SIGNATURE in $release_path\n"
-      if $tail_off + $tail_len > $local_sig_end;
 
-    my $release_tail = substr($release_data, $tail_off, $tail_len);
-    my $local_tail = substr($local_data, $tail_off, $tail_len);
+    my $overlap_end = $release_sig_end < $local_sig_end ? $release_sig_end : $local_sig_end;
+    if ($tail_off < $overlap_end) {
+      my $overlap_len = $overlap_end - $tail_off;
+      my $release_tail = substr($release_data, $tail_off, $overlap_len);
+      my $local_tail = substr($local_data, $tail_off, $overlap_len);
 
-    die "release signature tail differs from local build bytes in $release_path\n"
-      if $release_tail ne $local_tail;
+      die "release signature tail differs from local build bytes in $release_path\n"
+        if $release_tail ne $local_tail;
+    }
+
+    if ($release_sig_end > $local_sig_end) {
+      my $extra_tail = substr($release_data, $local_sig_end, $release_sig_end - $local_sig_end);
+      die "release signature tail beyond local LC_CODE_SIGNATURE is not zero padding in $release_path\n"
+        if $extra_tail =~ /[^\0]/;
+    }
   ' "$local_path" "$release_path"; then
     die "Mach-O signature tail check failed: $release_path"
   fi
