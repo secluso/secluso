@@ -306,6 +306,31 @@ assert_no_macos_host_path_leaks() {
   rm -f "$leak_report"
 }
 
+normalize_macos_vendored_openssl_paths() {
+  local file_path="$1"
+  [[ -f "$file_path" ]] || return
+  require_tool strings
+
+  if ! strings -a "$file_path" | LC_ALL=C grep -F '/openssl-build/install/lib/' >/dev/null; then
+    return
+  fi
+
+  require_tool perl
+
+  # openssl-src builds with --prefix=$OUT_DIR/openssl-build/install, and  OpenSSL 3 embeds ENGINESDIR/MODULESDIR from that prefix
+  # normalize those runtime defaults
+  perl -0777 -i -pe '
+    sub padded_replacement {
+      my ($original, $replacement) = @_;
+      die "replacement is longer than original\n" if length($replacement) > length($original);
+      return $replacement . ("\0" x (length($original) - length($replacement)));
+    }
+
+    s{/[^\0]*?/openssl-build/install/lib/engines-3}{padded_replacement($&, "/usr/local/ssl/lib/engines-3")}ge;
+    s{/[^\0]*?/openssl-build/install/lib/ossl-modules}{padded_replacement($&, "/usr/local/ssl/lib/ossl-modules")}ge;
+  ' "$file_path"
+}
+
 record_macos_app_payload_artifacts() {
   local app_dir="$1"
   local art_dir="$2"
@@ -357,6 +382,7 @@ record_macos_app_payload_artifacts() {
     cp "$payload_file" "$art_dir/$rel_path_within_triple"
 
     local copied_path="$art_dir/$rel_path_within_triple"
+    normalize_macos_vendored_openssl_paths "$copied_path"
     assert_no_macos_host_path_leaks "$copied_path"
     local bin_sha
     bin_sha="$(sha256_file "$copied_path")"
