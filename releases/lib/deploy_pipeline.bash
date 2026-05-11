@@ -148,10 +148,96 @@ deterministic_macos_deploy_target_dir() {
   printf '%s' "$target_dir"
 }
 
+deterministic_macos_deploy_source_dir() {
+  local source_dir="${MACOS_DEPLOY_REPRO_SOURCE_DIR:-/private/tmp/secluso-deploy-source}"
+  case "$source_dir" in
+    /private/tmp/secluso-*) ;;
+    *) die "MACOS_DEPLOY_REPRO_SOURCE_DIR must be under /private/tmp/secluso-* for safe cleanup: $source_dir" ;;
+  esac
+
+  printf '%s' "$source_dir"
+}
+
+deterministic_macos_cargo_home_dir() {
+  local cargo_home_dir="${MACOS_DEPLOY_REPRO_CARGO_HOME:-/private/tmp/secluso-cargo-home}"
+  case "$cargo_home_dir" in
+    /private/tmp/secluso-*) ;;
+    *) die "MACOS_DEPLOY_REPRO_CARGO_HOME must be under /private/tmp/secluso-* for safe cleanup: $cargo_home_dir" ;;
+  esac
+
+  printf '%s' "$cargo_home_dir"
+}
+
+deterministic_macos_rust_toolchain_dir() {
+  local toolchain_dir="${MACOS_DEPLOY_REPRO_RUST_TOOLCHAIN_DIR:-/private/tmp/secluso-rust-toolchain}"
+  case "$toolchain_dir" in
+    /private/tmp/secluso-*) ;;
+    *) die "MACOS_DEPLOY_REPRO_RUST_TOOLCHAIN_DIR must be under /private/tmp/secluso-* for safe cleanup: $toolchain_dir" ;;
+  esac
+
+  printf '%s' "$toolchain_dir"
+}
+
+prepare_deterministic_macos_cargo_home() {
+  local actual_cargo_home="$1"
+  local cargo_home_dir
+  cargo_home_dir="$(deterministic_macos_cargo_home_dir)"
+
+  [[ -d "$actual_cargo_home" ]] || die "Missing Cargo home for deterministic macOS build: $actual_cargo_home"
+  if [[ "$cargo_home_dir" != "$actual_cargo_home" ]]; then
+    rm -rf "$cargo_home_dir"
+    ln -s "$actual_cargo_home" "$cargo_home_dir"
+  fi
+
+  printf '%s' "$cargo_home_dir"
+}
+
+prepare_deterministic_macos_rust_toolchain() {
+  local actual_sysroot="$1"
+  local toolchain_dir
+  toolchain_dir="$(deterministic_macos_rust_toolchain_dir)"
+  require_tool rsync
+
+  [[ -d "$actual_sysroot" ]] || die "Missing Rust sysroot for deterministic macOS build: $actual_sysroot"
+  rm -rf "$toolchain_dir"
+  mkdir -p "$toolchain_dir"
+  rsync -a --delete "${actual_sysroot}/" "${toolchain_dir}/"
+
+  [[ -x "$toolchain_dir/bin/cargo" ]] || die "Missing staged cargo: $toolchain_dir/bin/cargo"
+  [[ -x "$toolchain_dir/bin/rustc" ]] || die "Missing staged rustc: $toolchain_dir/bin/rustc"
+  [[ -x "$toolchain_dir/bin/rustdoc" ]] || die "Missing staged rustdoc: $toolchain_dir/bin/rustdoc"
+
+  printf '%s' "$toolchain_dir"
+}
+
+prepare_deterministic_macos_source_tree() {
+  local source_dir
+  source_dir="$(deterministic_macos_deploy_source_dir)"
+  require_tool rsync
+
+  rm -rf "$source_dir"
+  mkdir -p "$source_dir"
+  rsync -a --delete \
+    --exclude '/.git/' \
+    --exclude '/target/' \
+    --exclude '/.svelte-kit/' \
+    --exclude '/build/' \
+    --exclude '/deploy/node_modules/' \
+    --exclude '/deploy/.svelte-kit/' \
+    --exclude '/deploy/build/' \
+    --exclude '/deploy/src-tauri/target/' \
+    --exclude '/releases/builds/' \
+    --exclude '/releases/.repro-work/' \
+    "${PROJECT_ROOT}/" \
+    "${source_dir}/"
+
+  printf '%s' "$source_dir"
+}
+
 deterministic_macos_rustflags() {
+  local macos_source_root="${1:-$PROJECT_ROOT}"
   local deterministic_rustflags="${RUSTFLAGS:-}"
   local cargo_home_path="${CARGO_HOME:-$HOME/.cargo}"
-  local rustup_home_path="${RUSTUP_HOME:-$HOME/.rustup}"
   local macos_deploy_target_dir
   macos_deploy_target_dir="$(deterministic_macos_deploy_target_dir)"
   local rust_sysroot
@@ -165,11 +251,15 @@ deterministic_macos_rustflags() {
   # Rust uses the last matching --remap-path-prefix.
   # So if the broad HOME remap comes after the project/cargo/rust-src remaps, it wins and leaves machine "shaped" paths in the binary
   # Thus we put broad paths first and specific paths later.
-  append_rustflag_once deterministic_rustflags "--remap-path-prefix=${HOME}=/home/user"
-  append_rustflag_once deterministic_rustflags "--remap-path-prefix=${rustup_home_path}=/rustup-home"
+  if [[ "$macos_source_root" == "$PROJECT_ROOT" ]]; then
+    append_rustflag_once deterministic_rustflags "--remap-path-prefix=${HOME}=/home/user"
+    append_rustflag_once deterministic_rustflags "--remap-path-prefix=${PROJECT_ROOT}=."
+  fi
   append_rustflag_once deterministic_rustflags "--remap-path-prefix=${cargo_home_path}=/cargo-home"
   append_rustflag_once deterministic_rustflags "--remap-path-prefix=${rust_sysroot}/lib/rustlib/src/rust=/rustc/${rust_commit}"
-  append_rustflag_once deterministic_rustflags "--remap-path-prefix=${PROJECT_ROOT}=."
+  if [[ "$macos_source_root" != "$PROJECT_ROOT" ]]; then
+    append_rustflag_once deterministic_rustflags "--remap-path-prefix=${macos_source_root}=."
+  fi
   append_rustflag_once deterministic_rustflags "--remap-path-prefix=${macos_deploy_target_dir}=/cargo-target"
 
   printf '%s' "$deterministic_rustflags"
@@ -259,12 +349,19 @@ enforce_locked_macos_host_toolchain() {
 
   local rust_sysroot
   rust_sysroot="$(rustc --print sysroot 2>/dev/null || true)"
+  local deterministic_rust_toolchain_dir
+  deterministic_rust_toolchain_dir="$(deterministic_macos_rust_toolchain_dir)"
   local rust_sysroot_name
   rust_sysroot_name="$(basename "$rust_sysroot")"
-  case "$rust_sysroot_name" in
-    "$MACOS_HOST_RUSTC_VERSION"|"$MACOS_HOST_RUSTC_VERSION"-*) ;;
+  case "$rust_sysroot" in
+    "$deterministic_rust_toolchain_dir") ;;
     *)
-      die "Pinned Rust sysroot mismatch: expected a ${MACOS_HOST_RUSTC_VERSION} sysroot, got ${rust_sysroot:-<unavailable>}"
+      case "$rust_sysroot_name" in
+        "$MACOS_HOST_RUSTC_VERSION"|"$MACOS_HOST_RUSTC_VERSION"-*) ;;
+        *)
+          die "Pinned Rust sysroot mismatch: expected deterministic ${deterministic_rust_toolchain_dir} or a ${MACOS_HOST_RUSTC_VERSION} sysroot, got ${rust_sysroot:-<unavailable>}"
+          ;;
+      esac
       ;;
   esac
 
@@ -288,12 +385,21 @@ assert_no_macos_host_path_leaks() {
   fi
   local macos_deploy_target_dir
   macos_deploy_target_dir="$(deterministic_macos_deploy_target_dir)"
+  local macos_deploy_source_dir
+  macos_deploy_source_dir="$(deterministic_macos_deploy_source_dir)"
+  local macos_cargo_home_dir
+  macos_cargo_home_dir="$(deterministic_macos_cargo_home_dir)"
+  local macos_rust_toolchain_dir
+  macos_rust_toolchain_dir="$(deterministic_macos_rust_toolchain_dir)"
 
   # If these strings are present, source-path metadata is inside
   local patterns=(
     "$PROJECT_ROOT"
     "$HOME"
     "$macos_deploy_target_dir"
+    "$macos_deploy_source_dir"
+    "$macos_cargo_home_dir"
+    "$macos_rust_toolchain_dir"
     "/Users/runner"
     "/home/runner/work"
     "/home/user/.cargo"
@@ -752,8 +858,6 @@ build_deploy_and_manifest() {
   local deploy_cargo_lock="$deploy_tauri_dir/Cargo.lock"
   local deploy_node_lock="$deploy_dir/pnpm-lock.yaml"
 
-  ensure_deploy_workspace_inputs "$deploy_tauri_dir" "$deploy_cargo_lock" "$deploy_node_lock"
-
   local requires_apple_host=0
   local apple_triples=()
   local plan_triple
@@ -765,8 +869,32 @@ build_deploy_and_manifest() {
   done
 
   if [[ "$requires_apple_host" -eq 1 ]]; then
+    local original_cargo_home="${SECLUSO_ORIGINAL_CARGO_HOME:-${CARGO_HOME:-$HOME/.cargo}}"
     ensure_locked_macos_rustup_toolchain "${apple_triples[@]}"
+
+    local actual_rust_sysroot
+    actual_rust_sysroot="$(rustc --print sysroot)"
+    local macos_rust_toolchain
+    macos_rust_toolchain="$(prepare_deterministic_macos_rust_toolchain "$actual_rust_sysroot")"
+    export RUSTC="$macos_rust_toolchain/bin/rustc"
+    export RUSTDOC="$macos_rust_toolchain/bin/rustdoc"
+    export CARGO="$macos_rust_toolchain/bin/cargo"
+    export PATH="$macos_rust_toolchain/bin:$PATH"
+
+    local macos_cargo_home
+    macos_cargo_home="$(prepare_deterministic_macos_cargo_home "$original_cargo_home")"
+    export SECLUSO_ORIGINAL_CARGO_HOME="$original_cargo_home"
+    export CARGO_HOME="$macos_cargo_home"
+
+    local macos_source_root
+    macos_source_root="$(prepare_deterministic_macos_source_tree)"
+    deploy_dir="$macos_source_root/deploy"
+    deploy_tauri_dir="$deploy_dir/src-tauri"
+    deploy_cargo_lock="$deploy_tauri_dir/Cargo.lock"
+    deploy_node_lock="$deploy_dir/pnpm-lock.yaml"
   fi
+
+  ensure_deploy_workspace_inputs "$deploy_tauri_dir" "$deploy_cargo_lock" "$deploy_node_lock"
 
   local deploy_version
   deploy_version="$({
@@ -809,7 +937,7 @@ build_deploy_and_manifest() {
   local deterministic_rustflags="${RUSTFLAGS:-}"
   local host_toolchain_sha=""
   if [[ "$requires_apple_host" -eq 1 ]]; then
-    deterministic_rustflags="$(deterministic_macos_rustflags)"
+    deterministic_rustflags="$(deterministic_macos_rustflags "$macos_source_root")"
     host_toolchain_sha="$(macos_host_toolchain_identity "$deploy_dir" "${apple_triples[@]}" | sha256_stdin)"
   fi
 
