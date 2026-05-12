@@ -6,6 +6,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::{
     collections::VecDeque,
     io,
+    process::Command,
     sync::{Arc, Mutex},
     thread,
     time::Duration,
@@ -22,7 +23,7 @@ use crate::{
     traits::{Camera, CodecParameters},
     write_box,
 };
-use anyhow::{Error};
+use anyhow::Error;
 use bytes::{BufMut, BytesMut};
 use crossbeam_channel::unbounded;
 use image::RgbImage;
@@ -32,9 +33,6 @@ use secluso_motion_ai::ml::models::DetectionType;
 use secluso_motion_ai::pipeline;
 use tokio::runtime::Runtime;
 
-// Frame dimensions
-const WIDTH: usize = 1296;
-const HEIGHT: usize = 972;
 const TOTAL_FRAME_RATE: usize = 10;
 const I_FRAME_INTERVAL: usize = TOTAL_FRAME_RATE; // 1-second fragments
 
@@ -65,6 +63,12 @@ impl Frame {
     }
 }
 
+#[derive(Clone)]
+pub struct CameraResolution {
+    width: usize,
+    height: usize,
+}
+
 /// RaspberryPiCamera uses the shared stream for both motion detection (via raw YUV420 frames) and recording/livestreaming (via H.264).
 pub struct RaspberryPiCamera {
     name: String,
@@ -75,6 +79,7 @@ pub struct RaspberryPiCamera {
     sps_frame: Frame,
     pps_frame: Frame,
     motion_detection: Arc<Mutex<PipelineController>>,
+    resolution: CameraResolution,
 }
 
 impl RaspberryPiCamera {
@@ -136,10 +141,12 @@ impl RaspberryPiCamera {
             debug!("Exited controller tick loop");
         });
 
+        let resolution: CameraResolution = Self::fetch_resolution().expect("A supported camera module was not found");
+
         // Start the new shared stream.
         rpi_dual_stream::start(
-            WIDTH,
-            HEIGHT,
+            resolution.width,
+            resolution.height,
             TOTAL_FRAME_RATE,
             I_FRAME_INTERVAL,
             Arc::clone(&motion_detection),
@@ -149,9 +156,7 @@ impl RaspberryPiCamera {
         )
             .expect("Failed to start shared stream");
 
-        rpi_dual_stream::start_audio(
-            Arc::clone(&frame_queue),
-        )
+        rpi_dual_stream::start_audio(Arc::clone(&frame_queue))
             .expect("Failed to start audio stream");
 
         // Wait for the SPS and PPS frames before continuing.
@@ -184,6 +189,7 @@ impl RaspberryPiCamera {
             sps_frame,
             pps_frame,
             motion_detection,
+            resolution,
         }
     }
 
@@ -197,8 +203,8 @@ impl RaspberryPiCamera {
         let recording_window = duration.map(|secs| Duration::new(secs, 0));
         let recording_start_time = Instant::now();
 
-        let mut started = false;             // started first fragment after first IDR
-        let mut samples_in_fragment = 0u32;  // count samples in the current fragment
+        let mut started = false; // started first fragment after first IDR
+        let mut samples_in_fragment = 0u32; // count samples in the current fragment
         let mut video_frame_count: u64 = 0;
         let ticks_per_video_frame: u64 = 90_000 / TOTAL_FRAME_RATE as u64;
 
@@ -230,13 +236,17 @@ impl RaspberryPiCamera {
 
             if started {
                 if frame.kind == FrameKind::Audio {
-                    let ts_audio = audio_sample_count;      // 48k timescale
+                    let ts_audio = audio_sample_count; // 48k timescale
                     mp4.audio(&frame.data, ts_audio).await?;
-                    audio_sample_count += 1024;             // AAC-LC fixed
+                    audio_sample_count += 1024; // AAC-LC fixed
                     continue;
                 } else {
                     let ts = video_frame_count * ticks_per_video_frame;
-                    let avcc = Self::annexb_to_avcc_frame(&frame.data, /*strip_aud*/ true, /*strip_ps*/ true);
+                    let avcc = Self::annexb_to_avcc_frame(
+                        &frame.data,
+                        /*strip_aud*/ true,
+                        /*strip_ps*/ true,
+                    );
 
                     // Prepend per-frame SEI carrying capture time
                     let sei = Self::make_sei_unreg_avcc(
@@ -250,11 +260,8 @@ impl RaspberryPiCamera {
                     sample.extend_from_slice(&sei);
                     sample.extend_from_slice(&avcc);
 
-                    mp4.video(
-                        &sample,
-                        ts,
-                        frame.kind == FrameKind::IFrame,
-                    ).await?;
+                    mp4.video(&sample, ts, frame.kind == FrameKind::IFrame)
+                        .await?;
 
                     video_frame_count += 1;
                     samples_in_fragment += 1;
@@ -262,7 +269,9 @@ impl RaspberryPiCamera {
             }
 
             if let Some(window) = recording_window {
-                if Instant::now().duration_since(recording_start_time) > window { break; }
+                if Instant::now().duration_since(recording_start_time) > window {
+                    break;
+                }
             }
         }
 
@@ -280,6 +289,7 @@ impl RaspberryPiCamera {
         frame_queue: Arc<Mutex<VecDeque<Frame>>>,
         sps_frame: Frame,
         pps_frame: Frame,
+        resolution: CameraResolution,
     ) -> Result<(), Error> {
         // Create the primary MP4 file.
         let file = tokio::fs::File::create(&filename).await?;
@@ -300,7 +310,7 @@ impl RaspberryPiCamera {
         let mut mp4 = Mp4Writer::new(
             RpiCameraVideoParameters::new(
                 // For MP4, remove the start code (assumes a 4-byte start code).
-                sps_bytes, pps_bytes,
+                sps_bytes, pps_bytes, resolution,
             ),
             RpiCameraAudioParameters::new(),
             file,
@@ -313,7 +323,6 @@ impl RaspberryPiCamera {
 
         Ok(())
     }
-
 
     fn make_sei_unreg_avcc(epoch_ms: u64) -> Vec<u8> {
         const NAL_TYPE_SEI: u8 = 6;
@@ -355,7 +364,11 @@ impl RaspberryPiCamera {
                 zero_run = 0; // reset after insertion
             }
             rbsp_epb.push(b);
-            if b == 0x00 { zero_run += 1 } else { zero_run = 0 }
+            if b == 0x00 {
+                zero_run += 1
+            } else {
+                zero_run = 0
+            }
         }
 
         // Assemble the NAL (header + rbsp_epb)
@@ -377,30 +390,52 @@ impl RaspberryPiCamera {
         frame_queue: Arc<Mutex<VecDeque<Frame>>>,
         sps_frame: Frame,
         pps_frame: Frame,
+        resolution: CameraResolution,
     ) -> Result<(), Error> {
         // Detect 3/4-byte AnnexB start codes
         fn start_code_len(b: &[u8]) -> usize {
-            if b.starts_with(&[0, 0, 0, 1]) { 4 } else if b.starts_with(&[0, 0, 1]) { 3 } else { 0 }
+            if b.starts_with(&[0, 0, 0, 1]) {
+                4
+            } else if b.starts_with(&[0, 0, 1]) {
+                3
+            } else {
+                0
+            }
         }
         let sps_off = start_code_len(&sps_frame.data);
         let pps_off = start_code_len(&pps_frame.data);
 
-        let sps = if sps_off > 0 { &sps_frame.data[sps_off..] } else { &sps_frame.data[..] };
-        let pps = if pps_off > 0 { &pps_frame.data[pps_off..] } else { &pps_frame.data[..] };
+        let sps = if sps_off > 0 {
+            &sps_frame.data[sps_off..]
+        } else {
+            &sps_frame.data[..]
+        };
+        let pps = if pps_off > 0 {
+            &pps_frame.data[pps_off..]
+        } else {
+            &pps_frame.data[..]
+        };
 
         // sanity
         if sps.is_empty() || (sps[0] & 0x1F) != 7 {
-            return Err(anyhow::anyhow!("Bad SPS NAL: first byte={:#04x}", sps.get(0).cloned().unwrap_or(0)));
+            return Err(anyhow::anyhow!(
+                "Bad SPS NAL: first byte={:#04x}",
+                sps.get(0).cloned().unwrap_or(0)
+            ));
         }
         if pps.is_empty() || (pps[0] & 0x1F) != 8 {
-            return Err(anyhow::anyhow!("Bad PPS NAL: first byte={:#04x}", pps.get(0).cloned().unwrap_or(0)));
+            return Err(anyhow::anyhow!(
+                "Bad PPS NAL: first byte={:#04x}",
+                pps.get(0).cloned().unwrap_or(0)
+            ));
         }
 
         let mut fmp4 = Fmp4Writer::new(
-            RpiCameraVideoParameters::new(sps.to_vec(), pps.to_vec()),
+            RpiCameraVideoParameters::new(sps.to_vec(), pps.to_vec(), resolution),
             RpiCameraAudioParameters::new(),
             livestream_writer,
-        ).await?;
+        )
+            .await?;
         fmp4.finish_header(None).await?;
 
         Self::copy(&mut fmp4, None, frame_queue).await?;
@@ -412,8 +447,12 @@ impl RaspberryPiCamera {
     fn annexb_to_avcc_frame(frame: &[u8], strip_aud: bool, strip_ps: bool) -> Vec<u8> {
         // Detect start codes 0x000001 or 0x00000001
         fn is_start_code(buf: &[u8], i: usize) -> Option<usize> {
-            if i + 3 <= buf.len() && &buf[i..i + 3] == [0, 0, 1] { return Some(3); }
-            if i + 4 <= buf.len() && &buf[i..i + 4] == [0, 0, 0, 1] { return Some(4); }
+            if i + 3 <= buf.len() && &buf[i..i + 3] == [0, 0, 1] {
+                return Some(3);
+            }
+            if i + 4 <= buf.len() && &buf[i..i + 4] == [0, 0, 0, 1] {
+                return Some(4);
+            }
             None
         }
 
@@ -427,7 +466,9 @@ impl RaspberryPiCamera {
                 if let Some(s) = open_at {
                     // close previous NAL at start of this start code
                     let end = i;
-                    if end > s { nal_spans.push((s, end)); }
+                    if end > s {
+                        nal_spans.push((s, end));
+                    }
                 }
                 open_at = Some(i + sc);
                 i += sc;
@@ -449,18 +490,73 @@ impl RaspberryPiCamera {
         let mut out = Vec::with_capacity(frame.len() + nal_spans.len() * 4);
         for (s, e) in nal_spans {
             let nal = &frame[s..e];
-            if nal.is_empty() { continue; }
-            let nal_type = nal[0] & 0x1F;       // H.264 NAL type
+            if nal.is_empty() {
+                continue;
+            }
+            let nal_type = nal[0] & 0x1F; // H.264 NAL type
 
             // Optional stripping: AUD (9) and SPS/PPS (7/8) — SPS/PPS already in avcC
-            if strip_aud && nal_type == 9 { continue; }
-            if strip_ps && (nal_type == 7 || nal_type == 8) { continue; }
+            if strip_aud && nal_type == 9 {
+                continue;
+            }
+            if strip_ps && (nal_type == 7 || nal_type == 8) {
+                continue;
+            }
 
             let len = (nal.len() as u32).to_be_bytes();
             out.extend_from_slice(&len);
             out.extend_from_slice(nal);
         }
         out
+    }
+
+    pub fn fetch_resolution() -> Option<CameraResolution> {
+        debug!("Attempting to fetch the type of sensor attached to the Raspberry Pi");
+
+        // Hard coded width x height based on the Camera Module connected to the Raspberry Pi.
+        // Camera Module V1 (OV5647): 1296 x 972 (60% of 1080p)
+        // Camera Module V2 (IMX219): 1640 x 1232 (97% of 1080p)
+        // Even though these support 1080p directly, if we were to use that, the sides would be cropped out due to the aspect ratio of the sensor.
+        const CAMERA_RESOLUTION_V1: (usize, usize) = (1296, 972);
+        const CAMERA_RESOLUTION_V2: (usize, usize) = (1640, 1232);
+
+        // Detection logic to determine if the attached camera module is a V1, V2 or other (which likely won't reach this point as they aren't supported in the Secluso OS image regardless)
+        // Sample Output of "rpicam-hello --list-cameras" that we must parse:
+        //
+        // Available cameras
+        // -----------------
+        // 0 : imx219 [3280x2464] (/base/soc/i2c0mux/i2c@1/imx219@10)
+        //     Modes: 'SRGGB10_CSI2P' : 640x480 [206.65 fps - (1000, 752)/1280x960 crop]
+        //                              1640x1232 [41.85 fps - (0, 0)/3280x2464 crop] **NOTICE** how this says (0,0) crop. That means that unlike 1920x1080, the sides aren't cut out, and we can get a wider view. This is only a 3% drop in resolution
+        //                              1920x1080 [47.57 fps - (680, 692)/1920x1080 crop]
+        //                              3280x2464 [21.19 fps - (0, 0)/3280x2464 crop]
+        //            'SRGGB8' : 640x480 [206.65 fps - (1000, 752)/1280x960 crop]
+        //                       1640x1232 [41.85 fps - (0, 0)/3280x2464 crop]
+        //                       1920x1080 [47.57 fps - (680, 692)/1920x1080 crop]
+        //                       3280x2464 [21.19 fps - (0, 0)/3280x2464 crop]
+
+        let output = Command::new("rpicam-hello")
+            .args(["--list-cameras"])
+            .output()
+            .expect("failed to execute rpicam-hello --list-cameras to get sensor type");
+
+        // Extract the raw-bytes that we captured from the rpicam-hello command
+        let stdout = String::from_utf8(output.stdout).unwrap();
+
+        // Parse the output (as seen in the example above)
+        return if stdout.contains("imx219") {
+            Some(CameraResolution {
+                width: CAMERA_RESOLUTION_V2.0,
+                height: CAMERA_RESOLUTION_V2.1,
+            })
+        } else if stdout.contains("ov5647") {
+            Some(CameraResolution {
+                width: CAMERA_RESOLUTION_V1.0,
+                height: CAMERA_RESOLUTION_V1.1,
+            })
+        } else {
+            None
+        }
     }
 }
 
@@ -512,6 +608,7 @@ impl Camera for RaspberryPiCamera {
             Arc::clone(&self.frame_queue),
             self.sps_frame.clone(),
             self.pps_frame.clone(),
+            self.resolution.clone()
         );
 
         rt.block_on(future).unwrap();
@@ -528,6 +625,7 @@ impl Camera for RaspberryPiCamera {
         let frame_queue_clone = Arc::clone(&self.frame_queue);
         let sps_frame_clone = self.sps_frame.clone();
         let pps_frame_clone = self.pps_frame.clone();
+        let resolution_clone = self.resolution.clone();
 
         thread::spawn(move || {
             let rt = Runtime::new().unwrap();
@@ -536,6 +634,7 @@ impl Camera for RaspberryPiCamera {
                 frame_queue_clone,
                 sps_frame_clone,
                 pps_frame_clone,
+                resolution_clone
             );
             if let Err(e) = rt.block_on(future) {
                 eprintln!("[Livestream] write_fmp4 error: {e:?}");
@@ -562,40 +661,43 @@ impl Camera for RaspberryPiCamera {
     }
 }
 
-
 struct RpiCameraVideoParameters {
     sps: Vec<u8>,
     pps: Vec<u8>,
+    dimensions: CameraResolution,
 }
 
 impl RpiCameraVideoParameters {
-    pub fn new(sps: Vec<u8>, pps: Vec<u8>) -> Self {
-        Self { sps, pps }
+    pub fn new(sps: Vec<u8>, pps: Vec<u8>, dimensions: CameraResolution) -> Self {
+        Self { sps, pps, dimensions }
     }
 }
-
 
 impl CodecParameters for RpiCameraVideoParameters {
     fn write_codec_box(&self, buf: &mut BytesMut) -> Result<(), Error> {
         write_box!(buf, b"avc1", {
             // VisualSampleEntry per ISO/IEC 14496-12
             // 6 bytes reserved
-            buf.put_u8(0); buf.put_u8(0); buf.put_u8(0);
-            buf.put_u8(0); buf.put_u8(0); buf.put_u8(0);
+            buf.put_u8(0);
+            buf.put_u8(0);
+            buf.put_u8(0);
+            buf.put_u8(0);
+            buf.put_u8(0);
+            buf.put_u8(0);
             // data_reference_index
             buf.put_u16(1);
 
             // pre_defined, reserved
             buf.put_u16(0); // pre_defined
             buf.put_u16(0); // reserved
-            // pre_defined[3]
+                            // pre_defined[3]
             buf.put_u32(0);
             buf.put_u32(0);
             buf.put_u32(0);
 
             // width/height
-            buf.put_u16(WIDTH as u16);
-            buf.put_u16(HEIGHT as u16);
+            buf.put_u16(self.dimensions.width as u16);
+            buf.put_u16(self.dimensions.height as u16);
 
             // horiz/vert resolution (72 dpi in 16.16 fixed)
             buf.put_u32(0x0048_0000);
@@ -612,7 +714,9 @@ impl CodecParameters for RpiCameraVideoParameters {
             let n = name.len().min(31) as u8;
             buf.put_u8(n);
             buf.extend_from_slice(&name[..n as usize]);
-            for _ in (n as usize + 1)..32 { buf.put_u8(0); }
+            for _ in (n as usize + 1)..32 {
+                buf.put_u8(0);
+            }
 
             // depth and pre_defined (-1)
             buf.put_u16(0x0018);
@@ -623,10 +727,10 @@ impl CodecParameters for RpiCameraVideoParameters {
                 debug_assert!(!self.sps.is_empty() && (self.sps[0] & 0x1F) == 7);
                 debug_assert!(!self.pps.is_empty() && (self.pps[0] & 0x1F) == 8);
 
-                buf.put_u8(1);                 // configurationVersion
-                buf.put_u8(self.sps[1]);       // AVCProfileIndication
-                buf.put_u8(self.sps[2]);       // profile_compatibility
-                buf.put_u8(self.sps[3]);       // AVCLevelIndication
+                buf.put_u8(1); // configurationVersion
+                buf.put_u8(self.sps[1]); // AVCProfileIndication
+                buf.put_u8(self.sps[2]); // profile_compatibility
+                buf.put_u8(self.sps[3]); // AVCLevelIndication
 
                 // lengthSizeMinusOne=3 → 4-byte NAL length
                 buf.put_u8(0b1111_1100 | 0b11);
@@ -648,10 +752,12 @@ impl CodecParameters for RpiCameraVideoParameters {
     }
 
     // Not used
-    fn get_clock_rate(&self) -> u32 { 0 }
+    fn get_clock_rate(&self) -> u32 {
+        0
+    }
 
     fn get_dimensions(&self) -> (u32, u32) {
-        ((WIDTH as u32) << 16, (HEIGHT as u32) << 16)
+        ((self.dimensions.width as u32) << 16, (self.dimensions.height as u32) << 16)
     }
 }
 
@@ -675,8 +781,12 @@ impl CodecParameters for RpiCameraAudioParameters {
     fn write_codec_box(&self, buf: &mut BytesMut) -> Result<(), Error> {
         write_box!(buf, b"mp4a", {
             // 6 reserved bytes
-            buf.put_u8(0); buf.put_u8(0); buf.put_u8(0);
-            buf.put_u8(0); buf.put_u8(0); buf.put_u8(0);
+            buf.put_u8(0);
+            buf.put_u8(0);
+            buf.put_u8(0);
+            buf.put_u8(0);
+            buf.put_u8(0);
+            buf.put_u8(0);
 
             // data_reference_index
             buf.put_u16(1);
@@ -687,9 +797,9 @@ impl CodecParameters for RpiCameraAudioParameters {
             buf.put_u32(0); // vendor
 
             buf.put_u16(self.channels); // channelcount
-            buf.put_u16(16);            // samplesize
-            buf.put_u16(0);             // compressionid
-            buf.put_u16(0);             // packetsize
+            buf.put_u16(16); // samplesize
+            buf.put_u16(0); // compressionid
+            buf.put_u16(0); // packetsize
             buf.put_u32(self.sample_rate << 16); // samplerate 16.16
 
             // ES Descriptor box
