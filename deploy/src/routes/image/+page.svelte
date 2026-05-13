@@ -10,6 +10,7 @@
     enabled: boolean;
     binariesSource: "main" | "custom";
     binariesRepo: string;
+    customWicPath: string;
     key1Name: string;
     key1User: string;
     key2Name: string;
@@ -35,6 +36,7 @@
     enabled: false,
     binariesSource: "main",
     binariesRepo: "",
+    customWicPath: "",
     key1Name: "",
     key1User: "",
     key2Name: "",
@@ -48,6 +50,11 @@
   let errorMsg = "";
   let firstTimeOn = false;
   $: imageOutputPlaceholder = "Choose file (e.g., secluso-rpi.wic)";
+  $: customWicPath = devSettings.enabled ? devSettings.customWicPath.trim() : "";
+  $: usingCustomWic = customWicPath.length > 0;
+  $: heroDescription = usingCustomWic
+    ? "Use a custom WIC image and add the camera pairing secret."
+    : "Download a verified Pi image and add the camera pairing secret.";
 
   async function pickQrOutput() {
     const path = await save({
@@ -82,7 +89,9 @@
     if (!imageOutputPath) return "Please choose where to save the image (.wic).";
     if (!imageOutputPath.endsWith(".wic")) return "Output image must end with .wic";
     if (!qrOutputPath.endsWith(".png")) return "QR code must end with .png";
-    if (devSettings.enabled && devSettings.binariesSource === "custom") {
+    if (customWicPath && !customWicPath.endsWith(".wic")) return "Custom WIC image must end with .wic";
+    const useCustomBinaries = devSettings.enabled && devSettings.binariesSource === "custom";
+    if (useCustomBinaries) {
       if (!devSettings.binariesRepo.trim()) return "Custom repo URL is required.";
       if (!devSettings.key1Name.trim() || !devSettings.key1User.trim()) {
         return "Key 1 name and GitHub username are required.";
@@ -102,13 +111,15 @@
     preparing = true;
 
     try {
+      const useCustomBinaries = devSettings.enabled && devSettings.binariesSource === "custom";
       const { run_id } = await prepareImage({
         qrOutputPath,
         imageOutputPath,
-        binariesRepo: devSettings.binariesSource === "custom" ? devSettings.binariesRepo.trim() : undefined,
+        customWicPath: usingCustomWic ? customWicPath : undefined,
+        binariesRepo: useCustomBinaries ? devSettings.binariesRepo.trim() : undefined,
         githubToken: devSettings.enabled && devSettings.githubToken.trim() ? devSettings.githubToken.trim() : undefined,
         sigKeys:
-          devSettings.binariesSource === "custom"
+          useCustomBinaries
             ? [
                 { name: devSettings.key1Name.trim(), githubUser: devSettings.key1User.trim() },
                 { name: devSettings.key2Name.trim(), githubUser: devSettings.key2User.trim() }
@@ -136,6 +147,7 @@
           enabled: false,
           binariesSource: "main",
           binariesRepo: "",
+          customWicPath: "",
           key1Name: "",
           key1User: "",
           key2Name: "",
@@ -184,7 +196,7 @@
     <div class="hero">
       <div class="hero-copy">
         <h1>Prepare Raspberry Pi Image</h1>
-        <p>Download a verified Pi image and add the camera pairing secret.</p>
+        <p>{heroDescription}</p>
       </div>
       <img class="hero-art" src={imageHeroArt} alt="" />
     </div>
@@ -229,6 +241,13 @@
         </div>
       {/if}
     </section>
+
+    {#if usingCustomWic}
+      <section class="custom-wic-warning" aria-live="polite">
+        <strong>Developer custom WIC selected</strong>
+        <p>Prepare Image will use <code>{maskDemoText(customWicPath)}</code> as the base image and write the prepared WIC to the output path. It will not download or verify the released Secluso OS WIC image.</p>
+      </section>
+    {/if}
 
     {#if errorMsg}
       <div class="alert error">{maskDemoText(errorMsg)}</div>
@@ -526,6 +545,38 @@
 
   .info-banner span {
     color: rgba(255, 255, 255, 0.6);
+  }
+
+  .custom-wic-warning {
+    margin-top: 20px;
+    padding: 12px 14px;
+    border-radius: 16px;
+    border: 1px solid rgba(251, 191, 36, 0.28);
+    background: rgba(251, 191, 36, 0.08);
+  }
+
+  .custom-wic-warning strong {
+    display: block;
+    color: #fbbf24;
+    font-size: 12px;
+    line-height: 18px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+  }
+
+  .custom-wic-warning p {
+    margin: 6px 0 0;
+    color: rgba(255, 255, 255, 0.74);
+    font-size: 13px;
+    line-height: 19.5px;
+    overflow-wrap: anywhere;
+  }
+
+  .custom-wic-warning code {
+    color: #fff;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
   }
 
   .primary {

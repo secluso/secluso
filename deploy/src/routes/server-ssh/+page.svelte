@@ -46,6 +46,7 @@
     enabled: boolean;
     binariesSource: "main" | "custom";
     binariesRepo: string;
+    customWicPath: string;
     key1Name: string;
     key1User: string;
     key2Name: string;
@@ -61,6 +62,7 @@
     enabled: false,
     binariesSource: "main",
     binariesRepo: "",
+    customWicPath: "",
     key1Name: "",
     key1User: "",
     key2Name: "",

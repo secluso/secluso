@@ -42,6 +42,37 @@ fn download_verified_image(
     Ok((verified.release_tag, verified.asset_name))
 }
 
+fn requested_custom_wic_source(req: &PrepareImageRequest) -> Option<PathBuf> {
+    req.custom_wic_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+}
+
+fn copy_custom_wic_image(source_path: &Path, output_path: &Path) -> Result<bool> {
+    let source_canonical = source_path
+        .canonicalize()
+        .with_context(|| format!("resolving custom WIC image {}", source_path.display()))?;
+    let same_file = output_path
+        .canonicalize()
+        .map(|output_canonical| output_canonical == source_canonical)
+        .unwrap_or(false);
+
+    if same_file {
+        return Ok(true);
+    }
+
+    fs::copy(source_path, output_path).with_context(|| {
+        format!(
+            "copying custom WIC image from {} to {}",
+            source_path.display(),
+            output_path.display()
+        )
+    })?;
+    Ok(false)
+}
+
 pub fn run_prepare_image(
     app: &AppHandle,
     run_id: Uuid,
@@ -59,6 +90,34 @@ pub fn run_prepare_image(
     if !req.qr_output_path.ends_with(".png") {
         step_error(app, run_id, "validate", "QR output must end with .png.");
         bail!("QR output must end with .png.");
+    }
+    let custom_wic_source = requested_custom_wic_source(&req);
+    if let Some(custom_wic_path) = custom_wic_source.as_deref() {
+        let custom_wic_display = custom_wic_path.display().to_string();
+        if !custom_wic_display.ends_with(".wic") {
+            step_error(
+                app,
+                run_id,
+                "validate",
+                "Custom WIC image must end with .wic.",
+            );
+            bail!("Custom WIC image must end with .wic.");
+        }
+        if !custom_wic_path.is_file() {
+            let msg = format!("Custom WIC image not found: {}", custom_wic_path.display());
+            step_error(app, run_id, "validate", &msg);
+            bail!(msg);
+        }
+        log_line(
+            app,
+            run_id,
+            "warn",
+            Some("validate"),
+            format!(
+                "CUSTOM WIC OVERRIDE ENABLED: using {} as the base image. The released Secluso OS WIC will NOT be downloaded or verified.",
+                custom_wic_path.display()
+            ),
+        );
     }
     step_ok(app, run_id, "validate");
 
@@ -91,26 +150,58 @@ pub fn run_prepare_image(
         .with_context(|| format!("reading {}", work_path.join("wifi_password").display()))?;
     step_ok(app, run_id, "credentials");
 
-    step_start(
-        app,
-        run_id,
-        "image_download",
-        "Downloading verified Secluso image",
-    );
-    // Fetch the latest immutable GitHub release metadata, derives the expected WIC asset name from the tag, verifies the signed release checksum file, and streams the WIC to the requested output path
-    let (release_tag, image_asset_name) =
-        download_verified_image(&repo, sig_keys, github_token, &output_path).map_err(|e| {
+    if let Some(custom_wic_path) = custom_wic_source.as_deref() {
+        step_start(app, run_id, "image_download", "Using custom WIC image");
+        log_line(
+            app,
+            run_id,
+            "warn",
+            Some("image_download"),
+            format!(
+                "Using custom WIC image {}. This is NOT the released verified Secluso OS image.",
+                custom_wic_path.display()
+            ),
+        );
+        let in_place = copy_custom_wic_image(custom_wic_path, &output_path).map_err(|e| {
             let msg = format!("{e:#}");
             step_error(app, run_id, "image_download", &msg);
             anyhow!(msg)
         })?;
-    log_line(
-        app,
-        run_id,
-        "info",
-        Some("image_download"),
-        format!("Verified image {image_asset_name} from {release_tag}."),
-    );
+        let line = if in_place {
+            format!(
+                "Custom WIC source and output are the same file; injecting directly into {}.",
+                output_path.display()
+            )
+        } else {
+            format!(
+                "Copied custom WIC image from {} to {}.",
+                custom_wic_path.display(),
+                output_path.display()
+            )
+        };
+        log_line(app, run_id, "info", Some("image_download"), line);
+    } else {
+        step_start(
+            app,
+            run_id,
+            "image_download",
+            "Downloading verified released Secluso image",
+        );
+        // Fetch the latest immutable GitHub release metadata, derives the expected WIC asset name from the tag, verifies the signed release checksum file, and streams the WIC to the requested output path
+        let (release_tag, image_asset_name) =
+            download_verified_image(&repo, sig_keys, github_token, &output_path).map_err(|e| {
+                let msg = format!("{e:#}");
+                step_error(app, run_id, "image_download", &msg);
+                anyhow!(msg)
+            })?;
+        log_line(
+            app,
+            run_id,
+            "info",
+            Some("image_download"),
+            format!("Verified released image {image_asset_name} from {release_tag}."),
+        );
+    }
     step_ok(app, run_id, "image_download");
 
     step_start(app, run_id, "inject", "Injecting camera configuration");

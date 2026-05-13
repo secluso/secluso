@@ -2,11 +2,13 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import { goto } from "$app/navigation";
+  import { open } from "@tauri-apps/plugin-dialog";
 
   type DevSettings = {
     enabled: boolean;
     binariesSource: "main" | "custom";
     binariesRepo: string;
+    customWicPath: string;
     key1Name: string;
     key1User: string;
     key2Name: string;
@@ -25,6 +27,7 @@
     enabled: false,
     binariesSource: "main",
     binariesRepo: "",
+    customWicPath: "",
     key1Name: "",
     key1User: "",
     key2Name: "",
@@ -61,6 +64,17 @@
 
   function goBack() {
     goto("/");
+  }
+
+  async function pickCustomWic() {
+    const path = await open({
+      title: "Choose custom WIC image",
+      multiple: false,
+      directory: false,
+      filters: [{ name: "WIC image", extensions: ["wic"] }]
+    });
+    if (typeof path === "string" && path.length) devSettings.customWicPath = path;
+    if (Array.isArray(path) && path.length) devSettings.customWicPath = path[0];
   }
 
   onDestroy(() => {
@@ -186,6 +200,28 @@
               </label>
             </div>
           {/if}
+        </section>
+
+        <section class="option-card custom-wic-card">
+          <div class="option-header">
+            <h2>Custom WIC Image</h2>
+            <span class="badge">OPTIONAL</span>
+          </div>
+
+          <div class="path-picker">
+            <label class="field">
+              <span>WIC path</span>
+              <input
+                bind:value={devSettings.customWicPath}
+                placeholder="/path/to/secluso-pi-image.wic"
+                autocorrect="off"
+                autocapitalize="off"
+                spellcheck="false"
+              />
+            </label>
+            <button class="picker-button" on:click={pickCustomWic}>Choose</button>
+          </div>
+          <p>When set, image preparation uses this custom WIC as the base image instead of downloading the released Secluso OS WIC.</p>
         </section>
 
         <section class="option-card token-card">
@@ -575,6 +611,34 @@
     margin-top: 0;
   }
 
+  .custom-wic-card {
+    padding-bottom: 18px;
+  }
+
+  .path-picker {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: end;
+    gap: 12px;
+  }
+
+  .path-picker .field {
+    margin-top: 0;
+  }
+
+  .picker-button {
+    min-width: 82px;
+    height: 36px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.04);
+    color: #fff;
+    font-size: 13px;
+    line-height: 19.5px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+
   .save-row {
     margin-top: 32px;
     display: flex;
@@ -630,6 +694,15 @@
 
     .option-card {
       padding: 14px;
+    }
+
+    .path-picker {
+      grid-template-columns: 1fr;
+      align-items: stretch;
+    }
+
+    .picker-button {
+      width: 100%;
     }
   }
 </style>

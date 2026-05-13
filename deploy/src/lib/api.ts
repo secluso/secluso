@@ -63,6 +63,7 @@ export type ProvisionEvent =
 export interface PrepareImageRequest {
   qrOutputPath: string;
   imageOutputPath: string;
+  customWicPath?: string;
   binariesRepo?: string;
   sigKeys?: { name: string; githubUser: string; fingerprint?: string }[];
   githubToken?: string;

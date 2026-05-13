@@ -22,7 +22,7 @@
     image: [
       { key: "validate", title: "Validate inputs" },
       { key: "credentials", title: "Generate secrets" },
-      { key: "image_download", title: "Fetch verified image" },
+      { key: "image_download", title: "Prepare base image" },
       { key: "inject", title: "Inject config" },
       { key: "verify", title: "Finalize" }
     ]
@@ -108,6 +108,7 @@
     if (evt.run_id !== runId) return;
 
     if (evt.type === "step_start") {
+      steps = steps.map((step) => (step.key === evt.step ? { ...step, title: evt.title } : step));
       stepStatus = { ...stepStatus, [evt.step]: "running" };
       return;
     }
