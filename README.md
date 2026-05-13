@@ -28,7 +28,7 @@ Secluso is developed by Secluso, Inc. and co-founded by:
 ## Requirements
 
 - **Raspberry Pi:** Raspberry Pi Zero 2W
-- **Camera:** Raspberry Pi Camera Module V1
+- **Camera:** Raspberry Pi Camera Module V1 and V2 (or any camera with a OV5647 or IMX219 Sony sensor)
 - **Relay:** your own Linux VPS login, or an email to us for free beta relay hosting while testing
 - **Phone:** Android or iPhone for pairing, alerts, and playback
 
