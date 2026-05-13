@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 fn download_verified_image(
     owner_repo: &str,
+    owner_repo_os: &str,
     sig_keys: Option<&[SigKey]>,
     github_token: Option<&str>,
     output_path: &Path,
@@ -29,10 +30,14 @@ fn download_verified_image(
     let client = build_github_client(20, github_token, "secluso-deploy")?;
     let release = fetch_latest_release(&client, owner_repo)
         .with_context(|| format!("Fetching latest release metadata for {owner_repo}"))?;
+    // The OS image is stored separately in the os/ repository. It's still verified by the core/ repository's signed checksum file.
+    let release_actual = fetch_latest_release(&client, owner_repo_os)
+        .with_context(|| format!("Fetching latest release metadata for {owner_repo}"))?;
     let asset_name = format!("secluso-pi-image-{}.wic", release.tag_name);
     let verified = download_and_verify_release_asset_to_path(
         &client,
         &release,
+        &release_actual,
         &asset_name,
         output_path,
         &signers,
@@ -134,6 +139,12 @@ pub fn run_prepare_image(
         .as_deref()
         .map(normalize_repo)
         .unwrap_or_else(|| DEFAULT_OWNER_REPO.to_string());
+    let repo_os = req
+        .os_repo
+        .as_deref()
+        .map(normalize_repo)
+        .unwrap_or_else(|| DEFAULT_OWNER_REPO.to_string());
+
     let sig_keys = req.sig_keys.as_deref();
     let github_token = req.github_token.as_deref().filter(|v| !v.trim().is_empty());
 
@@ -189,7 +200,7 @@ pub fn run_prepare_image(
         );
         // Fetch the latest immutable GitHub release metadata, derives the expected WIC asset name from the tag, verifies the signed release checksum file, and streams the WIC to the requested output path
         let (release_tag, image_asset_name) =
-            download_verified_image(&repo, sig_keys, github_token, &output_path).map_err(|e| {
+            download_verified_image(&repo, &repo_os, sig_keys, github_token, &output_path).map_err(|e| {
                 let msg = format!("{e:#}");
                 step_error(app, run_id, "image_download", &msg);
                 anyhow!(msg)

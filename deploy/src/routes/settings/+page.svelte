@@ -7,7 +7,9 @@
   type DevSettings = {
     enabled: boolean;
     binariesSource: "main" | "custom";
+    osSource: "main" | "custom";
     binariesRepo: string;
+    osRepo: string;
     customWicPath: string;
     key1Name: string;
     key1User: string;
@@ -26,7 +28,9 @@
   const defaultSettings: DevSettings = {
     enabled: false,
     binariesSource: "main",
+    osSource: "main",
     binariesRepo: "",
+    osRepo: "",
     customWicPath: "",
     key1Name: "",
     key1User: "",
@@ -193,6 +197,39 @@
                 <input
                   bind:value={devSettings.key2User}
                   placeholder="username2"
+                  autocorrect="off"
+                  autocapitalize="off"
+                  spellcheck="false"
+                />
+              </label>
+            </div>
+          {/if}
+        </section>
+
+
+        <section class="option-card binaries-card">
+          <div class="option-header">
+            <h2>OS</h2>
+            <span class="badge">OPTIONAL</span>
+          </div>
+
+          <label class="radio-row">
+            <input type="radio" name="os" value="main" bind:group={devSettings.osSource} />
+            <span>Use main release OS</span>
+          </label>
+
+          <label class="radio-row">
+            <input type="radio" name="os" value="custom" bind:group={devSettings.osSource} />
+            <span>Use another repo</span>
+          </label>
+
+          {#if devSettings.osSource === "custom"}
+            <div class="custom-fields">
+              <label class="field">
+                <span>Repo</span>
+                <input
+                  bind:value={devSettings.osRepo}
+                  placeholder="secluso/os"
                   autocorrect="off"
                   autocapitalize="off"
                   spellcheck="false"

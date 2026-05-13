@@ -9,7 +9,9 @@
   type DevSettings = {
     enabled: boolean;
     binariesSource: "main" | "custom";
+    osSource: "main" | "custom";
     binariesRepo: string;
+    osRepo: string,
     customWicPath: string;
     key1Name: string;
     key1User: string;
@@ -35,7 +37,9 @@
   let devSettings: DevSettings = {
     enabled: false,
     binariesSource: "main",
+    osSource: "main",
     binariesRepo: "",
+    osRepo: "",
     customWicPath: "",
     key1Name: "",
     key1User: "",
@@ -112,11 +116,13 @@
 
     try {
       const useCustomBinaries = devSettings.enabled && devSettings.binariesSource === "custom";
+      const useCustomOs = devSettings.enabled && devSettings.osSource === "custom";
       const { run_id } = await prepareImage({
         qrOutputPath,
         imageOutputPath,
         customWicPath: usingCustomWic ? customWicPath : undefined,
         binariesRepo: useCustomBinaries ? devSettings.binariesRepo.trim() : undefined,
+        osRepo: useCustomOs ? devSettings.osRepo.trim() : undefined,
         githubToken: devSettings.enabled && devSettings.githubToken.trim() ? devSettings.githubToken.trim() : undefined,
         sigKeys:
           useCustomBinaries
@@ -146,7 +152,9 @@
         devSettings = {
           enabled: false,
           binariesSource: "main",
+          osSource: "main",
           binariesRepo: "",
+          osRepo: "",
           customWicPath: "",
           key1Name: "",
           key1User: "",

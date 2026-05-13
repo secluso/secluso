@@ -26,6 +26,7 @@ pub struct PrepareImageRequest {
     qr_output_path: String,
     image_output_path: String,
     custom_wic_path: Option<String>,
+    os_repo: Option<String>,
     binaries_repo: Option<String>,
     sig_keys: Option<Vec<SigKey>>,
     github_token: Option<String>,

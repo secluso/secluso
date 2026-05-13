@@ -340,6 +340,7 @@ pub fn download_and_verify_component(
 pub fn download_and_verify_release_asset_to_path(
     client: &Client,
     release: &GhRelease,
+    release_actual: &GhRelease,
     asset_name: &str,
     output_path: &Path,
     signers: &[Signer],
@@ -347,6 +348,7 @@ pub fn download_and_verify_release_asset_to_path(
     download_and_verify_release_asset_to_path_with_key_base(
         client,
         release,
+        release_actual,
         asset_name,
         output_path,
         signers,
@@ -357,6 +359,7 @@ pub fn download_and_verify_release_asset_to_path(
 fn download_and_verify_release_asset_to_path_with_key_base(
     client: &Client,
     release: &GhRelease,
+    release_actual: &GhRelease,
     asset_name: &str,
     output_path: &Path,
     signers: &[Signer],
@@ -383,7 +386,10 @@ fn download_and_verify_release_asset_to_path_with_key_base(
     let expected = checksums
         .get(asset_name)
         .ok_or_else(|| anyhow!("checksum file missing entry for {}", asset_name))?;
-    let asset = find_release_asset(release, asset_name)?;
+
+    // We let release_actual be specified separately, so that we can have the checksum file on the core/ repo, while having the wic (OS) file on the os/ repo.
+    let asset = find_release_asset(release_actual, asset_name)?;
+
     // Large release assets are streamed to disk while hashing so the deploy tool can verify WIC images without keeping the whole image in memory.
     // The resulting hash is compared against the signed checksum entry after GitHub's own asset digest metadata has also been checked
     let got = download_asset_to_path_and_hash(client, &asset, output_path)
