@@ -41,7 +41,7 @@ export interface ServerRuntimePlan {
 
 export interface ServerPlan {
   runtime: ServerRuntimePlan;
-  secrets?: { serviceAccountKeyPath: string; serverUrl: string; userCredentialsQrPath: string };
+  secrets?: { serviceAccountKeyPath?: string; serverUrl: string; userCredentialsQrPath: string };
   overwrite?: boolean;
   sigKeys?: { name: string; githubUser: string; fingerprint?: string }[];
   binariesRepo?: string;

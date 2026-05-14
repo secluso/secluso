@@ -622,6 +622,7 @@ async fn retrieve_notification_target(
 async fn send_fcm_notification(
     data: Data<'_>,
     notification_target_policy: &rocket::State<notification_target::UnifiedPushPolicy>,
+    fcm_config: &rocket::State<Option<ConfigResponse>>,
     auth: &BasicAuth,
 ) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
@@ -671,6 +672,11 @@ async fn send_fcm_notification(
             }
             return Ok("ok".to_string());
         }
+    }
+
+    if fcm_config.inner().is_none() {
+        debug!("Skipping FCM notification; server has no FCM configuration");
+        return Ok("ok".to_string());
     }
 
     let token_path = root.join("fcm_token");
@@ -1173,10 +1179,10 @@ async fn retrieve_config_response(camera: &str, auth: &BasicAuth) -> Option<RawT
 // Thus, the 'a lifetime specifier was added here
 #[get("/fcm_config")]
 async fn retrieve_fcm_data<'a>(
-    state: &'a rocket::State<ConfigResponse>,
+    state: &'a rocket::State<Option<ConfigResponse>>,
     _auth: &BasicAuth,
-) -> Json<&'a ConfigResponse> {
-    Json(state.inner())
+) -> Option<Json<&'a ConfigResponse>> {
+    state.inner().as_ref().map(Json)
 }
 
 #[get("/status")]
@@ -1264,10 +1270,14 @@ pub fn build_rocket() -> rocket::Rocket<rocket::Build> {
 
     // Fetch the relevant app FCM data and store globally for future requests asking for it.
     // Tests and local tooling can skip this with SECLUSO_SKIP_FCM_CONFIG=1.
-    let fcm_config = if std::env::var("SECLUSO_SKIP_FCM_CONFIG").is_ok() {
-        ConfigResponse::default()
+    // When service_account_key.json is not present, run without FCM support (UnifiedPush / iOS relay continue to work).
+    let fcm_config: Option<ConfigResponse> = if std::env::var("SECLUSO_SKIP_FCM_CONFIG").is_ok() {
+        None
+    } else if Path::new("service_account_key.json").exists() {
+        Some(fcm::fetch_config().expect("Failed to fetch config"))
     } else {
-        fcm::fetch_config().expect("Failed to fetch config")
+        info!("service_account_key.json not found; running without FCM support");
+        None
     };
     let notification_target_policy = notification_target::UnifiedPushPolicy::from_env()
         .expect("Failed to parse UnifiedPush allowlist");

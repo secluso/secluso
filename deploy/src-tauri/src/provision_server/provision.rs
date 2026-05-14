@@ -249,15 +249,31 @@ pub fn run_provision(
         // step 2 generate and upload secrets
         step_start(app, run_id, "secrets", "Preparing runtime secrets");
         let secrets = plan.secrets.as_ref().context("Missing secrets config")?;
-        let sa_path = PathBuf::from(&secrets.service_account_key_path);
-        let sa = std::fs::read(&sa_path)
-            .with_context(|| format!("Missing service account key at {}", sa_path.display()))?;
-        scp_upload_bytes(
-            &sess,
-            &remote_stage_path(&remote_stage_dir, "service_account_key.json"),
-            0o600,
-            &sa,
-        )?;
+        let sa_path_str = secrets
+            .service_account_key_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let Some(sa_path_str) = sa_path_str {
+            let sa_path = PathBuf::from(sa_path_str);
+            let sa = std::fs::read(&sa_path)
+                .with_context(|| format!("Missing service account key at {}", sa_path.display()))?;
+            scp_upload_bytes(
+                &sess,
+                &remote_stage_path(&remote_stage_dir, "service_account_key.json"),
+                0o600,
+                &sa,
+            )?;
+        } else {
+            log_line(
+                app,
+                run_id,
+                "info",
+                Some("secrets"),
+                "No service account key provided; deploying without FCM support."
+                    .to_string(),
+            );
+        }
 
         if first_install {
             let work_dir =

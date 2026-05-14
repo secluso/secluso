@@ -32,6 +32,7 @@
 
   let overwriteInstall = false;
   let serviceAccountKeyPath = "";
+  let showFcmSection = false;
   let userCredentialsQrPath = "";
   let advancedNetworkMode = false;
   type AccessMode = "direct" | "proxy";
@@ -343,7 +344,6 @@
     errorMsg = "";
     const tErr = validateTarget();
     if (tErr) { errorMsg = tErr; return; }
-    if (!serviceAccountKeyPath.trim()) { errorMsg = "Service account key is required."; return; }
     if (!userCredentialsQrPath.trim()) {
       await pickUserCredentialsQrSave();
     }
@@ -756,19 +756,41 @@
 
     <section class="panel">
       <h2>Files & Secrets</h2>
-      <label class="field">
-        <span class="field-label">
-          Service account key (JSON)
-          <a class="help-link" href="/service-account-help">
-            <span>Where to get this?</span>
-            <img src="/deploy-assets/server-external-link.svg" alt="" />
-          </a>
-        </span>
-        <div class="field-row">
-          <input readonly placeholder="Choose service_account_key.json" value={maskDemoText(serviceAccountKeyPath)} />
-          <button class="ghost" type="button" on:click={pickServiceAccountKey}>Choose File</button>
+      {#if !showFcmSection && !serviceAccountKeyPath}
+        <div class="fcm-collapsed">
+          <p class="hint-text">
+            By default, Android phones receive notifications through UnifiedPush. No Google
+            account or Firebase project needed, and more privacy preserving. iOS phones use the
+            Secluso iOS Notification relay automatically, no setup on your side, and it's designed
+            to be more private than FCM. Most people should leave this alone; check the Build Your
+            Own guide if you need help setting up a UnifiedPush distributor on your phone.
+          </p>
+          <button class="ghost" type="button" on:click={() => (showFcmSection = true)}>
+            I want to use FCM (optional)
+          </button>
         </div>
-      </label>
+      {:else}
+        <label class="field">
+          <span class="field-label">
+            Service account key (JSON, optional)
+            <a class="help-link" href="/service-account-help">
+              <span>Where to get this?</span>
+              <img src="/deploy-assets/server-external-link.svg" alt="" />
+            </a>
+          </span>
+          <div class="field-row">
+            <input readonly placeholder="Choose service_account_key.json" value={maskDemoText(serviceAccountKeyPath)} />
+            <button class="ghost" type="button" on:click={pickServiceAccountKey}>Choose File</button>
+            <button class="ghost" type="button" on:click={() => { serviceAccountKeyPath = ""; showFcmSection = false; }}>
+              {serviceAccountKeyPath ? "Clear" : "Hide"}
+            </button>
+          </div>
+          <small class="hint-text">
+            Only needed if you want FCM notifications on Android. Most setups should skip this and
+            use UnifiedPush instead. iOS phones use the Secluso iOS Notification relay either way.
+          </small>
+        </label>
+      {/if}
 
       <label class="field">
         <span>Save user credentials QR code to</span>
@@ -1317,6 +1339,31 @@
     margin-top: 2px;
     color: #fbbf24;
     font-size: 12px;
+  }
+
+  .hint-text {
+    margin-top: 4px;
+    color: rgba(255, 255, 255, 0.45);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .fcm-collapsed {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .fcm-collapsed .hint-text {
+    margin: 0;
+  }
+
+  .fcm-collapsed button {
+    height: 36px;
+    padding: 0 16px;
+    border-radius: 16px;
+    font-size: 13px;
   }
 
   button {

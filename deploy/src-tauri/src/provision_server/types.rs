@@ -61,7 +61,9 @@ pub struct SigKey {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerSecrets {
-  pub service_account_key_path: String,
+  /// When not provided, the deployed server runs without FCM support (but UnifiedPush and Secluso iOS notification relay continue to work)
+  #[serde(default)]
+  pub service_account_key_path: Option<String>,
   pub server_url: String,
   pub user_credentials_qr_path: String,
 }
