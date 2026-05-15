@@ -4,6 +4,8 @@
   import { onDestroy, onMount } from "svelte";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import {
+    checkSshPasswordAuth,
+    disableSshPasswordAuth,
     fetchServerHostKey,
     listenProvisionEvents,
     testServerSsh,
@@ -89,6 +91,16 @@
   let currentTargetKey = "";
   let verifiedTargetKey = "";
   let unlistenProvision: (() => void) | null = null;
+
+  // Password-auth hardening
+  let checkingPasswordAuth = false;
+  let disablingPasswordAuth = false;
+  let passwordAuthEnabled: boolean | null = null;
+  let passwordAuthMessage = "";
+  // When using SSH key auth and the server still allows password logins, ask the user once per successful preflight whether to disable it
+  let disablePrompt: "ask" | "running" | "done" | null = null;
+  let disablePromptOutcome: "ok" | "error" | "dismissed" | null = null;
+  let disablePromptError = "";
 
   $: currentTargetKey = `${host.trim()}:${port}`;
   $: if (verifiedTargetKey && currentTargetKey !== verifiedTargetKey) {
@@ -329,6 +341,10 @@
       testMessage = "Preflight OK. SSH, sudo, OS, port, network, and compatibility checks passed.";
       testProgressTitle = "Preflight complete";
       testProgressDetail = "";
+      // If they logged in with a key, surface the offer to lock the server to keys only the first time we confirm SSH works.
+      if (authMode !== "password") {
+        maybePromptDisablePasswordAuth();
+      }
     } catch (e: any) {
       testResult = "error";
       testMessage = e?.toString() ?? "SSH test failed.";
@@ -337,6 +353,78 @@
     } finally {
       testing = false;
       activeTestRunId = "";
+    }
+  }
+
+  async function refreshPasswordAuthState(): Promise<boolean | null> {
+    const err = validateTarget();
+    if (err) { passwordAuthMessage = err; return null; }
+    checkingPasswordAuth = true;
+    passwordAuthMessage = "";
+    try {
+      const enabled = await checkSshPasswordAuth(buildTarget());
+      passwordAuthEnabled = enabled;
+      passwordAuthMessage = enabled
+        ? "Password authentication is currently allowed on this server."
+        : "Password authentication is already disabled. Only key-based logins are accepted.";
+      return enabled;
+    } catch (e: any) {
+      passwordAuthEnabled = null;
+      passwordAuthMessage = e?.toString() ?? "Could not check SSH password authentication.";
+      return null;
+    } finally {
+      checkingPasswordAuth = false;
+    }
+  }
+
+  async function runDisablePasswordAuth(): Promise<boolean> {
+    disablingPasswordAuth = true;
+    try {
+      await disableSshPasswordAuth(buildTarget());
+      passwordAuthEnabled = false;
+      passwordAuthMessage = "Password authentication is now disabled on this server.";
+      return true;
+    } catch (e: any) {
+      passwordAuthMessage = e?.toString() ?? "Failed to disable SSH password authentication.";
+      return false;
+    } finally {
+      disablingPasswordAuth = false;
+    }
+  }
+
+  async function onCheckPasswordAuth() {
+    await refreshPasswordAuthState();
+  }
+
+  async function onDisablePasswordAuth() {
+    // Always confirm current state before acting so we never reload sshd when the change is already in place.
+    const state = await refreshPasswordAuthState();
+    if (state === null) return;
+    if (state === false) return;
+    await runDisablePasswordAuth();
+  }
+
+  async function maybePromptDisablePasswordAuth() {
+    if (disablePrompt === "ask" || disablePrompt === "running") return;
+    if (disablePromptOutcome === "dismissed" || disablePromptOutcome === "ok") return;
+    const state = await refreshPasswordAuthState();
+    if (state !== true) return;
+    disablePrompt = "ask";
+  }
+
+  async function onConfirmDisablePrompt() {
+    disablePrompt = "running";
+    disablePromptError = "";
+    const ok = await runDisablePasswordAuth();
+    disablePrompt = "done";
+    disablePromptOutcome = ok ? "ok" : "error";
+    if (!ok) disablePromptError = passwordAuthMessage;
+  }
+
+  function onDismissDisablePrompt() {
+    disablePrompt = null;
+    if (disablePromptOutcome !== "ok") {
+      disablePromptOutcome = "dismissed";
     }
   }
 
@@ -530,6 +618,43 @@
     </div>
   {/if}
 
+  {#if disablePrompt === "ask" || disablePrompt === "running"}
+    <div class="overlay" role="dialog" aria-modal="true" aria-labelledby="disable-pw-title">
+      <div class="modal">
+        <div class="modal-title" id="disable-pw-title">Disable SSH password authentication?</div>
+        <div class="modal-body">
+          You're logging in with an SSH key, but this server still accepts password logins.
+          Disabling password authentication blocks brute-force guessing and is recommended
+          when key-based access is working.
+        </div>
+        <div class="modal-actions">
+          <button class="ghost" type="button" on:click={onDismissDisablePrompt} disabled={disablePrompt === "running"}>
+            Not now
+          </button>
+          <button class="primary modal-confirm" type="button" on:click={onConfirmDisablePrompt} disabled={disablePrompt === "running"}>
+            {disablePrompt === "running" ? "Disabling…" : "Disable password auth"}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if disablePrompt === "done"}
+    <div class="overlay" role="status" aria-live="polite">
+      <div class="modal {disablePromptOutcome === "ok" ? "ok" : "error"}">
+        <div class="modal-title">
+          {disablePromptOutcome === "ok" ? "Password auth disabled" : "Could not disable password auth"}
+        </div>
+        <div class="modal-body">
+          {disablePromptOutcome === "ok"
+            ? "Only key-based SSH logins are accepted from now on."
+            : maskDemoText(disablePromptError || "The server did not accept the change.")}
+        </div>
+        <button class="modal-btn" type="button" on:click={() => { disablePrompt = null; }}>Dismiss</button>
+      </div>
+    </div>
+  {/if}
+
   <section class="frame">
     <div class="toolbar">
       <button class="back" type="button" on:click={goBack}>
@@ -670,6 +795,33 @@
           <input type="password" bind:value={sudoPassword} autocorrect="off" autocapitalize="off" spellcheck="false" />
         </label>
       {/if}
+
+      <div class="harden-card">
+        <div class="harden-head">
+          <div class="harden-copy">
+            <div class="label">Server hardening</div>
+            <p class="muted">
+              Disable SSH password authentication on this server so only key-based logins are accepted.
+              Recommended when you've already configured an SSH key.
+            </p>
+          </div>
+        </div>
+        <div class="harden-actions">
+          <button class="ghost" type="button" on:click={onCheckPasswordAuth}
+            disabled={checkingPasswordAuth || disablingPasswordAuth || testing || provisioning}>
+            {checkingPasswordAuth ? "Checking…" : "Check status"}
+          </button>
+          <button class="ghost" type="button" on:click={onDisablePasswordAuth}
+            disabled={checkingPasswordAuth || disablingPasswordAuth || testing || provisioning || passwordAuthEnabled === false}>
+            {disablingPasswordAuth ? "Disabling…" : "Disable password auth"}
+          </button>
+        </div>
+        {#if passwordAuthMessage}
+          <small class="harden-status {passwordAuthEnabled === false ? 'ok' : passwordAuthEnabled === true ? 'warn' : ''}">
+            {maskDemoText(passwordAuthMessage)}
+          </small>
+        {/if}
+      </div>
 
     </section>
 
@@ -1459,6 +1611,61 @@
   .modal-title { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
   .modal-body { color: rgba(255, 255, 255, 0.64); margin-bottom: 14px; }
   .modal-btn { padding: 10px 14px; border-radius: 10px; }
+
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+
+  .modal-confirm {
+    width: auto;
+    margin-top: 0;
+    padding: 0 16px;
+    height: 36px;
+    border-radius: 12px;
+    font-size: 13px;
+  }
+
+  .harden-card {
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px solid rgba(255, 255, 255, 0.04);
+  }
+
+  .harden-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .harden-copy {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .harden-copy .label {
+    margin-top: 0;
+  }
+
+  .harden-actions {
+    margin-top: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .harden-status {
+    display: block;
+    margin-top: 10px;
+    font-size: 11px;
+    line-height: 16px;
+    color: rgba(255, 255, 255, 0.5);
+  }
+
+  .harden-status.ok { color: #00d492; }
+  .harden-status.warn { color: #fbbf24; }
 
   @media (max-width: 640px) {
     .appbar-inner,

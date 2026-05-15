@@ -19,6 +19,8 @@ pub fn run() {
             provision_server::fetch_server_host_key,
             provision_server::test_server_ssh,
             provision_server::provision_server,
+            provision_server::check_ssh_password_auth,
+            provision_server::disable_ssh_password_auth,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

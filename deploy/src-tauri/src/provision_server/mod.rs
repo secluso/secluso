@@ -1,5 +1,6 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 mod events;
+mod harden;
 mod preflight;
 mod provision;
 mod script;
@@ -7,6 +8,7 @@ mod ssh;
 pub(crate) mod types;
 
 use crate::provision_server::events::{emit, log_line, step_error, step_ok, step_start, ProvisionEvent};
+use crate::provision_server::harden::{check_password_auth, disable_password_auth as disable_password_auth_impl};
 use crate::provision_server::preflight::run_preflight;
 use crate::provision_server::provision::run_provision;
 use crate::provision_server::ssh::{connect_ssh, fetch_host_key};
@@ -17,6 +19,22 @@ use tauri::AppHandle;
 use uuid::Uuid;
 
 // tauri commands
+
+#[tauri::command]
+pub async fn check_ssh_password_auth(target: SshTarget) -> Result<bool, String> {
+  tokio::task::spawn_blocking(move || check_password_auth(&target))
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|r| r.map_err(|e| e.to_string()))
+}
+
+#[tauri::command]
+pub async fn disable_ssh_password_auth(target: SshTarget) -> Result<(), String> {
+  tokio::task::spawn_blocking(move || disable_password_auth_impl(&target))
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|r| r.map_err(|e| e.to_string()))
+}
 
 #[tauri::command]
 pub async fn fetch_server_host_key(target: SshHostKeyTarget) -> Result<HostKeyProof, String> {

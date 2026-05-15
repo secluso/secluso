@@ -84,6 +84,14 @@ export async function fetchServerHostKey(target: SshHostKeyTarget): Promise<Host
   return invoke("fetch_server_host_key", { target });
 }
 
+export async function checkSshPasswordAuth(target: SshTarget): Promise<boolean> {
+  return invoke("check_ssh_password_auth", { target });
+}
+
+export async function disableSshPasswordAuth(target: SshTarget): Promise<void> {
+  await invoke("disable_ssh_password_auth", { target });
+}
+
 export async function provisionServer(
   target: SshTarget,
   plan: ServerPlan
