@@ -1,6 +1,7 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 mod events;
 mod harden;
+mod key_gen;
 mod preflight;
 mod provision;
 mod script;
@@ -9,6 +10,9 @@ pub(crate) mod types;
 
 use crate::provision_server::events::{emit, log_line, step_error, step_ok, step_start, ProvisionEvent};
 use crate::provision_server::harden::{check_password_auth, disable_password_auth as disable_password_auth_impl};
+use crate::provision_server::key_gen::{
+  default_key_path as default_key_path_impl, generate_keypair, install_public_key_on_server, DefaultKeyPath, KeyGenResult,
+};
 use crate::provision_server::preflight::run_preflight;
 use crate::provision_server::provision::run_provision;
 use crate::provision_server::ssh::{connect_ssh, fetch_host_key};
@@ -31,6 +35,33 @@ pub async fn check_ssh_password_auth(target: SshTarget) -> Result<bool, String> 
 #[tauri::command]
 pub async fn disable_ssh_password_auth(target: SshTarget) -> Result<(), String> {
   tokio::task::spawn_blocking(move || disable_password_auth_impl(&target))
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|r| r.map_err(|e| e.to_string()))
+}
+
+#[tauri::command]
+pub fn default_ssh_key_path() -> DefaultKeyPath {
+  default_key_path_impl()
+}
+
+#[tauri::command]
+pub async fn generate_ssh_keypair(
+  save_path: String,
+  comment: Option<String>,
+  passphrase: Option<String>,
+) -> Result<KeyGenResult, String> {
+  tokio::task::spawn_blocking(move || {
+    generate_keypair(&save_path, comment.as_deref(), passphrase.as_deref())
+  })
+  .await
+  .map_err(|e| e.to_string())
+  .and_then(|r| r.map_err(|e| e.to_string()))
+}
+
+#[tauri::command]
+pub async fn install_ssh_public_key(target: SshTarget, public_key: String) -> Result<(), String> {
+  tokio::task::spawn_blocking(move || install_public_key_on_server(&target, &public_key))
     .await
     .map_err(|e| e.to_string())
     .and_then(|r| r.map_err(|e| e.to_string()))

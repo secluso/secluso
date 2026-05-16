@@ -123,7 +123,7 @@
 
       <div class="hero-meta">
         <span>Private cameras in</span>
-        <span class="meta-chip meta-chip--time"><img src={homeChipTime} alt="" />2 min</span>
+        <span class="meta-chip meta-chip--time"><img src={homeChipTime} alt="" />5 min</span>
         <span>with</span>
         <span class="meta-chip meta-chip--e2ee"><img src={homeChipE2ee} alt="" />E2EE</span>
       </div>

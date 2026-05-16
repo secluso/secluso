@@ -111,15 +111,37 @@ if grep -qE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/' /etc/ssh/
   uses_include=1
 fi
 
+neutralize_yes_in_file() {
+  file="$1"
+  [ -f "$file" ] || return 0
+  for key in PasswordAuthentication KbdInteractiveAuthentication ChallengeResponseAuthentication; do
+    if grep -qiE "^[[:space:]]*${key}[[:space:]]+yes" "$file"; then
+      if [ ! -f "${file}.secluso.bak" ]; then
+        cp "$file" "${file}.secluso.bak"
+      fi
+      sed -i -E "s|^([[:space:]]*${key}[[:space:]]+yes.*)$|# disabled by Secluso: \1|I" "$file"
+    fi
+  done
+}
+
 if [ "$uses_include" = "1" ]; then
-  cat > /etc/ssh/sshd_config.d/99-secluso-disable-password.conf <<'CFG'
+  # Remove any older drop-in we may have left behind from earlier versions
+  rm -f /etc/ssh/sshd_config.d/99-secluso-disable-password.conf
+  cat > /etc/ssh/sshd_config.d/00-secluso-disable-password.conf <<'CFG'
 # Added by Secluso deploy tool.
 # Disables SSH password and keyboard-interactive logins so only keys work.
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 ChallengeResponseAuthentication no
 CFG
-  chmod 644 /etc/ssh/sshd_config.d/99-secluso-disable-password.conf
+  chmod 644 /etc/ssh/sshd_config.d/00-secluso-disable-password.conf
+
+  # Neutralize any conflicting yes directives in sibling drop-ins
+  for f in /etc/ssh/sshd_config.d/*.conf; do
+    [ "$f" = "/etc/ssh/sshd_config.d/00-secluso-disable-password.conf" ] && continue
+    neutralize_yes_in_file "$f"
+  done
+  neutralize_yes_in_file /etc/ssh/sshd_config
 else
   if [ ! -f /etc/ssh/sshd_config.secluso.bak ]; then
     cp /etc/ssh/sshd_config /etc/ssh/sshd_config.secluso.bak
@@ -166,7 +188,12 @@ fi
 if [ -n "$sshd_bin" ]; then
   effective="$("$sshd_bin" -T 2>/dev/null | awk 'tolower($1)=="passwordauthentication" {print tolower($2)}' | tail -n1)"
   if [ "$effective" = "yes" ]; then
-    echo "Password authentication is still enabled after the change" >&2
+    culprit="$(grep -rliE '^[[:space:]]*PasswordAuthentication[[:space:]]+yes' /etc/ssh/sshd_config /etc/ssh/sshd_config.d 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    if [ -n "$culprit" ]; then
+      echo "Password authentication is still enabled after the change. Still set to yes in: $culprit" >&2
+    else
+      echo "Password authentication is still enabled after the change" >&2
+    fi
     exit 1
   fi
 fi

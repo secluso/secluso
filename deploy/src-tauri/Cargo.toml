@@ -48,6 +48,9 @@ base64-url = "3.0.3"
 openmls_traits = "=0.5.0"
 openmls_rust_crypto = "=0.5.1"
 fatfs = "0.3.6"
+ssh-key = { version = "0.6", features = ["ed25519", "alloc", "encryption"] }
+rand = "0.8"
+dirs = "6"
 
 
 # Keep OpenSSL handling target-specific:

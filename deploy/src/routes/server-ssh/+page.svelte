@@ -7,10 +7,14 @@
     checkSshPasswordAuth,
     disableSshPasswordAuth,
     fetchServerHostKey,
+    generateSshKeypair,
+    getDefaultSshKeyPath,
+    installSshPublicKey,
     listenProvisionEvents,
     testServerSsh,
     provisionServer,
     type HostKeyProof,
+    type KeyGenResult,
     type ProvisionEvent,
     type ServerRuntimePlan,
     type SshTarget,
@@ -92,6 +96,16 @@
   let verifiedTargetKey = "";
   let unlistenProvision: (() => void) | null = null;
 
+  // SSH key generation
+  let generatingKey = false;
+  let generatedKey: KeyGenResult | null = null;
+  let keyGenResult: "ok" | "error" | null = null;
+  let keyGenMessage = "";
+  let keyGenPromptOpen = false;
+  let keyGenPassphrase = "";
+  let keyGenPassphraseConfirm = "";
+  let keyGenPromptError = "";
+
   // Password-auth hardening
   let checkingPasswordAuth = false;
   let disablingPasswordAuth = false;
@@ -108,6 +122,15 @@
     hostKeyConfirmed = false;
     verifiedTargetKey = "";
   }
+
+  // We used to gate the manual "Disable password auth" button on a strict
+  // client-side state machine (authMode === key && lastTestedAuthMode === key
+  // && preflight ok). Svelte reactivity ordering kept tripping over it and the
+  // button stayed disabled even when conditions looked correct. The backend
+  // now does a hard safety check — it refuses to disable password auth unless
+  // ~/.ssh/authorized_keys has at least one entry — so the UI no longer
+  // needs to be precious about gating the click. Worst case: click is
+  // rejected with a clear "no keys configured" error.
 
   function goBack() {
     goto("/");
@@ -405,6 +428,9 @@
   }
 
   async function maybePromptDisablePasswordAuth() {
+    // Only auto-prompt when the user is already logging in with a key.
+    // which proves at least one working key is in authorized_keys
+    if (authMode === "password") return;
     if (disablePrompt === "ask" || disablePrompt === "running") return;
     if (disablePromptOutcome === "dismissed" || disablePromptOutcome === "ok") return;
     const state = await refreshPasswordAuthState();
@@ -427,6 +453,122 @@
       disablePromptOutcome = "dismissed";
     }
   }
+
+  function validateForKeyGen(): string | null {
+    if (!host.trim()) return "Server host/IP is required.";
+    if (port < 1 || port > 65535) return "Port must be between 1 and 65535.";
+    if (!user.trim()) return "Username is required.";
+    if (!hostKeyProof) return "Fetch the SSH host fingerprint before generating a key.";
+    if (!hostKeyConfirmed) return "Verify the SSH host fingerprint before generating a key.";
+    if (!password) return "Enter your current password so the new public key can be installed.";
+    if (!useSameForSudo && !sudoPassword) return "Enter sudo password or toggle same-as-login.";
+    return null;
+  }
+
+  function onGenerateSshKey() {
+    keyGenMessage = "";
+    keyGenResult = null;
+    keyGenPromptError = "";
+    keyGenPassphrase = "";
+    keyGenPassphraseConfirm = "";
+    const err = validateForKeyGen();
+    if (err) {
+      keyGenResult = "error";
+      keyGenMessage = err;
+      return;
+    }
+    keyGenPromptOpen = true;
+  }
+
+  function onCancelKeyGenPrompt() {
+    keyGenPromptOpen = false;
+    keyGenPassphrase = "";
+    keyGenPassphraseConfirm = "";
+    keyGenPromptError = "";
+  }
+
+  async function onConfirmKeyGenPrompt() {
+    if (keyGenPassphrase || keyGenPassphraseConfirm) {
+      if (keyGenPassphrase !== keyGenPassphraseConfirm) {
+        keyGenPromptError = "Passphrases do not match.";
+        return;
+      }
+      if (keyGenPassphrase.length < 4) {
+        keyGenPromptError = "Passphrase must be at least 4 characters, or leave it blank for no passphrase.";
+        return;
+      }
+    }
+    const passphrase = keyGenPassphrase;
+    keyGenPromptOpen = false;
+    keyGenPromptError = "";
+    await runKeyGen(passphrase);
+  }
+
+  async function runKeyGen(passphrase: string) {
+    let defaultFull = "id_ed25519_secluso";
+    let savePath: string | null = null;
+    const demoActive = !!(devSettings?.enabled && devSettings?.maskUserPathsWithDemo);
+
+    try {
+      const def = await getDefaultSshKeyPath();
+      if (demoActive && def.homeDirectory) {
+        // skip the save dialog in demo mode so recordings don't expose the user's folder layout.
+        const sep = def.homeDirectory.includes("\\") && !def.homeDirectory.includes("/") ? "\\" : "/";
+        savePath = `${def.homeDirectory}${sep}Desktop${sep}Demo${sep}${def.defaultFileName}`;
+      } else {
+        defaultFull = def.defaultFullPath || defaultFull;
+      }
+    } catch {
+      // Fall back to a plain name if we can't resolve the home dir.
+    }
+
+    if (!savePath) {
+      try {
+        const picked = await save({
+          title: "Choose where to save the new SSH private key",
+          defaultPath: defaultFull
+        });
+        if (typeof picked === "string" && picked.length > 0) {
+          savePath = picked;
+        }
+      } catch (e: any) {
+        keyGenResult = "error";
+        keyGenMessage = e?.toString() ?? "Failed to open save dialog.";
+        return;
+      }
+    }
+
+    if (!savePath) return;
+
+    generatingKey = true;
+    try {
+      const comment = `secluso@${host.trim()}`;
+      const gen = await generateSshKeypair(savePath, comment, passphrase || undefined);
+      generatedKey = gen;
+      // Install the public key using the credentials that are currently in the form.. could be password or an existing key.
+      await installSshPublicKey(buildTarget(), gen.publicKey);
+
+      // Flip the form to use the new key
+      // Clear  the password so we're not holding it in memory any longer than needed.
+      authMode = "keyfile";
+      keyPath = gen.privatePath;
+      keyPassphrase = passphrase;
+      password = "";
+
+      keyGenResult = "ok";
+      const fileName = gen.publicPath.split(/[\\/]/).pop();
+      keyGenMessage = passphrase
+        ? `Generated and installed ${fileName} (encrypted with your passphrase). Switched to key-based login.`
+        : `Generated and installed ${fileName}. Switched to key-based login.`;
+    } catch (e: any) {
+      keyGenResult = "error";
+      keyGenMessage = e?.toString() ?? "Failed to generate SSH key.";
+    } finally {
+      generatingKey = false;
+    }
+  }
+
+  $: showGenerateKeyButton = authMode === "password";
 
   async function onProvision() {
     errorMsg = "";
@@ -500,6 +642,23 @@
   }
 
   async function pickUserCredentialsQrSave() {
+    // In demo mode, skip the save dialog so recordings don't expose the
+    // user's folder layout. Always land in ~/Desktop/Demo, matching the
+    // SSH key generation flow.
+    const demoActive = !!(devSettings?.enabled && devSettings?.maskUserPathsWithDemo);
+    if (demoActive) {
+      try {
+        const def = await getDefaultSshKeyPath();
+        if (def.homeDirectory) {
+          const sep = def.homeDirectory.includes("\\") && !def.homeDirectory.includes("/") ? "\\" : "/";
+          userCredentialsQrPath = `${def.homeDirectory}${sep}Desktop${sep}Demo${sep}user_credentials_qr.png`;
+          return;
+        }
+      } catch {
+        // Fall back to the normal dialog if we can't resolve the home dir.
+      }
+    }
+
     try {
       const path = await save({
         title: "Choose where to save the user credentials QR code…",
@@ -655,6 +814,55 @@
     </div>
   {/if}
 
+  {#if keyGenPromptOpen}
+    <div class="overlay" role="dialog" aria-modal="true" aria-labelledby="keygen-prompt-title">
+      <div class="modal">
+        <div class="modal-title" id="keygen-prompt-title">Set a passphrase for the new key?</div>
+        <div class="modal-body">
+          A passphrase protects the private key file on disk — anyone with the file still
+          needs the passphrase to use it. Leave both fields blank for an unprotected key.
+        </div>
+        <label class="field">
+          <span>Passphrase</span>
+          <input type="password" bind:value={keyGenPassphrase} autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Leave blank for no passphrase" />
+        </label>
+        <label class="field">
+          <span>Confirm passphrase</span>
+          <input type="password" bind:value={keyGenPassphraseConfirm} autocorrect="off" autocapitalize="off" spellcheck="false" />
+        </label>
+        {#if keyGenPromptError}
+          <small class="harden-status warn">{keyGenPromptError}</small>
+        {/if}
+        <div class="modal-actions">
+          <button class="ghost" type="button" on:click={onCancelKeyGenPrompt}>Cancel</button>
+          <button class="primary modal-confirm" type="button" on:click={onConfirmKeyGenPrompt}>
+            {keyGenPassphrase ? "Generate with passphrase" : "Generate without passphrase"}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if keyGenResult}
+    <div class="overlay" role="status" aria-live="polite">
+      <div class="modal {keyGenResult}">
+        <div class="modal-title">
+          {keyGenResult === "ok" ? "SSH key ready" : "Key generation failed"}
+        </div>
+        <div class="modal-body">
+          {maskDemoText(keyGenMessage)}
+          {#if keyGenResult === "ok" && generatedKey}
+            <div class="key-detail">
+              <div><span>Private key:</span> <code>{maskDemoText(generatedKey.privatePath)}</code></div>
+              <div><span>Fingerprint:</span> <code>{generatedKey.fingerprint}</code></div>
+            </div>
+          {/if}
+        </div>
+        <button class="modal-btn" type="button" on:click={() => { keyGenResult = null; }}>Dismiss</button>
+      </div>
+    </div>
+  {/if}
+
   <section class="frame">
     <div class="toolbar">
       <button class="back" type="button" on:click={goBack}>
@@ -782,6 +990,20 @@
         </label>
       {/if}
 
+      {#if showGenerateKeyButton}
+        <div class="keygen-row">
+          <button class="ghost" type="button" on:click={onGenerateSshKey}
+            disabled={generatingKey || testing || provisioning}>
+            {generatingKey ? "Generating…" : "Generate SSH key"}
+          </button>
+          <small class="keygen-help">
+            Creates a new Ed25519 key on this computer, installs the public key on the server,
+            and switches this form to key-based login. Requires your current password and a
+            verified host fingerprint above.
+          </small>
+        </div>
+      {/if}
+
       <div class="switch-divider">
         <label class="switch-row">
           <input type="checkbox" bind:checked={useSameForSudo} />
@@ -795,33 +1017,6 @@
           <input type="password" bind:value={sudoPassword} autocorrect="off" autocapitalize="off" spellcheck="false" />
         </label>
       {/if}
-
-      <div class="harden-card">
-        <div class="harden-head">
-          <div class="harden-copy">
-            <div class="label">Server hardening</div>
-            <p class="muted">
-              Disable SSH password authentication on this server so only key-based logins are accepted.
-              Recommended when you've already configured an SSH key.
-            </p>
-          </div>
-        </div>
-        <div class="harden-actions">
-          <button class="ghost" type="button" on:click={onCheckPasswordAuth}
-            disabled={checkingPasswordAuth || disablingPasswordAuth || testing || provisioning}>
-            {checkingPasswordAuth ? "Checking…" : "Check status"}
-          </button>
-          <button class="ghost" type="button" on:click={onDisablePasswordAuth}
-            disabled={checkingPasswordAuth || disablingPasswordAuth || testing || provisioning || passwordAuthEnabled === false}>
-            {disablingPasswordAuth ? "Disabling…" : "Disable password auth"}
-          </button>
-        </div>
-        {#if passwordAuthMessage}
-          <small class="harden-status {passwordAuthEnabled === false ? 'ok' : passwordAuthEnabled === true ? 'warn' : ''}">
-            {maskDemoText(passwordAuthMessage)}
-          </small>
-        {/if}
-      </div>
 
     </section>
 
@@ -905,6 +1100,31 @@
         {/if}
       </div>
     </section>
+
+    {#if authMode !== "password"}
+      <section class="panel">
+        <h2>Server Hardening</h2>
+        <p class="muted">
+          Disable SSH password authentication on this server so only key-based logins are accepted.
+          Recommended once you've confirmed your SSH key works via preflight above.
+        </p>
+        <div class="harden-actions">
+          <button class="ghost" type="button" on:click={onCheckPasswordAuth}
+            disabled={checkingPasswordAuth || disablingPasswordAuth || testing || provisioning}>
+            {checkingPasswordAuth ? "Checking…" : "Check status"}
+          </button>
+          <button class="ghost" type="button" on:click={onDisablePasswordAuth}
+            disabled={checkingPasswordAuth || disablingPasswordAuth || testing || provisioning || passwordAuthEnabled === false}>
+            {disablingPasswordAuth ? "Disabling…" : "Disable password auth"}
+          </button>
+        </div>
+        {#if passwordAuthMessage}
+          <small class="harden-status {passwordAuthEnabled === false ? 'ok' : passwordAuthEnabled === true ? 'warn' : ''}">
+            {maskDemoText(passwordAuthMessage)}
+          </small>
+        {/if}
+      </section>
+    {/if}
 
     <section class="panel">
       <h2>Files & Secrets</h2>
@@ -1627,28 +1847,6 @@
     font-size: 13px;
   }
 
-  .harden-card {
-    margin-top: 18px;
-    padding-top: 16px;
-    border-top: 1px solid rgba(255, 255, 255, 0.04);
-  }
-
-  .harden-head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 12px;
-  }
-
-  .harden-copy {
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-
-  .harden-copy .label {
-    margin-top: 0;
-  }
-
   .harden-actions {
     margin-top: 12px;
     display: flex;
@@ -1666,6 +1864,40 @@
 
   .harden-status.ok { color: #00d492; }
   .harden-status.warn { color: #fbbf24; }
+
+  .keygen-row {
+    margin-top: 18px;
+    display: flex;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .keygen-help {
+    flex: 1 1 220px;
+    min-width: 0;
+    color: rgba(255, 255, 255, 0.45);
+    font-size: 11px;
+    line-height: 16px;
+  }
+
+  .key-detail {
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 12px;
+    line-height: 17px;
+  }
+
+  .key-detail span {
+    color: rgba(255, 255, 255, 0.45);
+    margin-right: 6px;
+  }
+
+  .key-detail code {
+    word-break: break-all;
+  }
 
   @media (max-width: 640px) {
     .appbar-inner,

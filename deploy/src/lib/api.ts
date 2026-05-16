@@ -92,6 +92,36 @@ export async function disableSshPasswordAuth(target: SshTarget): Promise<void> {
   await invoke("disable_ssh_password_auth", { target });
 }
 
+export interface DefaultKeyPath {
+  homeDirectory: string;
+  directory: string;
+  defaultFileName: string;
+  defaultFullPath: string;
+}
+
+export interface KeyGenResult {
+  privatePath: string;
+  publicPath: string;
+  publicKey: string;
+  fingerprint: string;
+}
+
+export async function getDefaultSshKeyPath(): Promise<DefaultKeyPath> {
+  return invoke("default_ssh_key_path");
+}
+
+export async function generateSshKeypair(
+  savePath: string,
+  comment?: string,
+  passphrase?: string
+): Promise<KeyGenResult> {
+  return invoke("generate_ssh_keypair", { savePath, comment, passphrase });
+}
+
+export async function installSshPublicKey(target: SshTarget, publicKey: string): Promise<void> {
+  await invoke("install_ssh_public_key", { target, publicKey });
+}
+
 export async function provisionServer(
   target: SshTarget,
   plan: ServerPlan
