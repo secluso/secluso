@@ -366,6 +366,8 @@ fn download_and_verify_release_asset_to_path_with_key_base(
     key_base_url: &str,
 ) -> Result<VerifiedReleaseFile> {
     require_release_is_immutable(release)?;
+    // ensure that immutability is enforced in the OS repo as well
+    require_release_is_immutable(release_actual)?;
 
     // Arbitrary release assets such as the WIC image are authenticated by the same signed checksum file that authenticates the runtime bundle.
     // GitHub's release asset API includes the digest metadata we check in addition to the signed checksum file, (see API documentation at https://docs.github.com/en/rest/releases/assets?apiVersion=2022-11-28)
