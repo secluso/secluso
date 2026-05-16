@@ -854,6 +854,43 @@ rebuild_appimage_deterministically_in_place() {
   rm -rf "$tmp"
 }
 
+# libgcrypt's DT_NEEDED is the unversioned soname "libgpg-error.so.0".
+readonly HOST_LIBGPG_ERROR_SO="/usr/lib/x86_64-linux-gnu/libgpg-error.so.0"
+
+# linuxdeploy/appimagetool's excludelist bundles libgcrypt.so.20 from the build container but excludes libgpg-error.so.0 (treated as a host-provided lib)
+# Keep the pair together.. if libgcrypt is bundled, bundle its matching libgpg-error from the same (pinned) build container.
+ensure_libgpg_error_bundled_with_libgcrypt() {
+  local appdir="$1"
+  [[ -n "$appdir" && -d "$appdir" ]] || return 0
+
+  local gcrypt_file
+  gcrypt_file="$(find "$appdir" -type f -name 'libgcrypt.so.20*' 2>/dev/null \
+    | LC_ALL=C sort | head -n 1)"
+  [[ -n "$gcrypt_file" ]] || return 0
+
+  local libdir
+  libdir="$(dirname "$gcrypt_file")"
+
+  if find "$appdir" \( -type f -o -type l \) -name 'libgpg-error.so.0*' 2>/dev/null \
+    | LC_ALL=C sort | head -n 1 | grep -q .; then
+    echo "==> libgpg-error already bundled alongside libgcrypt; nothing to do"
+    return 0
+  fi
+
+  if [[ ! -e "$HOST_LIBGPG_ERROR_SO" ]]; then
+    echo "==> error: libgcrypt.so.20 is bundled but $HOST_LIBGPG_ERROR_SO is missing; the pinned base image changed and must be reviewed" >&2
+    return 1
+  fi
+
+  local dest="$libdir/libgpg-error.so.0"
+  echo "==> bundling libgpg-error.so.0 alongside libgcrypt ($HOST_LIBGPG_ERROR_SO -> $dest)"
+  cp -L "$HOST_LIBGPG_ERROR_SO" "$dest"
+  chmod 0644 "$dest"
+  if command -v patchelf >/dev/null 2>&1; then
+    patchelf --set-rpath '$ORIGIN' "$dest" || true
+  fi
+}
+
 canonicalize_linux_bundle_outputs_deterministically() {
   [[ "$TAURI_TARGET" == *"-unknown-linux-"* ]] || return 0
 
@@ -895,6 +932,12 @@ canonicalize_linux_bundle_outputs_deterministically() {
 
   local appdir=""
   appdir="$(find "$bundle_root/appimage" -maxdepth 1 -type d -name '*.AppDir' 2>/dev/null | LC_ALL=C sort | head -n 1)"
+  if [[ -n "$appdir" && -d "$appdir" ]]; then
+    ensure_libgpg_error_bundled_with_libgcrypt "$appdir" || {
+      echo "==> error: failed to bundle libgpg-error alongside libgcrypt in $appdir" >&2
+      return 1
+    }
+  fi
   local appimage_path
   while IFS= read -r appimage_path; do
     [[ -n "$appimage_path" ]] || continue
