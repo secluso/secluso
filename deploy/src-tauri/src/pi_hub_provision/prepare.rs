@@ -139,11 +139,12 @@ pub fn run_prepare_image(
         .as_deref()
         .map(normalize_repo)
         .unwrap_or_else(|| DEFAULT_OWNER_REPO.to_string());
+    const DEFAULT_OWNER_REPO_OS: &str = "secluso/os";
     let repo_os = req
         .os_repo
         .as_deref()
         .map(normalize_repo)
-        .unwrap_or_else(|| DEFAULT_OWNER_REPO.to_string());
+        .unwrap_or_else(|| DEFAULT_OWNER_REPO_OS.to_string());
 
     let sig_keys = req.sig_keys.as_deref();
     let github_token = req.github_token.as_deref().filter(|v| !v.trim().is_empty());
