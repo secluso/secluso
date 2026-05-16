@@ -115,7 +115,11 @@ build_and_manifest() {
       case "$pkg" in
         raspberry_camera_hub)
           local new_bin="secluso-camera-hub"
-          mv "$art_dir/$bin" "$art_dir/$new_bin"
+          # crate_name is remapped to camera_hub above, so $bin is already secluso-camera-hub
+          # only rename when the names actually differ to avoid a self-move
+          if [[ "$bin" != "$new_bin" ]]; then
+            mv "$art_dir/$bin" "$art_dir/$new_bin"
+          fi
           bin="$new_bin"
           ;;
       esac
