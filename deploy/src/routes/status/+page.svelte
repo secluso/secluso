@@ -3,7 +3,7 @@
   import { onDestroy, onMount } from "svelte";
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
-  import { listenProvisionEvents, type ProvisionEvent } from "$lib/api";
+  import { listenProvisionEvents, beginRun, type ProvisionEvent } from "$lib/api";
   import { maskDemoText } from "$lib/demoDisplay";
 
   type StepState = "pending" | "running" | "ok" | "error";
@@ -32,6 +32,7 @@
   let mode = "server";
   let steps: { key: string; title: string }[] = [];
   let stepStatus: Record<string, StepState> = {};
+  let stepProgress: Record<string, number> = {};
   let logs: { level: string; step?: string; line: string; time: string }[] = [];
   let doneOk: boolean | null = null;
   let unlisten: (() => void) | null = null;
@@ -89,6 +90,7 @@
 
   function resetState() {
     stepStatus = {};
+    stepProgress = {};
     for (const s of steps) stepStatus[s.key] = "pending";
     if (steps.some((s) => s.key === "validate")) {
       stepStatus = { ...stepStatus, validate: "ok" };
@@ -102,6 +104,18 @@
   async function startListening() {
     if (unlisten) unlisten();
     unlisten = await listenProvisionEvents((evt) => handleEvent(evt));
+    // Listener is attached now. Safe to start the image pipeline.
+    if (mode === "image" && runId) {
+      try {
+        await beginRun(runId);
+      } catch (e) {
+        logs = [
+          ...logs,
+          { level: "error", step: "fatal", line: String(e), time: new Date().toLocaleTimeString() }
+        ];
+        doneOk = false;
+      }
+    }
   }
 
   function handleEvent(evt: ProvisionEvent) {
@@ -124,6 +138,13 @@
         ...logs,
         { level: "error", step: evt.step, line: evt.message, time: new Date().toLocaleTimeString() }
       ];
+      return;
+    }
+
+    if (evt.type === "progress") {
+      if (evt.percent !== null && evt.percent !== undefined) {
+        stepProgress = { ...stepProgress, [evt.step]: evt.percent };
+      }
       return;
     }
 
@@ -380,7 +401,16 @@
             {/if}
 
             <span class="step-title">{s.title}</span>
-            <span class={`step-state ${stepStatus[s.key]}`}>{stepStateLabel(stepStatus[s.key])}</span>
+            <span class={`step-state ${stepStatus[s.key]}`}>
+              {stepStatus[s.key] === "running" && stepProgress[s.key] != null
+                ? `${stepProgress[s.key]}%`
+                : stepStateLabel(stepStatus[s.key])}
+            </span>
+            {#if stepStatus[s.key] === "running" && stepProgress[s.key] != null}
+              <div class="step-progress">
+                <div class="step-progress-fill" style={`width:${stepProgress[s.key]}%;`}></div>
+              </div>
+            {/if}
           </div>
         {/each}
       </section>
@@ -746,6 +776,21 @@
   .step.running .step-title,
   .step.error .step-title {
     color: rgba(255, 255, 255, 0.6);
+  }
+
+  .step-progress {
+    grid-column: 1 / -1;
+    height: 4px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.05);
+    overflow: hidden;
+  }
+
+  .step-progress-fill {
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #3b82f6 0%, #60a5fa 50%, #3b82f6 100%);
+    transition: width 140ms ease;
   }
 
   .step-state {

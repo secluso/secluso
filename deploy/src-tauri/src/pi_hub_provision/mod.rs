@@ -13,9 +13,11 @@ use crate::pi_hub_provision::prepare::run_prepare_image;
 use crate::pi_hub_provision::temp::shared_temp_dir;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use tauri::AppHandle;
+use std::sync::Mutex;
+use tauri::{AppHandle, State};
 use uuid::Uuid;
 
 // api wiring for tauri commands
@@ -42,6 +44,12 @@ pub struct PrepareImageResponse {
 pub struct BuildStart {
     pub run_id: Uuid,
 }
+
+// Holds a prepared run between prepare_image (registers it) and begin_run (starts it)
+// lets the status page attach its event listener before any events are emitted..
+// essentially this fixes a listener-attach race
+#[derive(Default)]
+pub struct PendingRuns(pub Mutex<HashMap<Uuid, PrepareImageRequest>>);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -103,12 +111,34 @@ pub async fn generate_user_credentials(
     .map_err(err_to_string)
 }
 
+// register the run and hand back its id.
 #[tauri::command]
 pub async fn prepare_image(
-    app: AppHandle,
+    pending: State<'_, PendingRuns>,
     req: PrepareImageRequest,
 ) -> std::result::Result<BuildStart, String> {
     let run_id = Uuid::new_v4();
+    pending
+        .0
+        .lock()
+        .map_err(|_| "pending-runs lock poisoned".to_string())?
+        .insert(run_id, req);
+    Ok(BuildStart { run_id })
+}
+
+// called once the listener is attached
+#[tauri::command]
+pub async fn begin_run(
+    app: AppHandle,
+    pending: State<'_, PendingRuns>,
+    run_id: Uuid,
+) -> std::result::Result<(), String> {
+    let req = pending
+        .0
+        .lock()
+        .map_err(|_| "pending-runs lock poisoned".to_string())?
+        .remove(&run_id)
+        .ok_or_else(|| "unknown or already-started run".to_string())?;
     let app2 = app.clone();
 
     tokio::task::spawn_blocking(move || match run_prepare_image(&app2, run_id, req) {
@@ -128,7 +158,7 @@ pub async fn prepare_image(
         }
     });
 
-    Ok(BuildStart { run_id })
+    Ok(())
 }
 
 fn err_to_string(e: anyhow::Error) -> String {

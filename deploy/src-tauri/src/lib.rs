@@ -11,8 +11,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .manage(pi_hub_provision::PendingRuns::default())
         .invoke_handler(tauri::generate_handler![
             pi_hub_provision::prepare_image,
+            pi_hub_provision::begin_run,
             pi_hub_provision::generate_user_credentials,
             open_external::open_external_url,
             release_config::get_deploy_version_status,

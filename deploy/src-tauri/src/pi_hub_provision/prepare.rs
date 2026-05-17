@@ -1,6 +1,6 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 use crate::pi_hub_provision::credentials::generate_secluso_credentials;
-use crate::pi_hub_provision::events::{log_line, step_error, step_ok, step_start};
+use crate::pi_hub_provision::events::{log_line, progress, step_error, step_ok, step_start};
 use crate::pi_hub_provision::image_inject::{inject_files, ConstructedFile};
 use crate::pi_hub_provision::model::SigKey;
 use crate::pi_hub_provision::temp::shared_temp_dir;
@@ -17,6 +17,8 @@ use tauri::AppHandle;
 use uuid::Uuid;
 
 fn download_verified_image(
+    app: &AppHandle,
+    run_id: Uuid,
     owner_repo: &str,
     owner_repo_os: &str,
     sig_keys: Option<&[SigKey]>,
@@ -34,6 +36,9 @@ fn download_verified_image(
     let release_actual = fetch_latest_release(&client, owner_repo_os)
         .with_context(|| format!("Fetching latest release metadata for {owner_repo}"))?;
     let asset_name = format!("secluso-pi-image-{}.wic", release.tag_name);
+    let on_progress = |downloaded: u64, total: Option<u64>| {
+        progress(app, run_id, "image_download", downloaded, total);
+    };
     let verified = download_and_verify_release_asset_to_path(
         &client,
         &release,
@@ -41,6 +46,7 @@ fn download_verified_image(
         &asset_name,
         output_path,
         &signers,
+        Some(&on_progress),
     )
     .with_context(|| format!("Downloading and verifying {}", asset_name))?;
 
@@ -201,7 +207,7 @@ pub fn run_prepare_image(
         );
         // Fetch the latest immutable GitHub release metadata, derives the expected WIC asset name from the tag, verifies the signed release checksum file, and streams the WIC to the requested output path
         let (release_tag, image_asset_name) =
-            download_verified_image(&repo, &repo_os, sig_keys, github_token, &output_path).map_err(|e| {
+            download_verified_image(app, run_id, &repo, &repo_os, sig_keys, github_token, &output_path).map_err(|e| {
                 let msg = format!("{e:#}");
                 step_error(app, run_id, "image_download", &msg);
                 anyhow!(msg)

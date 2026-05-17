@@ -58,6 +58,7 @@ export type ProvisionEvent =
   | { type: "step_ok"; run_id: string; step: string }
   | { type: "step_error"; run_id: string; step: string; message: string }
   | { type: "log"; run_id: string; level: "info" | "warn" | "error"; step?: string; line: string }
+  | { type: "progress"; run_id: string; step: string; downloaded: number; total: number | null; percent: number | null }
   | { type: "done"; run_id: string; ok: boolean };
 
 export interface PrepareImageRequest {
@@ -131,6 +132,11 @@ export async function provisionServer(
 
 export async function prepareImage(req: PrepareImageRequest): Promise<JobStart> {
   return invoke("prepare_image", { req });
+}
+
+// Starts the pipeline for a run registered by prepareImage
+export async function beginRun(runId: string): Promise<void> {
+  await invoke("begin_run", { runId });
 }
 
 export async function openExternalUrl(url: string): Promise<void> {

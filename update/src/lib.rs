@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use zip::ZipArchive;
 
 use openpgp::cert::Cert;
@@ -344,6 +344,7 @@ pub fn download_and_verify_release_asset_to_path(
     asset_name: &str,
     output_path: &Path,
     signers: &[Signer],
+    progress: Option<&dyn Fn(u64, Option<u64>)>,
 ) -> Result<VerifiedReleaseFile> {
     download_and_verify_release_asset_to_path_with_key_base(
         client,
@@ -353,6 +354,7 @@ pub fn download_and_verify_release_asset_to_path(
         output_path,
         signers,
         "https://github.com",
+        progress,
     )
 }
 
@@ -364,6 +366,7 @@ fn download_and_verify_release_asset_to_path_with_key_base(
     output_path: &Path,
     signers: &[Signer],
     key_base_url: &str,
+    progress: Option<&dyn Fn(u64, Option<u64>)>,
 ) -> Result<VerifiedReleaseFile> {
     require_release_is_immutable(release)?;
     // ensure that immutability is enforced in the OS repo as well
@@ -394,7 +397,7 @@ fn download_and_verify_release_asset_to_path_with_key_base(
 
     // Large release assets are streamed to disk while hashing so the deploy tool can verify WIC images without keeping the whole image in memory.
     // The resulting hash is compared against the signed checksum entry after GitHub's own asset digest metadata has also been checked
-    let got = download_asset_to_path_and_hash(client, &asset, output_path)
+    let got = download_asset_to_path_and_hash(client, &asset, output_path, progress)
         .with_context(|| format!("Downloading {}", asset.name))?;
 
     if expected != &got {
@@ -624,6 +627,7 @@ fn download_asset_to_path_and_hash(
     client: &Client,
     asset: &GhAsset,
     output_path: &Path,
+    progress: Option<&dyn Fn(u64, Option<u64>)>,
 ) -> Result<String> {
     // This is for large release assets where loading the entire file into memory isn't ideal
     // Streams bytes from GitHub to the requested output file, updates a SHA-256 hasher with the exact bytes written, fsyncs the result, and deletes the output on digest mismatch
@@ -657,6 +661,14 @@ fn download_asset_to_path_and_hash(
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 1024 * 128];
 
+    // Total may be absent if the server omits Content-Length
+    let total = resp.content_length();
+    let mut downloaded: u64 = 0;
+    let mut last_report = Instant::now();
+    if let Some(cb) = progress {
+        cb(0, total);
+    }
+
     loop {
         let n = resp
             .read(&mut buf)
@@ -667,6 +679,17 @@ fn download_asset_to_path_and_hash(
         out.write_all(&buf[..n])
             .with_context(|| format!("writing {}", output_path.display()))?;
         hasher.update(&buf[..n]);
+        downloaded += n as u64;
+        // Throttle so it doesn't flood the event channel.
+        if let Some(cb) = progress {
+            if last_report.elapsed() >= Duration::from_millis(200) {
+                cb(downloaded, total);
+                last_report = Instant::now();
+            }
+        }
+    }
+    if let Some(cb) = progress {
+        cb(downloaded, total);
     }
     out.sync_all()
         .with_context(|| format!("syncing {}", output_path.display()))?;

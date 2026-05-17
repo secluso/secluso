@@ -34,6 +34,15 @@ pub enum ProvisionEvent {
     message: String,
   },
 
+  #[serde(rename = "progress")]
+  Progress {
+    run_id: Uuid,
+    step: String,
+    downloaded: u64,
+    total: Option<u64>,
+    percent: Option<u8>,
+  },
+
   #[serde(rename = "done")]
   Done {
     run_id: Uuid,
@@ -74,6 +83,20 @@ pub fn step_error(app: &AppHandle, run_id: Uuid, step: &str, msg: impl Into<Stri
       run_id,
       step: step.to_string(),
       message: msg.into(),
+    },
+  );
+}
+
+pub fn progress(app: &AppHandle, run_id: Uuid, step: &str, downloaded: u64, total: Option<u64>) {
+  let percent = total.and_then(|t| (t > 0).then(|| (downloaded.min(t) * 100 / t) as u8));
+  emit(
+    app,
+    ProvisionEvent::Progress {
+      run_id,
+      step: step.to_string(),
+      downloaded,
+      total,
+      percent,
     },
   );
 }
