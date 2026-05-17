@@ -926,7 +926,10 @@ impl VerificationHelper for Helper {
             if let MessageLayer::SignatureGroup { results } = layer {
                 for r in results {
                     if let Ok(GoodChecksum { ka, .. }) = r {
+                        // Record both the signing key and its certificate's primary key
+                        // GPG signs with a [S] subkey (so a pin on the primary fingerprint must still accept signatures made by that key's subkeys)
                         self.signer_fprs.push(ka.key().fingerprint());
+                        self.signer_fprs.push(ka.cert().fingerprint());
                     }
                 }
             }
