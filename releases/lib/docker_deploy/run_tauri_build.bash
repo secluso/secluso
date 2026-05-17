@@ -88,7 +88,22 @@ configure_rust_log() {
 }
 
 write_bundle_config() {
-  printf '{ "bundle": { "targets": %s } }\n' "${TAURI_BUNDLE_TARGETS_JSON}" > /tmp/tauri-bundle-config.json
+  local resources=""
+  if [[ "$TAURI_TARGET" == *"-pc-windows-"* ]]; then
+    # FireDaemon OpenSSL is DLL-only
+    # put libcrypto/libssl next to the exe so  libssh2's OpenSSL backend loads at runtime.
+    local arch="x64"
+    [[ "$TAURI_TARGET" == aarch64-* ]] && arch="arm64"
+    local rdir="/app/deploy/src-tauri/openssl-runtime/${arch}"
+    local map="" f bn
+    for f in "$rdir"/*.dll; do
+      [[ -e "$f" ]] || continue
+      bn="$(basename "$f")"
+      map+="${map:+, }\"openssl-runtime/${arch}/${bn}\": \"${bn}\""
+    done
+    [[ -n "$map" ]] && resources=", \"resources\": { ${map} }"
+  fi
+  printf '{ "bundle": { "targets": %s%s } }\n' "${TAURI_BUNDLE_TARGETS_JSON}" "${resources}" > /tmp/tauri-bundle-config.json
   echo "==> tauri bundle config"
   cat /tmp/tauri-bundle-config.json
 }

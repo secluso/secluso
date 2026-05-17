@@ -9,6 +9,10 @@ ARG PNPM_TARBALL_INTEGRITY
 ARG TAURI_BUNDLE_TARGETS_JSON='["appimage","deb","rpm"]'
 ARG SOURCE_DATE_EPOCH="1704067200"
 ARG DEBUG="0"
+# ATTN; TODO: replace with russh [https://github.com/Eugeny/russh] to get rid of OpenSSL
+# Prebuilt Windows OpenSSL for the cargo-xwin cross-build only.
+ARG FIREDAEMON_OPENSSL_URL="https://download.firedaemon.com/FireDaemon-OpenSSL/openssl-3.6.2.zip"
+ARG FIREDAEMON_OPENSSL_SHA256="6c64db10cbdd8c0c50c684d07a746f01ac87f0b11292d399ad35880847c8f960"
 
 FROM docker.io/rust@sha256:${RUST_HASH} AS builder
 
@@ -20,6 +24,8 @@ ARG PNPM_TARBALL_INTEGRITY
 ARG TAURI_BUNDLE_TARGETS_JSON
 ARG SOURCE_DATE_EPOCH
 ARG DEBUG
+ARG FIREDAEMON_OPENSSL_URL
+ARG FIREDAEMON_OPENSSL_SHA256
 
 WORKDIR /app
 
@@ -89,10 +95,52 @@ ENV DEBUG=${DEBUG}
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 ENV RUST_LOG=tauri_bundler=info,tauri_cli_node=info,ureq=warn
 
+# openssl-sys discovery for the Windows cross-build (only)
+ENV X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR=/opt/win-openssl/x64
+ENV X86_64_PC_WINDOWS_MSVC_OPENSSL_STATIC=1
+ENV X86_64_PC_WINDOWS_MSVC_OPENSSL_NO_VENDOR=1
+ENV AARCH64_PC_WINDOWS_MSVC_OPENSSL_DIR=/opt/win-openssl/arm64
+ENV AARCH64_PC_WINDOWS_MSVC_OPENSSL_STATIC=1
+ENV AARCH64_PC_WINDOWS_MSVC_OPENSSL_NO_VENDOR=1
+
 RUN /opt/secluso-docker-deploy/setup_linuxdeploy_plugins.bash
 RUN pnpm install --frozen-lockfile
 RUN rustup target add ${TAURI_TARGET}
 RUN if [ "${TAURI_RUNNER}" = "cargo-xwin" ]; then cargo install --locked cargo-xwin --version ${CARGO_XWIN_VERSION}; fi
+
+# Pre built Windows OpenSSL
+RUN set -eux; \
+    if [ "${TAURI_RUNNER}" = "cargo-xwin" ]; then \
+      : "${FIREDAEMON_OPENSSL_URL:?missing FIREDAEMON_OPENSSL_URL build arg}"; \
+      : "${FIREDAEMON_OPENSSL_SHA256:?missing FIREDAEMON_OPENSSL_SHA256 build arg}"; \
+      zip="/tmp/firedaemon-openssl.zip"; \
+      curl -fsSL --retry 8 --retry-delay 2 --retry-all-errors --connect-timeout 20 \
+        "${FIREDAEMON_OPENSSL_URL}" -o "${zip}"; \
+      echo "${FIREDAEMON_OPENSSL_SHA256}  ${zip}" | sha256sum -c -; \
+      tmp="$(mktemp -d)"; \
+      unzip -q "${zip}" -d "${tmp}"; \
+      rm -f "${zip}"; \
+      for arch in x64 arm64; do \
+        src="$(dirname "$(find "${tmp}" -type d -path "*/${arch}/include/openssl" -print -quit)")"; \
+        if [ -z "${src}" ] || [ ! -d "${src}" ]; then \
+          echo "FireDaemon OpenSSL: ${arch} include dir not found in archive" >&2; exit 1; \
+        fi; \
+        src="$(dirname "${src}")"; \
+        dst="/opt/win-openssl/${arch}"; \
+        mkdir -p "${dst}"; \
+        cp -a "${src}/." "${dst}/"; \
+        # stage the FireDaemon runtime DLLs into the project for the Windows bundle to install next to the exe
+        rt="/app/deploy/src-tauri/openssl-runtime/${arch}"; \
+        mkdir -p "${rt}"; \
+        cp -f "${dst}"/bin/libcrypto-3-*.dll "${dst}"/bin/libssl-3-*.dll "${rt}/"; \
+        touch -d "@${SOURCE_DATE_EPOCH}" "${rt}"/*.dll; \
+      done; \
+      rm -rf "${tmp}"; \
+      ls -la /opt/win-openssl/x64/lib /app/deploy/src-tauri/openssl-runtime/x64; \
+    else \
+      echo "Not a cargo-xwin build (TAURI_RUNNER=${TAURI_RUNNER}); skipping prebuilt OpenSSL."; \
+    fi
+
 RUN /opt/secluso-docker-deploy/run_tauri_build.bash
 
 FROM scratch AS artifact

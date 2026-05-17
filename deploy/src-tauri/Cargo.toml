@@ -58,11 +58,15 @@ dirs = "6"
 
 # macOS: vendored OpenSSL avoids host/pkg-config discovery issues when building
 # x86_64-apple-darwin on Apple Silicon hosts.
-
-# non-macOS: default ssh2 avoids vendored OpenSSL Windows cross-build failures
-# in our Linux cargo-xwin builders.
 [target.'cfg(target_os = "macos")'.dependencies]
 ssh2 = { version = "0.9", features = ["vendored-openssl"] }
 
-[target.'cfg(not(target_os = "macos"))'.dependencies]
+# WinCNG cannot use Ed25519 / OpenSSH-format keys, which is what key_gen produces, so keyfile auth fails without this
+# The Windows cross-build cannot vendor-build OpenSSL (VC-WIN64A's Configure rejects a Linux Perl), so releases/Dockerfile.deploy supplies a hash-pinned prebuilt Windows OpenSSL via the OPENSSL_.. env vars instead.
+# We need the openssl-on-win32 feature to make libssh2 use WinCNG.
+[target.'cfg(target_os = "windows")'.dependencies]
+ssh2 = { version = "0.9", features = ["openssl-on-win32"] }
+
+# linux links system libssl-dev for OpenSSL.
+[target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
 ssh2 = "0.9"

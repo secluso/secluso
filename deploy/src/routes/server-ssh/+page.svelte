@@ -819,7 +819,7 @@
       <div class="modal">
         <div class="modal-title" id="keygen-prompt-title">Set a passphrase for the new key?</div>
         <div class="modal-body">
-          A passphrase protects the private key file on disk — anyone with the file still
+          A passphrase protects the private key file on disk: anyone with the file still
           needs the passphrase to use it. Leave both fields blank for an unprotected key.
         </div>
         <label class="field">
@@ -1836,6 +1836,7 @@
     display: flex;
     justify-content: flex-end;
     gap: 10px;
+    margin-top: 18px;
   }
 
   .modal-confirm {
