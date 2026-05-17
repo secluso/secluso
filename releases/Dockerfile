@@ -5,6 +5,8 @@ ARG FEATURES=""
 ARG RUST_HASH="5861091755a3298619c94a6cbf0534062cfeb9afcda9f698a13df3ef64e2dd8b" # Provided as default to quiet docker warning. This is never used (unless separately passed in).
 ARG CARGO_TARGET=""
 ARG BINARY_FILE_NAME=""
+# Debian archive snapshot. Pins every apt package so they don't float when the builder is rebuilt.
+ARG DEBIAN_SNAPSHOT="20260501T000000Z"
 
 # Use a digest-locked Rust image as our builder
 FROM docker.io/rust@sha256:${RUST_HASH} AS builder
@@ -13,8 +15,24 @@ ARG CRATE_NAME
 ARG FEATURES
 ARG CARGO_TARGET
 ARG BINARY_FILE_NAME
+ARG DEBIAN_SNAPSHOT
 
 WORKDIR /app
+
+# Repoint apt at the pinned Debian snapshot before any update/install.
+RUN set -eux; \
+    : "${DEBIAN_SNAPSHOT:?missing DEBIAN_SNAPSHOT build arg}"; \
+    codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"; \
+    snap="https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}"; \
+    snap_sec="https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}"; \
+    rm -f /etc/apt/sources.list.d/debian.sources; \
+    { \
+      echo "deb ${snap}/ ${codename} main"; \
+      echo "deb ${snap}/ ${codename}-updates main"; \
+      echo "deb ${snap_sec}/ ${codename}-security main"; \
+    } > /etc/apt/sources.list; \
+    printf 'Acquire::Check-Valid-Until "false";\nAcquire::Retries "8";\n' \
+      > /etc/apt/apt.conf.d/99snapshot
 
 # Install build deps for crates that rely on system crypto libs (e.g., nettle-sys).
 RUN set -eux; \

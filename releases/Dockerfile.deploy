@@ -13,6 +13,8 @@ ARG DEBUG="0"
 # Prebuilt Windows OpenSSL for the cargo-xwin cross-build only.
 ARG FIREDAEMON_OPENSSL_URL="https://download.firedaemon.com/FireDaemon-OpenSSL/openssl-3.6.2.zip"
 ARG FIREDAEMON_OPENSSL_SHA256="6c64db10cbdd8c0c50c684d07a746f01ac87f0b11292d399ad35880847c8f960"
+# Debian archive snapshot. Pins every apt package so they don't float when the builder is rebuilt.
+ARG DEBIAN_SNAPSHOT="20260501T000000Z"
 
 FROM docker.io/rust@sha256:${RUST_HASH} AS builder
 
@@ -26,8 +28,24 @@ ARG SOURCE_DATE_EPOCH
 ARG DEBUG
 ARG FIREDAEMON_OPENSSL_URL
 ARG FIREDAEMON_OPENSSL_SHA256
+ARG DEBIAN_SNAPSHOT
 
 WORKDIR /app
+
+# Repoint apt at the pinned Debian snapshot before any update/install.
+RUN set -eux; \
+    : "${DEBIAN_SNAPSHOT:?missing DEBIAN_SNAPSHOT build arg}"; \
+    codename="$(. /etc/os-release && echo "$VERSION_CODENAME")"; \
+    snap="https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}"; \
+    snap_sec="https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}"; \
+    rm -f /etc/apt/sources.list.d/debian.sources; \
+    { \
+      echo "deb ${snap}/ ${codename} main"; \
+      echo "deb ${snap}/ ${codename}-updates main"; \
+      echo "deb ${snap_sec}/ ${codename}-security main"; \
+    } > /etc/apt/sources.list; \
+    printf 'Acquire::Check-Valid-Until "false";\nAcquire::Retries "8";\n' \
+      > /etc/apt/apt.conf.d/99snapshot
 
 RUN set -eux; \
     apt-get update; \
