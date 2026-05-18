@@ -59,7 +59,7 @@ jobs:
 
           cp "$run_dir/manifest.json" "${RUNNER_TEMP}/manifest.json"
 
-          manifest_hash="$(sha256sum manifest.json)"
+          manifest_hash="$(sha256sum "$manifest_file")"
           echo "manifest_hash=$manifest_hash" >> "$GITHUB_OUTPUT"
 
       - name: Upload binaries manifest
