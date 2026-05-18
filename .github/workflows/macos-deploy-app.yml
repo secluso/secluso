@@ -194,38 +194,10 @@ jobs:
           app_dir="${run_dir}/artifacts/${triple}/app/Secluso Deploy.app"
           [[ -d "$app_dir" ]] || { echo "Missing app bundle: $app_dir" >&2; exit 1; }
 
-          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_dir/Contents/Info.plist")"
-          artifact_dir="${RUNNER_TEMP}/secluso-deploy-macos-artifact"
-          rm -rf "$artifact_dir"
-          mkdir -p "$artifact_dir"
-
-          app_zip="${artifact_dir}/Secluso-Deploy-${version}-macos-${arch_label}.app.zip"
-          run_zip="${artifact_dir}/secluso-deploy-macos-arm64-verification-run.zip"
-
-          ditto -c -k --keepParent --norsrc "$app_dir" "$app_zip"
-          ditto -c -k --keepParent --norsrc "$run_dir" "$run_zip"
-          cp "$run_dir/manifest.json" "$artifact_dir/manifest.json"
-
-          (
-            cd "$artifact_dir"
-            shasum -a 256 \
-              "$(basename "$app_zip")" \
-              "$(basename "$run_zip")" \
-              manifest.json \
-              > SHA256SUMS.txt
-          )
-
-          echo "artifact_dir=$artifact_dir" >> "$GITHUB_OUTPUT"
-          echo "app_zip=$app_zip" >> "$GITHUB_OUTPUT"
-          echo "Packaged app: $app_zip"
-
-      - name: Upload deploy app artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: secluso-deploy-macos-arm64-${{ github.sha }}
-          path: ${{ steps.package.outputs.artifact_dir }}
-          if-no-files-found: error
-          retention-days: 14
+          # Secluso Deploy.app is technically a folder with 3 files within it. 
+          # Thus, we can hash every file within the folder, and then take a hash of those hashes to compare two of these folders.
+          # Source: https://askubuntu.com/questions/1091335/create-checksum-sha256-of-all-files-and-directories
+          sha256sum <(find "$app_dir" -type f -exec sha256sum {} \; | sort)
 
       - name: Upload build log
         if: always()
