@@ -1,6 +1,6 @@
 [package]
 name = "secluso-tester"
-version = "1.0.0"
+version = "1.0.2"
 edition = "2021"
 authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
 

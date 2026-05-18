@@ -3697,7 +3697,7 @@ dependencies = [
 
 [[package]]
 name = "secluso-camera-hub"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "anyhow",
  "bincode",
@@ -3731,7 +3731,7 @@ dependencies = [
 
 [[package]]
 name = "secluso-client-lib"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -3755,7 +3755,7 @@ dependencies = [
 
 [[package]]
 name = "secluso-client-server-lib"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "anyhow",
  "rand 0.9.4",
@@ -3765,7 +3765,7 @@ dependencies = [
 
 [[package]]
 name = "secluso-motion-ai"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "anyhow",
  "chrono",

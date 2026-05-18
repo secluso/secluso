@@ -2138,7 +2138,7 @@ dependencies = [
 
 [[package]]
 name = "secluso-client-lib"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "anyhow",
  "base64-url",
@@ -2160,7 +2160,7 @@ dependencies = [
 
 [[package]]
 name = "secluso-client-server-lib"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "anyhow",
  "rand 0.9.4",
@@ -2170,7 +2170,7 @@ dependencies = [
 
 [[package]]
 name = "secluso-config-tool"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "anyhow",
  "docopt",

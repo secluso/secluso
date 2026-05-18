@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 [package]
 name = "secluso-deploy"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 authors = ["John Kaczman <jkaczman@pm.me>"]
 autobins = false

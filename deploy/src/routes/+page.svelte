@@ -29,7 +29,7 @@
   let helpPanel: HTMLElement | null = null;
   let versionGate: VersionStatusUpdate = {
     state: "checking",
-    currentVersion: "v1.0.0",
+    currentVersion: "v1.0.2",
     latestVersion: null
   };
   let pendingRoute: string | null = null;

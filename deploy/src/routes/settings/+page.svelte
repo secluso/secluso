@@ -291,7 +291,7 @@
             <span>Version</span>
             <input
               bind:value={devSettings.manifestVersionOverride}
-              placeholder="1.0.0"
+              placeholder="1.0.2"
               autocorrect="off"
               autocapitalize="off"
               spellcheck="false"

@@ -2291,7 +2291,7 @@ dependencies = [
 
 [[package]]
 name = "secluso-client-server-lib"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "anyhow",
  "rand 0.9.4",
@@ -2301,7 +2301,7 @@ dependencies = [
 
 [[package]]
 name = "secluso-server"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -2324,7 +2324,7 @@ dependencies = [
 
 [[package]]
 name = "secluso-server-backbone"
-version = "1.0.0"
+version = "1.0.2"
 dependencies = [
  "serde",
  "serde_json",

@@ -48,7 +48,7 @@ To verify the macOS deploy tool, first build the matching unsigned local app:
 
 Then verify the signed release against that local build:
 
-    ./verify_macos_release.sh --local-run builds/TIMESTAMP --triple aarch64-apple-darwin --release /path/to/Secluso-Deploy-1.0.0-macos-arm64.app.zip
+    ./verify_macos_release.sh --local-run builds/TIMESTAMP --triple aarch64-apple-darwin --release /path/to/Secluso-Deploy-1.0.2-macos-arm64.app.zip
 
 The macOS verifier must be run on macOS with codesign, spctl, and xcrun stapler available, usually macOS with the Xcode Command Line Tools installed. 
 
@@ -58,7 +58,7 @@ To verify the Windows deploy tool, first build the matching unsigned local insta
 
 Then verify the distributed signed release against that local build:
 
-    ./verify_windows_release.sh --local-run builds/TIMESTAMP --triple x86_64-pc-windows-msvc --release /path/to/Secluso-Deploy-1.0.0-windows-x64-setup.exe [--signtool PATH]
+    ./verify_windows_release.sh --local-run builds/TIMESTAMP --triple x86_64-pc-windows-msvc --release /path/to/Secluso-Deploy-1.0.2-windows-x64-setup.exe [--signtool PATH]
 
 The Windows verifier must be run somewhere Microsoft signtool and PowerShell's Get-AuthenticodeSignature are available, usually Windows with the Windows SDK installed or Git Bash pointing at signtool.exe.
 
