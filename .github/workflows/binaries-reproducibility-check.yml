@@ -1,0 +1,80 @@
+name: Check Reproducibility of Runtime Binaries
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: binaries-repro-check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-reproducible-binaries:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'verify-binaries-reproducible'
+    runs-on: macos-26
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Run build script
+        id: build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          build_log="${RUNNER_TEMP}/secluso-binaries-repro-build.log"
+
+          mkdir -p releases/builds
+          before_file="${RUNNER_TEMP}/secluso-builds-before.txt"
+          after_file="${RUNNER_TEMP}/secluso-builds-after.txt"
+
+          find releases/builds -mindepth 1 -maxdepth 1 -type d -print | LC_ALL=C sort > "$before_file"
+
+          ./releases/build.sh --target raspberry --profile camerahub 2>&1 | tee "$build_log"
+
+          find releases/builds -mindepth 1 -maxdepth 1 -type d -print | LC_ALL=C sort > "$after_file"
+          run_dir="$(comm -13 "$before_file" "$after_file" | tail -n 1)"
+
+          [[ -n "$run_dir" && -d "$run_dir" ]] || { echo "Could not resolve release build output directory" >&2; exit 1; }
+          [[ -f "$run_dir/manifest.json" ]] || { echo "Missing manifest in build output: $run_dir" >&2; exit 1; }
+
+          echo "run_dir=$run_dir" >> "$GITHUB_OUTPUT"
+          echo "Build output: $run_dir"
+
+      - name: Package downloadable manifest
+        id: package
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          run_dir="${{ steps.build.outputs.run_dir }}"
+
+          manifest_file="$run_dir/manifest.json"
+          [[ -f "$manifest_file" ]] || { echo "Missing manifest file $manifest_file" >&2; exit 1; }
+
+          cp "$run_dir/manifest.json" "${RUNNER_TEMP}/manifest.json"
+
+          manifest_hash="$(sha256sum manifest.json)"
+          echo "manifest_hash=$manifest_hash" >> "$GITHUB_OUTPUT"
+
+      - name: Upload binaries manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: secluso-binaries-${{ github.sha }}
+          path: ${{ runner.temp }}/manifest.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: secluso-binaries-${{ github.sha }}-build-log
+          path: ${{ runner.temp }}/secluso-binaries-repro-build.log
+          if-no-files-found: ignore
+          retention-days: 90
