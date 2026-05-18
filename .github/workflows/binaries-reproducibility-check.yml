@@ -15,7 +15,7 @@ permissions:
 jobs:
   build-reproducible-binaries:
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'verify-binaries-reproducible'
-    runs-on: macos-26
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
 
     steps:
