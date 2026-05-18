@@ -1,4 +1,4 @@
-name: Check Reproducibility of Runtime Binaries
+name: Check Reproducibility of Linux Deploy Tool
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 jobs:
-  build-reproducible-binaries:
+  build-reproducible-linux-deploy:
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'verify-linux-deploy-reproducible'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -62,7 +62,7 @@ jobs:
           manifest_hash="$(sha256sum "$manifest_file")"
           echo "manifest_hash=$manifest_hash" >> "$GITHUB_OUTPUT"
 
-      - name: Upload binaries manifest
+      - name: Upload Linux Deploy manifest
         uses: actions/upload-artifact@v4
         with:
           name: manifest-${{ github.sha }}.json
@@ -74,7 +74,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: secluso-binaries-${{ github.sha }}-build-log
+          name: secluso-linux-deploy-${{ github.sha }}-build-log
           path: ${{ runner.temp }}/secluso-linux-deploy-repro-build.log
           if-no-files-found: ignore
           retention-days: 90
