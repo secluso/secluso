@@ -197,6 +197,7 @@ jobs:
           # Secluso Deploy.app is technically a folder with 3 files within it. 
           # Thus, we can hash every file within the folder, and then take a hash of those hashes to compare two of these folders.
           # Source: https://askubuntu.com/questions/1091335/create-checksum-sha256-of-all-files-and-directories
+          find "$app_dir" -type f -exec sha256sum {} \; 
           sha256sum <(find "$app_dir" -type f -exec sha256sum {} \; | sort)
 
       - name: Upload build log
