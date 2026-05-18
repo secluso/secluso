@@ -481,14 +481,22 @@ strip_macos_macho_symbols() {
   strip "$file_path"
 }
 
+# Deprecated: It's unlikely that someone will need to run an unsigned build from the reproducible pipeline.
+# The inclusion of this means that two AD HOC SIGNED builds (as in, not signed by the official release script, not rather using a dash character in codesign) will not match (as the signing metadata will differ).
+# For GitHub actions, we would like it to emit a hash of the unsigned build that we can compare with the hash of a local secure unsigned build (so that we don't need to emit the artifact from actions).
+# Therefore, we omit this for now.
+# If you would like to run an unsigned build for some reason, remove the comment marker that omits running this function in record_macos_app_payload_artifact.
 sign_macos_app_payload() {
   local app_dir="$1"
   [[ -d "$app_dir" ]] || return
   require_tool codesign
 
+  # DEPRECATED: See function comments.
   # Stripping and path normalization mutate bytes covered by Mach-O code directories.
   # Re-seal the complete copied bundle after every resource is in place so macOS can execute it
-  codesign --force --deep --sign - "$app_dir"
+  # Notice how it uses the "-" after --sign. See https://ss64.com/mac/codesign.html "Signing Identities":
+  # "If identity is the single letter "-" (dash), ad-hoc signing is performed. Ad-hoc signing does not use an identity at all, and identifies exactly one instance of code. Significant restrictions apply to the use of ad-hoc signed code; consult documentation before using this."
+  # codesign --force --deep --sign - "$app_dir"
 }
 
 record_macos_app_payload_artifacts() {
