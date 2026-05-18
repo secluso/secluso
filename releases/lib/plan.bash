@@ -42,7 +42,8 @@ resolve_build_plan() {
       case "$PROFILE" in
         all) PKGS=( "update" "reset" "raspberry_camera_hub" "config_tool" "server" ) ;;
         release) PKGS=( "update" "raspberry_camera_hub" "server" ) ;;
-        test) PKGS=( "update" "raspberry_camera_hub" "config_tool" ) ;;
+        release-x64) PKGS=( "update" "raspberry_camera_hub" "server" ) TRIPLES=( "x86_64-unknown-linux-gnu" ) ;;
+        release-arm64 ) PKGS=( "update" "raspberry_camera_hub" "server" ) TRIPLES=( "aarch64-unknown-linux-gnu" ) ;;
         *) die "Invalid profile for all: $PROFILE" ;;
       esac
       ;;
