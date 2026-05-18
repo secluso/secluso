@@ -1,4 +1,4 @@
-name: Check Reproducibility of Linux Deploy Tool
+name: Check Reproducibility of Windows Deploy Tool
 
 on:
   workflow_dispatch:
@@ -62,7 +62,7 @@ jobs:
           manifest_hash="$(sha256sum "$manifest_file")"
           echo "manifest_hash=$manifest_hash" >> "$GITHUB_OUTPUT"
 
-      - name: Upload Linux Deploy manifest
+      - name: Upload Windows Deploy manifest
         uses: actions/upload-artifact@v4
         with:
           name: manifest-${{ github.sha }}.json
