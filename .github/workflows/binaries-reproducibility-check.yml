@@ -36,7 +36,7 @@ jobs:
 
           find releases/builds -mindepth 1 -maxdepth 1 -type d -print | LC_ALL=C sort > "$before_file"
 
-          ./releases/build.sh --target raspberry --profile camerahub 2>&1 | tee "$build_log"
+          ./releases/build.sh --target all --profile release 2>&1 | tee "$build_log"
 
           find releases/builds -mindepth 1 -maxdepth 1 -type d -print | LC_ALL=C sort > "$after_file"
           run_dir="$(comm -13 "$before_file" "$after_file" | tail -n 1)"
@@ -65,7 +65,7 @@ jobs:
       - name: Upload binaries manifest
         uses: actions/upload-artifact@v4
         with:
-          name: secluso-binaries-${{ github.sha }}
+          name: manifest-${{ github.sha }}.json
           path: ${{ runner.temp }}/manifest.json
           if-no-files-found: error
           retention-days: 90
