@@ -11,7 +11,6 @@ replay_backend = ["dep:tokio", "dep:rocket", "dep:walkdir"]
 [dependencies]
 ndarray = { version="=0.17.2", features = ["rayon"] }
 log = "0.4.29"
-yuv = "0.8.12"
 serde_json = "1.0.149"
 serde = { version = "1.0.228", features = ["derive"] }
 image = { version = "0.25.10", default-features = false } # Locked version via imageproc

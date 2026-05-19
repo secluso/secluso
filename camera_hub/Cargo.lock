@@ -3090,7 +3090,6 @@ dependencies = [
  "thiserror",
  "toml",
  "uuid",
- "yuv",
 ]
 
 [[package]]
@@ -4281,15 +4280,6 @@ dependencies = [
  "quote",
  "syn",
  "synstructure",
-]
-
-[[package]]
-name = "yuv"
-version = "0.8.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89c90da4fb561f9750984de2c5e7f0ba01035d2eb29d69a7f375b1caef37fdf4"
-dependencies = [
- "num-traits",
 ]
 
 [[package]]
