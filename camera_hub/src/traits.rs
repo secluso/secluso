@@ -8,17 +8,17 @@ use crate::motion::MotionResult;
 use anyhow::Error;
 use std::io;
 
-#[cfg(any(feature = "raspberry", feature = "ip"))]
+#[cfg(any(feature = "raspberry"))]
 use bytes::BytesMut;
 
-#[cfg(any(feature = "raspberry", feature = "ip"))]
+#[cfg(any(feature = "raspberry"))]
 pub trait CodecParameters {
     fn write_codec_box(&self, buf: &mut BytesMut) -> Result<(), Error>;
     fn get_clock_rate(&self) -> u32;
     fn get_dimensions(&self) -> (u32, u32);
 }
 
-#[cfg(any(feature = "raspberry", feature = "ip"))]
+#[cfg(any(feature = "raspberry"))]
 pub trait Mp4 {
     async fn video(
         &mut self,

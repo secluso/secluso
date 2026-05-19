@@ -7,9 +7,8 @@ authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
 [features]
 default = ["logging"]
 logging = ["log"]
-ip = ["dep:rpassword", "dep:reqwest", "dep:http-auth", "dep:linfa", "dep:linfa-clustering", "dep:retina", "dep:serde_yaml2", "dep:ndarray", "dep:futures", "secluso-client-lib/camera_secret_qrcode"]
-raspberry = ["dep:secluso-motion-ai"]
 manual = []
+raspberry = ["dep:secluso-motion-ai"]
 telemetry = [] # todo: dep on the motion_ai crate
 test = []
 
@@ -25,24 +24,13 @@ secluso-client-lib = { path = "../client_lib", features = ["http_client"] }
 secluso-client-server-lib = { path = "../client_server_lib" }
 image = "0.25.10"
 openmls = "=0.8.1"
-retina = { version = "0.4.19", optional = true }
 tokio = { version = "1.50.0", features = ["fs", "io-util", "macros", "rt-multi-thread"] }
 url = "2.5.8"
 anyhow = "1.0.102"
 bytes = "1.11.1"
-futures = { version = "0.3.32", optional = true }
-serde_yaml2 = { version = "0.1.3", optional = true }
-ndarray = { version = "=0.17.2", features = ["rayon"], optional = true }
 crossbeam-channel = "0.5.15"
 cfg-if = "1.0.4"
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "json"], optional = true }
 serde_json = { version = "1.0" }
-
-# IP Specific Dependencies
-rpassword = {version = "7.4", optional = true }
-http-auth = { version = "0.1", optional = true }
-linfa = { version = "0.8.1", optional = true }
-linfa-clustering = { version = "0.8.1", optional = true }
 
 # Raspberry Specific Dependencies
 secluso-motion-ai = { path = "../motion_ai/pipeline", optional = true, default-features = false }

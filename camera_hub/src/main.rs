@@ -66,9 +66,9 @@ mod notification_target;
 
 use crate::notification_target::send_notification;
 
-#[cfg(any(feature = "raspberry", feature = "ip"))]
+#[cfg(any(feature = "raspberry"))]
 mod fmp4;
-#[cfg(any(feature = "raspberry", feature = "ip"))]
+#[cfg(any(feature = "raspberry"))]
 mod mp4;
 
 cfg_if! {
@@ -78,9 +78,6 @@ cfg_if! {
     } else if #[cfg(feature = "raspberry")] {
         mod raspberry_pi;
         use crate::raspberry_pi::rpi_camera::RaspberryPiCamera;
-    } else if #[cfg(feature = "ip")] {
-        mod ip;
-        use crate::ip::ip_camera::IpCamera;
     } else if #[cfg(feature = "test")] {
         mod test_camera;
         use crate::test_camera::TestCamera;
@@ -181,20 +178,6 @@ fn main() -> io::Result<()> {
             // This means that the camera_hub needs to receive the WiFi info from the app and
             // connect to the WiFi network.
             let connect_to_wifi = true;
-        } else if #[cfg(feature = "ip")] {
-            // When using IP cameras, the hub can support multiple cameras.
-            // The info for these cameras should be encoded in the cameras.yaml
-            // file. get_all_cameras_info() parses this file and returns the
-            // list of cameras here.
-            let camera_list: Vec<Box<dyn Camera + Send>> =
-                IpCamera::get_all_cameras_info()?;
-            // This means that the hub generates a new secret. This is usable when the user can
-            // access the generated secret file in order to scan it in the app.
-            // That is the case when using a hub with IP cameras, but not in the case of the
-            // Raspberry Pi camera.
-            let input_camera_secret: Option<Vec<u8>> = None;
-
-            let connect_to_wifi = false;
         } else if #[cfg(feature = "test")] {
             let camera = TestCamera {
                 name: "TestCamera".to_string(),
