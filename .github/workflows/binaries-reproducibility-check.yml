@@ -113,7 +113,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           run_dir="${{ steps.build.outputs.run_dir }}"
-          binary_dir = "$run_dir/artifacts/x86_64-unknown-linux-gnu"
+          binary_dir="$run_dir/artifacts/x86_64-unknown-linux-gnu"
 
           manifest_file="$run_dir/manifest.json"
           [[ -f "$manifest_file" ]] || { echo "Missing manifest file $manifest_file" >&2; exit 1; }
