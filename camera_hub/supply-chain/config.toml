@@ -64,3 +64,8 @@ notes = "Used by reqwest as an optional dependency for wasm32 target arch. Not u
 version = "0.17.14"
 criteria = "safe-to-deploy"
 notes = "Used by reqwest as an optional dependency for rustls-webpki / quinn-proto. We use aws-lc instead right now."
+
+[[exemptions.av-scenechange]]
+version = "0.14.1"
+criteria = "safe-to-deploy"
+notes = "Used by rav1e which is an optional image crate feature. We don't use it."
