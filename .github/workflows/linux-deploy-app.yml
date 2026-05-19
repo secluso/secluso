@@ -54,13 +54,16 @@ jobs:
           set -Eeuo pipefail
           run_dir="${{ steps.build.outputs.run_dir }}"
 
+          appimage_dir = "$run_dir/artifacts/x86_64-unknown-linux-gnu/bundle/appimage"
           manifest_file="$run_dir/manifest.json"
           [[ -f "$manifest_file" ]] || { echo "Missing manifest file $manifest_file" >&2; exit 1; }
 
           cp "$run_dir/manifest.json" "${RUNNER_TEMP}/manifest.json"
-
-          manifest_hash="$(sha256sum "$manifest_file")"
-          echo "manifest_hash=$manifest_hash" >> "$GITHUB_OUTPUT"
+          
+          cd "$appimage_dir"
+          find . -type f -exec sha256sum {} \;
+          
+          sha256sum "$manifest_file"
 
       - name: Upload Linux Deploy manifest
         uses: actions/upload-artifact@v4
@@ -68,13 +71,4 @@ jobs:
           name: manifest-${{ github.sha }}.json
           path: ${{ runner.temp }}/manifest.json
           if-no-files-found: error
-          retention-days: 90
-
-      - name: Upload build log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: secluso-linux-deploy-${{ github.sha }}-build-log
-          path: ${{ runner.temp }}/secluso-linux-deploy-repro-build.log
-          if-no-files-found: ignore
           retention-days: 90
