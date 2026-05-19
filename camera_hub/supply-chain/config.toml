@@ -54,3 +54,8 @@ notes = "Windows-target-bounded dependency of same-file crate. Not used when com
 version = "0.61.2"
 criteria = "safe-to-deploy"
 notes = "Windows-target-bounded dependency of same-file crate. Not used when compiling for Raspberry Pi."
+
+[[exemptions.web-sys]]
+version = "0.61.2"
+criteria = "safe-to-deploy"
+notes = "Used by reqwest as an optional dependency for wasm32 target arch. Not used when compiling for Raspberry Pi."
