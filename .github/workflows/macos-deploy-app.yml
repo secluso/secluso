@@ -195,7 +195,7 @@ jobs:
           [[ -d "$app_dir" ]] || { echo "Missing app bundle: $app_dir" >&2; exit 1; }
           
           app_dir="${run_dir}/artifacts/${triple}/app"
-          cd app_dir
+          cd "$app_dir"
 
           # Secluso Deploy.app is technically a folder with 3 files within it. 
           # Thus, we can hash every file within the folder, and then take a hash of those hashes to compare two of these folders.
