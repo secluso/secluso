@@ -58,6 +58,8 @@ jobs:
           nsis_dir="$run_dir/artifacts/x86_64-pc-windows-msvc/bundle/nsis"
           [[ -f "$manifest_file" ]] || { echo "Missing manifest file $manifest_file" >&2; exit 1; }
 
+          cp "$run_dir/manifest.json" "${RUNNER_TEMP}/manifest.json"
+          
           cd "$nsis_dir"
           find . -type f -exec sha256sum {} \;
 
