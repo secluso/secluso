@@ -183,7 +183,9 @@ deny = [
     # Marked as 'safe to deploy' in cargo vet due to it being an optional dependency by quinn-proto, rustls-webpki (we use aws-lc right now)
     { name = "ring" },
     # Marked as 'safe to deploy' in cargo vet due to it not being used currently (as it's pulled in by rav1e which is an unused image crate feature).
-    { name = "av-scenechange" }
+    { name = "av-scenechange" },
+    # Marked as 'safe to deploy' in cargo vet due to it being "Only used during doc generation" [https://github.com/rustls/rustls-platform-verifier/blob/main/rustls-platform-verifier/Cargo.toml]
+    { name = "jni" }
 
 
     #"ansi_term@0.11.0",

@@ -25,10 +25,25 @@ url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
 [imports.zcash]
 url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
 
+[[exemptions.av-scenechange]]
+version = "0.14.1"
+criteria = "safe-to-deploy"
+notes = "Used by rav1e which is an optional image crate feature. We don't use it."
+
 [[exemptions.rav1e]]
 version = "0.8.1"
 criteria = "safe-to-deploy"
 notes = "Optional dependency of image crate. Gated behind the avif feature. We build image now with default-features=false. cargo tree -e no-dev --all-features --target all -i ravif is empty. Added to cargo deny ban list."
+
+[[exemptions.ring]]
+version = "0.17.14"
+criteria = "safe-to-deploy"
+notes = "Used by reqwest as an optional dependency for rustls-webpki / quinn-proto. We use aws-lc instead right now."
+
+[[exemptions.web-sys]]
+version = "0.3.97"
+criteria = "safe-to-deploy"
+notes = "Used by reqwest as an optional dependency for wasm32 target arch. Not used when compiling for Raspberry Pi."
 
 [[exemptions.winapi]]
 version = "0.3.9"
@@ -55,17 +70,7 @@ version = "0.61.2"
 criteria = "safe-to-deploy"
 notes = "Windows-target-bounded dependency of same-file crate. Not used when compiling for Raspberry Pi."
 
-[[exemptions.web-sys]]
-version = "0.3.97"
+[[exemptions.jni]]
+version = "0.22.4"
 criteria = "safe-to-deploy"
-notes = "Used by reqwest as an optional dependency for wasm32 target arch. Not used when compiling for Raspberry Pi."
-
-[[exemptions.ring]]
-version = "0.17.14"
-criteria = "safe-to-deploy"
-notes = "Used by reqwest as an optional dependency for rustls-webpki / quinn-proto. We use aws-lc instead right now."
-
-[[exemptions.av-scenechange]]
-version = "0.14.1"
-criteria = "safe-to-deploy"
-notes = "Used by rav1e which is an optional image crate feature. We don't use it."
+notes = "Only used for document generation in rustls-plastform-verifier - https://github.com/rustls/rustls-platform-verifier/blob/main/rustls-platform-verifier/Cargo.toml"
