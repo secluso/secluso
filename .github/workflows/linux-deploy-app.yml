@@ -54,16 +54,16 @@ jobs:
           set -Eeuo pipefail
           run_dir="${{ steps.build.outputs.run_dir }}"
 
-          appimage_dir = "$run_dir/artifacts/x86_64-unknown-linux-gnu/bundle/appimage"
+          appimage_dir="$run_dir/artifacts/x86_64-unknown-linux-gnu/bundle/appimage"
           manifest_file="$run_dir/manifest.json"
           [[ -f "$manifest_file" ]] || { echo "Missing manifest file $manifest_file" >&2; exit 1; }
 
           cp "$run_dir/manifest.json" "${RUNNER_TEMP}/manifest.json"
           
+          sha256sum "$manifest_file"
+          
           cd "$appimage_dir"
           find . -type f -exec sha256sum {} \;
-          
-          sha256sum "$manifest_file"
 
       - name: Upload Linux Deploy manifest
         uses: actions/upload-artifact@v4
