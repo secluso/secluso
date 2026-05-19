@@ -59,3 +59,8 @@ notes = "Windows-target-bounded dependency of same-file crate. Not used when com
 version = "0.3.97"
 criteria = "safe-to-deploy"
 notes = "Used by reqwest as an optional dependency for wasm32 target arch. Not used when compiling for Raspberry Pi."
+
+[[exemptions.ring]]
+version = "0.17.14"
+criteria = "safe-to-deploy"
+notes = "Used by reqwest as an optional dependency for rustls-webpki / quinn-proto. We use aws-lc instead right now."
