@@ -25,7 +25,7 @@
 targets = [
     # The triple can be any string, but only the target triples built in to
     # rustc (as of 1.40) can be checked against actual config expressions
-    #"x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-gnu",
     # You can also specify which target_features you promise are enabled for a
     # particular target. target_features are currently not validated against
     # the actual valid features supported by the target architecture.
@@ -172,6 +172,12 @@ allow-workspace = false
 deny = [
     # Marked as 'safe to deploy' in cargo vet due to it not being used currently (as it's an unused image crate feature).
     { name = "rav1e" },
+    # Marked as 'safe to deploy' in cargo vet due to it being Windows-target-bounded
+    { name = "windows" },
+     # Marked as 'safe to deploy' in cargo vet due to it being Windows-target-bounded
+    { name = "windows-sys" },
+     # Marked as 'safe to deploy' in cargo vet due to it being Windows-target-bounded
+    { name = "winapi" },
 
     #"ansi_term@0.11.0",
     #{ crate = "ansi_term@0.11.0", reason = "you can specify a reason it is banned" },

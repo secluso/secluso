@@ -29,3 +29,28 @@ url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/
 version = "0.8.1"
 criteria = "safe-to-deploy"
 notes = "Optional dependency of image crate. Gated behind the avif feature. We build image now with default-features=false. cargo tree -e no-dev --all-features --target all -i ravif is empty. Added to cargo deny ban list."
+
+[[exemptions.windows]]
+version = "0.62.2"
+criteria = "safe-to-deploy"
+notes = "Windows-target-bounded dependency of sysinfo crate. Not used when compiling for Raspberry Pi."
+
+[[exemptions.windows-sys]]
+version = "0.52.0"
+criteria = "safe-to-deploy"
+notes = "Windows-target-bounded dependency of same-file crate. Not used when compiling for Raspberry Pi."
+
+[[exemptions.windows-sys]]
+version = "0.60.2"
+criteria = "safe-to-deploy"
+notes = "Windows-target-bounded dependency of same-file crate. Not used when compiling for Raspberry Pi."
+
+[[exemptions.windows-sys]]
+version = "0.61.2"
+criteria = "safe-to-deploy"
+notes = "Windows-target-bounded dependency of same-file crate. Not used when compiling for Raspberry Pi."
+
+[[exemptions.winapi]]
+version = "0.3.9"
+criteria = "safe-to-deploy"
+notes = "Windows-target-bounded dependency of ntapi/sysinfo crate. Not used when compiling for Raspberry Pi."
