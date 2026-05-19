@@ -24,3 +24,8 @@ url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
 
 [imports.zcash]
 url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
+
+[[exemptions.rav1e]]
+version = "0.8.1"
+criteria = "safe-to-deploy"
+notes = "Optional dependency of image crate. Gated behind the avif feature. We build image now with default-features=false. cargo tree -e no-dev --all-features --target all -i ravif is empty. Added to cargo deny ban list."
