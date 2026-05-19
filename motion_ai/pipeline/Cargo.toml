@@ -14,9 +14,9 @@ log = "0.4.29"
 yuv = "0.8.12"
 serde_json = "1.0.149"
 serde = { version = "1.0.228", features = ["derive"] }
-image = "0.25.10" # Locked version via imageproc
+image = { version = "0.25.10", default-features = false } # Locked version via imageproc
 ort = { version = "=2.0.0-rc.12", features = ["ndarray", "load-dynamic", "api-24"], default-features = false }
-imageproc = "0.25"
+imageproc = { version = "0.25", default-features = false}
 thiserror = "2.0.18"
 rayon = "1.11.0"
 serde_bytes = "0.11"
@@ -26,7 +26,7 @@ sysinfo = "0.33"
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 anyhow = "1.0.102"
 libblur = { version = "0.17.5"}
-fast_image_resize = { version = "5.5.0", features = ["rayon"]}
+fast_image_resize = { version = "5.5.0", features = ["rayon"], default-features = false}
 uuid = { version = "1.22.0", features = ["v4"] }
 walkdir = { version = "2.5.0", optional = true }
 tokio = { version = "1.50.0", optional = true }
