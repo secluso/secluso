@@ -53,17 +53,17 @@ jobs:
         run: |
           set -Eeuo pipefail
           run_dir="${{ steps.build.outputs.run_dir }}"
-          binary_dir = "$run_dir/artifacts/aarch64-unknown-linux-gnu"
+          binary_dir="$run_dir/artifacts/aarch64-unknown-linux-gnu"
 
           manifest_file="$run_dir/manifest.json"
           [[ -f "$manifest_file" ]] || { echo "Missing manifest file $manifest_file" >&2; exit 1; }
 
           cp "$run_dir/manifest.json" "${RUNNER_TEMP}/manifest.json"
           
+          sha256sum "$manifest_file"
+          
           cd "$binary_dir"
           find . -type f -exec sha256sum {} \;
-
-          sha256sum "$manifest_file"
 
       - name: Upload binaries manifest
         uses: actions/upload-artifact@v4
@@ -120,10 +120,10 @@ jobs:
 
           cp "$run_dir/manifest.json" "${RUNNER_TEMP}/manifest.json"
           
+          sha256sum "$manifest_file"
+          
           cd "$binary_dir"
           find . -type f -exec sha256sum {} \;
-
-          sha256sum "$manifest_file"
 
       - name: Upload binaries manifest
         uses: actions/upload-artifact@v4
