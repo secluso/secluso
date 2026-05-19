@@ -60,10 +60,10 @@ jobs:
 
           cp "$run_dir/manifest.json" "${RUNNER_TEMP}/manifest.json"
           
+          sha256sum "$manifest_file"
+          
           cd "$nsis_dir"
           find . -type f -exec sha256sum {} \;
-
-          sha256sum "$manifest_file"
 
       - name: Upload Windows Deploy manifest
         uses: actions/upload-artifact@v4
