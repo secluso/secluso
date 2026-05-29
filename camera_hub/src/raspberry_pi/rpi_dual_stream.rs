@@ -7,21 +7,54 @@ use std::collections::VecDeque;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
-use std::time::{SystemTime};
+use std::time::SystemTime;
 use std::{
     io::{BufReader, Read, Write},
-    process::{Command, Stdio},
+    process::{Child, ChildStdout, Command, Stdio},
     thread,
     time::Duration,
 };
-use bytes::Buf;
 
-use crate::raspberry_pi::rpi_camera::{Frame, FrameKind};
+use crate::raspberry_pi::rpi_camera::{
+    Frame, FrameKind, OPUS_BITRATE_BPS, OPUS_COMPLEXITY, OPUS_FRAME_SAMPLES,
+};
 use anyhow::anyhow;
 use bytes::BytesMut;
 use crossbeam_channel::Sender;
+use opusic_c::{Application, Bitrate, Channels, Encoder, Signal};
 use secluso_motion_ai::frame::RawFrame;
 use secluso_motion_ai::logic::pipeline::PipelineController;
+
+const AUDIO_PROBE_PACKETS: usize = 50;
+const AUDIO_SIGNAL_RMS_THRESHOLD: f64 = 8.0;
+const AUDIO_SIGNAL_PEAK_THRESHOLD: i16 = 32;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AudioCaptureMode {
+    I2s32StereoLeft,
+    Mono16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AudioCaptureCandidate {
+    device: String,
+    mode: AudioCaptureMode,
+    forced: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum I2sDecodeMode {
+    LeftShift16,
+    LeftShift8,
+    RightShift16,
+    RightShift8,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AudioProbeStats {
+    rms: f64,
+    peak: i16,
+}
 
 /// Provides two channels: one for raw YUV420 frames from rpicam‑vid (for motion detection), one for H.264 frames converted by rpicam-vid.
 #[allow(clippy::too_many_arguments)]
@@ -274,45 +307,209 @@ fn extract_h264_frame(buffer: &mut BytesMut) -> anyhow::Result<Option<Frame>> {
     Ok(Some(Frame::new(nal_unit.to_vec(), kind)))
 }
 
-fn adts_frame_len(header: &[u8]) -> Option<usize> {
-    if header.len() < 7 { return None; }
-    // syncword 0xFFF
-    if header[0] != 0xFF || (header[1] & 0xF0) != 0xF0 { return None; }
-    let protection_absent = header[1] & 0x01;
-    let hdr_len = if protection_absent == 1 { 7 } else { 9 };
-
-    let frame_length = (((header[3] & 0x03) as usize) << 11)
-        | ((header[4] as usize) << 3)
-        | (((header[5] & 0xE0) as usize) >> 5);
-
-    if frame_length < hdr_len { return None; }
-    Some(frame_length)
-}
-
-fn strip_adts(frame: &[u8]) -> Option<&[u8]> {
-    if frame.len() < 7 { return None; }
-    if frame[0] != 0xFF || (frame[1] & 0xF0) != 0xF0 { return None; }
-    let protection_absent = frame[1] & 0x01;
-    let hdr_len = if protection_absent == 1 { 7 } else { 9 };
-    if frame.len() < hdr_len { return None; }
-    Some(&frame[hdr_len..])
-}
-
 pub fn start_audio(
     frame_queue: Arc<Mutex<VecDeque<Frame>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Spawn a thread to continuously
+    // (1) look for a usable ALSA capture device &
+    // (2) encode one 20 ms Opus packet at a time from whichever source is available.
+    thread::spawn(move || loop {
+        let candidates = audio_device_candidates();
+        let mut used_device = false;
 
-    let cmd = "\
-        arecord -D plughw:0,0 -f S16_LE -r 48000 -c 1 -t raw | \
-        sox -t raw -b 16 -e signed-integer -r 48000 -c 1 - \
-            -t raw -b 16 -e signed-integer -r 48000 -c 1 - \
-            highpass 100 lowpass 7000 gain 20 | \
-        fdkaac --raw --raw-channels 1 --raw-rate 48000 \
-                --bitrate 96k --transport-format 2 -o - -";
+        for candidate in candidates {
+            match spawn_arecord(&candidate) {
+                Ok((mut child, stdout)) => {
+                    eprintln!(
+                        "Using audio input device: {} ({:?}, forced={})",
+                        candidate.device, candidate.mode, candidate.forced
+                    );
+                    used_device = encode_audio_stream(stdout, &candidate, Arc::clone(&frame_queue));
+                    let _ = child.wait();
 
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
+                    if used_device {
+                        eprintln!(
+                            "Audio input device ended: {}. Retrying discovery.",
+                            candidate.device
+                        );
+                        break;
+                    }
+
+                    eprintln!(
+                        "Audio input device produced no audio: {}. Trying next candidate.",
+                        candidate.device
+                    );
+                }
+                Err(err) => {
+                    eprintln!(
+                        "Failed to start audio input device {} ({:?}): {:?}",
+                        candidate.device, candidate.mode, err
+                    );
+                }
+            }
+        }
+
+        if !used_device {
+            eprintln!("No usable audio input device found. Retrying in 5 seconds.");
+            thread::sleep(Duration::from_secs(5));
+        } else {
+            thread::sleep(Duration::from_secs(1));
+        }
+    });
+
+    Ok(())
+}
+
+fn audio_device_candidates() -> Vec<AudioCaptureCandidate> {
+    let mut devices = Vec::new();
+
+    if let Ok(device) = std::env::var("SECLUSO_AUDIO_DEVICE") {
+        let device = device.trim();
+        if !device.is_empty() {
+            eprintln!(
+                "SECLUSO_AUDIO_DEVICE is set. Forcing audio capture attempts on {}.",
+                device
+            );
+            devices.push(AudioCaptureCandidate {
+                device: device.to_string(),
+                mode: AudioCaptureMode::I2s32StereoLeft,
+                forced: true,
+            });
+            devices.push(AudioCaptureCandidate {
+                device: device.to_string(),
+                mode: AudioCaptureMode::Mono16,
+                forced: true,
+            });
+            eprintln!(
+                "Audio candidate list: {} ({:?}, forced), {} ({:?}, forced).",
+                device,
+                AudioCaptureMode::I2s32StereoLeft,
+                device,
+                AudioCaptureMode::Mono16
+            );
+            return devices;
+        }
+    }
+
+    devices.push(AudioCaptureCandidate {
+        device: "plughw:ICS43432Mic,0".to_string(),
+        mode: AudioCaptureMode::I2s32StereoLeft,
+        forced: false,
+    });
+    // We prioritize the HAT capture device first because that is our default config
+    eprintln!(
+        "Audio candidate list starts with HAT device {} ({:?}).",
+        devices[0].device, devices[0].mode
+    );
+
+    for device in detect_usb_capture_devices() {
+        let candidate = AudioCaptureCandidate {
+            device,
+            mode: AudioCaptureMode::Mono16,
+            forced: false,
+        };
+        if !devices.iter().any(|existing| existing == &candidate) {
+            eprintln!(
+                "Discovered USB audio candidate {} ({:?}).",
+                candidate.device, candidate.mode
+            );
+            devices.push(candidate);
+        }
+    }
+
+    eprintln!("Final audio candidate count: {}.", devices.len());
+    devices
+}
+
+fn detect_usb_capture_devices() -> Vec<String> {
+    let output = match Command::new("arecord")
+        .arg("-l")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) => {
+            eprintln!("Failed to enumerate ALSA capture devices: {:?}", err);
+            return Vec::new();
+        }
+    };
+
+    let listing = String::from_utf8_lossy(&output.stdout);
+    let mut devices = Vec::new();
+
+    for line in listing.lines() {
+        let lower = line.to_ascii_lowercase();
+        // Catch the class-compliant USB microphone devices that have been tested (and not unrelated ALSA hardware)
+        if !lower.contains("usb") && !lower.contains("c-media") {
+            continue;
+        }
+
+        if let Some((card, device)) = parse_arecord_card_and_device(line) {
+            eprintln!("Matched USB ALSA capture line: {}", line.trim());
+            devices.push(format!("plughw:{},{}", card, device));
+        }
+    }
+
+    if devices.is_empty() {
+        eprintln!("No USB ALSA capture devices matched arecord -l output.");
+    }
+
+    devices
+}
+
+fn parse_arecord_card_and_device(line: &str) -> Option<(u32, u32)> {
+    let card_start = line.find("card ")? + "card ".len();
+    let card_end = line[card_start..].find(':')? + card_start;
+    let device_marker = ", device ";
+    let device_start = line.find(device_marker)? + device_marker.len();
+    let device_end = line[device_start..].find(':')? + device_start;
+
+    let card = line[card_start..card_end].trim().parse().ok()?;
+    let device = line[device_start..device_end].trim().parse().ok()?;
+
+    Some((card, device))
+}
+
+fn spawn_arecord(
+    candidate: &AudioCaptureCandidate,
+) -> Result<(Child, ChildStdout), Box<dyn std::error::Error>> {
+    let args: &[&str] = match candidate.mode {
+        AudioCaptureMode::I2s32StereoLeft => &[
+            "-D",
+            &candidate.device,
+            "-f",
+            "S32_LE",
+            "-r",
+            "48000",
+            "-c",
+            "2",
+            "-t",
+            "raw",
+        ],
+        AudioCaptureMode::Mono16 => &[
+            "-D",
+            &candidate.device,
+            "-f",
+            "S16_LE",
+            "-r",
+            "48000",
+            "-c",
+            "1",
+            "-t",
+            "raw",
+        ],
+    };
+
+    eprintln!(
+        "Launching arecord for {} with mode {:?}: arecord {}",
+        candidate.device,
+        candidate.mode,
+        args.join(" ")
+    );
+
+    let mut child = Command::new("arecord")
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
@@ -321,47 +518,300 @@ pub fn start_audio(
         .take()
         .ok_or_else(|| anyhow!("Failed to capture stdout"))?;
 
-    // Spawn a thread to read arecord|sox's stdout and extract audio frames.
-    {
-        thread::spawn(move || {
-            let mut r = BufReader::new(stdout);
-            let mut buf = BytesMut::with_capacity(64 * 1024);
-            let mut tmp = [0u8; 4096];
+    Ok((child, stdout))
+}
 
-            loop {
-                match r.read(&mut tmp) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        buf.extend_from_slice(&tmp[..n]);
-
-                        loop {
-                            if buf.len() < 7 { break; }
-                            let len = match adts_frame_len(&buf[..7]) {
-                                Some(l) => l,
-                                None => {
-                                    // resync: drop 1 byte
-                                    buf.advance(1);
-                                    continue;
-                                }
-                            };
-                            if buf.len() < len { break; }
-
-                            let adts = buf.split_to(len).to_vec();
-                            if let Some(aac_au) = strip_adts(&adts) {
-                                let frame = Frame {
-                                    data: aac_au.to_vec(),
-                                    kind: FrameKind::Audio,
-                                    timestamp: SystemTime::now(),
-                                };
-                                add_frame_and_drop_old(Arc::clone(&frame_queue), frame);
-                            }
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
+fn encode_audio_stream(
+    stdout: ChildStdout,
+    candidate: &AudioCaptureCandidate,
+    frame_queue: Arc<Mutex<VecDeque<Frame>>>,
+) -> bool {
+    let mut r = BufReader::new(stdout);
+    let mut encoder = match Encoder::new(
+        Channels::Mono,
+        opusic_c::SampleRate::Hz48000,
+        Application::Audio,
+    ) {
+        Ok(encoder) => encoder,
+        Err(err) => {
+            eprintln!("Failed to initialize Opus encoder: {:?}", err);
+            return false;
+        }
+    };
+    if let Err(err) = encoder.set_bitrate(Bitrate::Value(OPUS_BITRATE_BPS)) {
+        eprintln!("Failed to set Opus bitrate: {:?}", err);
+        return false;
+    }
+    if let Err(err) = encoder.set_vbr(true) {
+        eprintln!("Failed to enable Opus VBR: {:?}", err);
+        return false;
+    }
+    if let Err(err) = encoder.set_complexity(OPUS_COMPLEXITY) {
+        eprintln!("Failed to set Opus complexity: {:?}", err);
+        return false;
+    }
+    if let Err(err) = encoder.set_signal(Signal::Voice) {
+        eprintln!("Failed to set Opus signal mode: {:?}", err);
+        return false;
     }
 
-    Ok(())
+    let bytes_per_frame = match candidate.mode {
+        AudioCaptureMode::I2s32StereoLeft => (OPUS_FRAME_SAMPLES as usize) * 8,
+        AudioCaptureMode::Mono16 => (OPUS_FRAME_SAMPLES as usize) * 2,
+    };
+    eprintln!(
+        "Audio encoder configured for {}: opus_frame_samples={} bytes_per_capture_frame={} bitrate_bps={} complexity={}.",
+        candidate.device,
+        OPUS_FRAME_SAMPLES,
+        bytes_per_frame,
+        OPUS_BITRATE_BPS,
+        OPUS_COMPLEXITY
+    );
+    let mut pcm_bytes = vec![0u8; bytes_per_frame];
+    let mut pcm_samples = vec![0u16; OPUS_FRAME_SAMPLES as usize];
+    let mut opus_packet = vec![0u8; 1_500];
+    let mut encoded_any = false;
+    let mut probe_raw = Vec::with_capacity(bytes_per_frame * AUDIO_PROBE_PACKETS);
+
+    // We collect an initial probe window before committing to this device (basically a sanity check)
+    // That gives us enough PCM to both detect obvious silence and, for I2S microphones, infer which slot/shift interpretation contains the live samples.
+    for _ in 0..AUDIO_PROBE_PACKETS {
+        if r.read_exact(&mut pcm_bytes).is_err() {
+            break;
+        }
+        probe_raw.extend_from_slice(&pcm_bytes);
+    }
+
+    if probe_raw.is_empty() {
+        eprintln!(
+            "Audio probe failed: device {} opened but no PCM bytes arrived.",
+            candidate.device
+        );
+        return false;
+    }
+
+    let i2s_decode_mode = match candidate.mode {
+        AudioCaptureMode::I2s32StereoLeft => {
+            let mut best_mode = I2sDecodeMode::LeftShift16;
+            let mut best_stats = AudioProbeStats { rms: 0.0, peak: 0 };
+
+            // The I2S microphone has not always presented its usable 16-bit audio samples in the same byte position / slot arrangement across our boards and overlays.
+            // Thus, we score a few plausible interpretations and keep whichever one produces the strongest signal.
+            for mode in [
+                I2sDecodeMode::LeftShift16,
+                I2sDecodeMode::LeftShift8,
+                I2sDecodeMode::RightShift16,
+                I2sDecodeMode::RightShift8,
+            ] {
+                let stats = probe_i2s_mode(&probe_raw, mode);
+                if stats.rms > best_stats.rms
+                    || (stats.rms == best_stats.rms && stats.peak > best_stats.peak)
+                {
+                    best_mode = mode;
+                    best_stats = stats;
+                }
+            }
+
+            eprintln!(
+                "Audio probe for {} picked {:?} with rms={:.2} peak={}.",
+                candidate.device, best_mode, best_stats.rms, best_stats.peak
+            );
+            Some(best_mode)
+        }
+        AudioCaptureMode::Mono16 => {
+            let stats = probe_mono16(&probe_raw);
+            eprintln!(
+                "Audio probe for {} mono16 rms={:.2} peak={}.",
+                candidate.device, stats.rms, stats.peak
+            );
+            None
+        }
+    };
+
+    let probe_stats = match candidate.mode {
+        AudioCaptureMode::I2s32StereoLeft => probe_i2s_mode(
+            &probe_raw,
+            i2s_decode_mode.expect("i2s decode mode must be selected"),
+        ),
+        AudioCaptureMode::Mono16 => probe_mono16(&probe_raw),
+    };
+    let signal_present = probe_stats.rms >= AUDIO_SIGNAL_RMS_THRESHOLD
+        || probe_stats.peak >= AUDIO_SIGNAL_PEAK_THRESHOLD;
+    eprintln!(
+        "Audio signal status for {}: pcm_bytes={} signal_present={} rms={:.2} peak={} thresholds(rms>={:.2}, peak>={}).",
+        candidate.device,
+        probe_raw.len(),
+        signal_present,
+        probe_stats.rms,
+        probe_stats.peak,
+        AUDIO_SIGNAL_RMS_THRESHOLD,
+        AUDIO_SIGNAL_PEAK_THRESHOLD
+    );
+
+    if !signal_present && !candidate.forced {
+        // For auto-discovered devices, a silent probe means we should probably go to the next candidate on the list
+        // Allows us to skip a dead/default ALSA source and keep searching for a live microphone.
+        eprintln!(
+            "Audio probe saw no meaningful signal on {}. Trying another candidate.",
+            candidate.device
+        );
+        return false;
+    }
+
+    eprintln!(
+        "Beginning steady-state audio encode for {} using mode {:?} and decode {:?}.",
+        candidate.device, candidate.mode, i2s_decode_mode
+    );
+    let start_time = SystemTime::now();
+    let mut packets_encoded = 0usize;
+    let mut audio_bytes_encoded = 0usize;
+
+    for frame in probe_raw.chunks_exact(bytes_per_frame) {
+        fill_pcm_samples(frame, candidate.mode, i2s_decode_mode, &mut pcm_samples);
+        if let Some(encoded_len) =
+            encode_packet(&mut encoder, &pcm_samples, &mut opus_packet, &frame_queue)
+        {
+            encoded_any = true;
+            packets_encoded += 1;
+            audio_bytes_encoded += encoded_len;
+        }
+    }
+
+    loop {
+        if r.read_exact(&mut pcm_bytes).is_err() {
+            break;
+        }
+
+        fill_pcm_samples(
+            &pcm_bytes,
+            candidate.mode,
+            i2s_decode_mode,
+            &mut pcm_samples,
+        );
+
+        if let Some(encoded_len) =
+            encode_packet(&mut encoder, &pcm_samples, &mut opus_packet, &frame_queue)
+        {
+            encoded_any = true;
+            packets_encoded += 1;
+            audio_bytes_encoded += encoded_len;
+            if packets_encoded % 250 == 0 {
+                let elapsed = start_time.elapsed().unwrap_or_default();
+                eprintln!(
+                    "Audio encode progress for {}: packets={} opus_bytes={} elapsed_ms={}.",
+                    candidate.device,
+                    packets_encoded,
+                    audio_bytes_encoded,
+                    elapsed.as_millis()
+                );
+            }
+        }
+    }
+
+    let elapsed = start_time.elapsed().unwrap_or_default();
+    eprintln!(
+        "Audio encode loop finished for {}: encoded_any={} packets={} opus_bytes={} elapsed_ms={}.",
+        candidate.device,
+        encoded_any,
+        packets_encoded,
+        audio_bytes_encoded,
+        elapsed.as_millis()
+    );
+
+    encoded_any
+}
+
+fn encode_packet(
+    encoder: &mut Encoder,
+    pcm_samples: &[u16],
+    opus_packet: &mut [u8],
+    frame_queue: &Arc<Mutex<VecDeque<Frame>>>,
+) -> Option<usize> {
+    match encoder.encode_to_slice(pcm_samples, opus_packet) {
+        Ok(encoded_len) if encoded_len > 0 => {
+            let frame = Frame {
+                data: opus_packet[..encoded_len].to_vec(),
+                kind: FrameKind::Audio,
+                timestamp: SystemTime::now(),
+            };
+            add_frame_and_drop_old(Arc::clone(frame_queue), frame);
+            Some(encoded_len)
+        }
+        Ok(_) => None,
+        Err(err) => {
+            eprintln!("Failed to encode Opus audio: {:?}", err);
+            None
+        }
+    }
+}
+
+fn fill_pcm_samples(
+    bytes: &[u8],
+    mode: AudioCaptureMode,
+    i2s_decode_mode: Option<I2sDecodeMode>,
+    pcm_samples: &mut [u16],
+) {
+    match mode {
+        AudioCaptureMode::I2s32StereoLeft => {
+            let decode_mode = i2s_decode_mode.expect("i2s decode mode must be selected");
+            for (dst, frame) in pcm_samples.iter_mut().zip(bytes.chunks_exact(8)) {
+                *dst = decode_i2s_sample(frame, decode_mode);
+            }
+        }
+        AudioCaptureMode::Mono16 => {
+            for (dst, chunk) in pcm_samples.iter_mut().zip(bytes.chunks_exact(2)) {
+                *dst = u16::from_le_bytes([chunk[0], chunk[1]]);
+            }
+        }
+    }
+}
+
+fn probe_mono16(bytes: &[u8]) -> AudioProbeStats {
+    let samples = bytes
+        .chunks_exact(2)
+        .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]));
+    compute_probe_stats(samples)
+}
+
+fn probe_i2s_mode(bytes: &[u8], mode: I2sDecodeMode) -> AudioProbeStats {
+    let samples = bytes
+        .chunks_exact(8)
+        .map(|frame| i16::from_ne_bytes(decode_i2s_sample(frame, mode).to_ne_bytes()));
+    compute_probe_stats(samples)
+}
+
+fn compute_probe_stats(samples: impl Iterator<Item = i16>) -> AudioProbeStats {
+    let mut sum_sq = 0.0f64;
+    let mut count = 0usize;
+    let mut peak = 0i16;
+
+    for sample in samples {
+        let abs = sample.saturating_abs();
+        if abs > peak {
+            peak = abs;
+        }
+        let sample_f = f64::from(sample);
+        sum_sq += sample_f * sample_f;
+        count += 1;
+    }
+
+    let rms = if count == 0 {
+        0.0
+    } else {
+        (sum_sq / count as f64).sqrt()
+    };
+
+    AudioProbeStats { rms, peak }
+}
+
+fn decode_i2s_sample(frame: &[u8], mode: I2sDecodeMode) -> u16 {
+    let left = i32::from_le_bytes([frame[0], frame[1], frame[2], frame[3]]);
+    let right = i32::from_le_bytes([frame[4], frame[5], frame[6], frame[7]]);
+    let sample_i16 = match mode {
+        I2sDecodeMode::LeftShift16 => (left >> 16) as i16,
+        I2sDecodeMode::LeftShift8 => (left >> 8) as i16,
+        I2sDecodeMode::RightShift16 => (right >> 16) as i16,
+        I2sDecodeMode::RightShift8 => (right >> 8) as i16,
+    };
+    sample_i16 as u16
 }

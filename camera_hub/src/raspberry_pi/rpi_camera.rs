@@ -36,6 +36,16 @@ use tokio::runtime::Runtime;
 const TOTAL_FRAME_RATE: usize = 10;
 const I_FRAME_INTERVAL: usize = TOTAL_FRAME_RATE; // 1-second fragments
 
+// We currently standardize Raspberry Pi audio on mono 48 kHz Opus.
+// 20 ms packets are the common low-latency Opus framing and map to 960 PCM samples at 48 kHz.
+pub const AUDIO_SAMPLE_RATE: u32 = 48_000;
+pub const AUDIO_CHANNELS: u16 = 1;
+pub const OPUS_FRAME_SAMPLES: u32 = 960; // 20 ms at 48 kHz
+pub const OPUS_BITRATE_BPS: u32 = 32_000;
+pub const OPUS_COMPLEXITY: u8 = 3;
+// 80 ms is the recommended preroll for random access and is = to 3840 samples at 48 kHz.
+pub const OPUS_PREROLL_SAMPLES: u16 = 3_840; // 80 ms at 48 kHz
+
 //These are for our local SPS/PPS channel
 #[derive(PartialEq, Debug, Clone)]
 pub enum FrameKind {
@@ -141,7 +151,8 @@ impl RaspberryPiCamera {
             debug!("Exited controller tick loop");
         });
 
-        let resolution: CameraResolution = Self::fetch_resolution().expect("A supported camera module was not found");
+        let resolution: CameraResolution =
+            Self::fetch_resolution().expect("A supported camera module was not found");
 
         // Start the new shared stream.
         rpi_dual_stream::start(
@@ -154,7 +165,7 @@ impl RaspberryPiCamera {
             ps_tx,
             motion_fps as u8,
         )
-            .expect("Failed to start shared stream");
+        .expect("Failed to start shared stream");
 
         rpi_dual_stream::start_audio(Arc::clone(&frame_queue))
             .expect("Failed to start audio stream");
@@ -199,6 +210,7 @@ impl RaspberryPiCamera {
         mp4: &mut M,
         duration: Option<u64>,
         frame_queue: Arc<Mutex<VecDeque<Frame>>>,
+        include_audio: bool,
     ) -> Result<(), Error> {
         let recording_window = duration.map(|secs| Duration::new(secs, 0));
         let recording_start_time = Instant::now();
@@ -236,9 +248,13 @@ impl RaspberryPiCamera {
 
             if started {
                 if frame.kind == FrameKind::Audio {
+                    // TODO: Livestream fMP4 audio is disabled for now.
+                    if !include_audio {
+                        continue;
+                    }
                     let ts_audio = audio_sample_count; // 48k timescale
                     mp4.audio(&frame.data, ts_audio).await?;
-                    audio_sample_count += 1024; // AAC-LC fixed
+                    audio_sample_count += u64::from(OPUS_FRAME_SAMPLES);
                     continue;
                 } else {
                     let ts = video_frame_count * ticks_per_video_frame;
@@ -315,10 +331,10 @@ impl RaspberryPiCamera {
             RpiCameraAudioParameters::new(),
             file,
         )
-            .await?;
+        .await?;
 
         // Process the rest of the frames, writing both to the MP4 writer and to the raw file.
-        Self::copy(&mut mp4, Some(duration), frame_queue).await?;
+        Self::copy(&mut mp4, Some(duration), frame_queue, true).await?;
         mp4.finish().await?;
 
         Ok(())
@@ -435,10 +451,10 @@ impl RaspberryPiCamera {
             RpiCameraAudioParameters::new(),
             livestream_writer,
         )
-            .await?;
+        .await?;
         fmp4.finish_header(None).await?;
 
-        Self::copy(&mut fmp4, None, frame_queue).await?;
+        Self::copy(&mut fmp4, None, frame_queue, false).await?;
 
         Ok(())
     }
@@ -556,7 +572,7 @@ impl RaspberryPiCamera {
             })
         } else {
             None
-        }
+        };
     }
 }
 
@@ -608,7 +624,7 @@ impl Camera for RaspberryPiCamera {
             Arc::clone(&self.frame_queue),
             self.sps_frame.clone(),
             self.pps_frame.clone(),
-            self.resolution.clone()
+            self.resolution.clone(),
         );
 
         rt.block_on(future).unwrap();
@@ -634,7 +650,7 @@ impl Camera for RaspberryPiCamera {
                 frame_queue_clone,
                 sps_frame_clone,
                 pps_frame_clone,
-                resolution_clone
+                resolution_clone,
             );
             if let Err(e) = rt.block_on(future) {
                 eprintln!("[Livestream] write_fmp4 error: {e:?}");
@@ -669,7 +685,11 @@ struct RpiCameraVideoParameters {
 
 impl RpiCameraVideoParameters {
     pub fn new(sps: Vec<u8>, pps: Vec<u8>, dimensions: CameraResolution) -> Self {
-        Self { sps, pps, dimensions }
+        Self {
+            sps,
+            pps,
+            dimensions,
+        }
     }
 }
 
@@ -757,95 +777,50 @@ impl CodecParameters for RpiCameraVideoParameters {
     }
 
     fn get_dimensions(&self) -> (u32, u32) {
-        ((self.dimensions.width as u32) << 16, (self.dimensions.height as u32) << 16)
+        (
+            (self.dimensions.width as u32) << 16,
+            (self.dimensions.height as u32) << 16,
+        )
     }
 }
 
 struct RpiCameraAudioParameters {
-    sample_rate: u32, // 48000
-    channels: u16,    // 1
-    asc: [u8; 2],     // AudioSpecificConfig
+    sample_rate: u32,
+    channels: u16,
 }
 
 impl RpiCameraAudioParameters {
     fn new() -> Self {
         Self {
-            sample_rate: 48_000,
-            channels: 1,
-            asc: [0x11, 0x88], // AAC-LC, 48kHz (idx=3), mono (1)
+            sample_rate: AUDIO_SAMPLE_RATE,
+            channels: AUDIO_CHANNELS,
         }
     }
 }
 
 impl CodecParameters for RpiCameraAudioParameters {
     fn write_codec_box(&self, buf: &mut BytesMut) -> Result<(), Error> {
-        write_box!(buf, b"mp4a", {
-            // 6 reserved bytes
-            buf.put_u8(0);
-            buf.put_u8(0);
-            buf.put_u8(0);
-            buf.put_u8(0);
-            buf.put_u8(0);
-            buf.put_u8(0);
-
-            // data_reference_index
+        write_box!(buf, b"Opus", {
+            // AudioSampleEntry layout mirrors mp4a
+            // however, Opus-specific decoder metadata goes in the dOps child box defined by the Opus-in-ISOBMFF mapping.
+            buf.extend_from_slice(&[0; 6]);
             buf.put_u16(1);
+            buf.put_u16(0);
+            buf.put_u16(0);
+            buf.put_u32(0);
+            buf.put_u16(self.channels);
+            buf.put_u16(16);
+            buf.put_u16(0);
+            buf.put_u16(0);
+            buf.put_u32(self.sample_rate << 16);
 
-            // AudioSampleEntry
-            buf.put_u16(0); // version
-            buf.put_u16(0); // revision
-            buf.put_u32(0); // vendor
-
-            buf.put_u16(self.channels); // channelcount
-            buf.put_u16(16); // samplesize
-            buf.put_u16(0); // compressionid
-            buf.put_u16(0); // packetsize
-            buf.put_u32(self.sample_rate << 16); // samplerate 16.16
-
-            // ES Descriptor box
-            write_box!(buf, b"esds", {
-                // FullBox: version(1) + flags(3)
-                buf.put_u32(0);
-
-                let asc = &self.asc;
-
-                // Build the descriptor payload in a temp vec, then write with size.
-                let mut d = Vec::new();
-
-                // ES_Descriptor
-                d.push(0x03);
-                let mut es_payload = Vec::new();
-                es_payload.extend_from_slice(&0x0002u16.to_be_bytes()); // ES_ID
-                es_payload.push(0x00); // flags
-
-                // DecoderConfigDescriptor (tag 0x04) ---
-                let mut dec_payload = Vec::new();
-                dec_payload.push(0x40); // objectTypeIndication = MPEG-4 Audio
-                dec_payload.push(0x15); // streamType=5 (AudioStream) <<2 | 1 reserved
-                dec_payload.extend_from_slice(&[0x00, 0x00, 0x00]); // bufferSizeDB (unknown)
-                dec_payload.extend_from_slice(&0u32.to_be_bytes()); // maxBitrate
-                dec_payload.extend_from_slice(&0u32.to_be_bytes()); // avgBitrate
-
-                // DecoderSpecificInfo (tag 0x05) inside DecoderConfigDescriptor
-                dec_payload.push(0x05);
-                dec_payload.push(asc.len() as u8);
-                dec_payload.extend_from_slice(asc);
-
-                // Write DecoderConfigDescriptor: tag + length + payload
-                es_payload.push(0x04);
-                es_payload.extend_from_slice(&write_desc_len(dec_payload.len()));
-                es_payload.extend_from_slice(&dec_payload);
-
-                // SLConfigDescriptor (tag 0x06) is a sibling of 0x04 inside ES_Descriptor
-                es_payload.push(0x06);
-                es_payload.push(0x01);
-                es_payload.push(0x02);
-
-                // Write length for ES_Descriptor
-                d.extend_from_slice(&write_desc_len(es_payload.len()));
-                d.extend_from_slice(&es_payload);
-
-                buf.extend_from_slice(&d);
+            write_box!(buf, b"dOps", {
+                buf.put_u8(0); // version
+                buf.put_u8(self.channels as u8);
+                buf.put_u16(OPUS_PREROLL_SAMPLES); // pre_skip / decoder preroll in PCM samples
+                buf.put_u32(self.sample_rate); // original input sample rate
+                buf.put_i16(0); // output gain
+                buf.put_u8(0); // channel mapping family
             });
         });
 
@@ -859,28 +834,8 @@ impl CodecParameters for RpiCameraAudioParameters {
     fn get_dimensions(&self) -> (u32, u32) {
         (0, 0)
     }
-}
 
-// Size encoding: 7-bit continuation
-fn write_desc_len(mut len: usize) -> Vec<u8> {
-    // Up to 4 bytes
-    let mut out = vec![0u8; 4];
-    for i in (0..4).rev() {
-        out[i] = (len & 0x7F) as u8;
-        len >>= 7;
+    fn audio_roll_distance(&self) -> Option<i16> {
+        Some(-(OPUS_PREROLL_SAMPLES as i16))
     }
-    // Set continuation bit on first 3
-    out[0] |= 0x80;
-    out[1] |= 0x80;
-    out[2] |= 0x80;
-
-    // Trim leading 0x80 chunks if possible
-    while out.len() > 1 && out[0] == 0x80 && (out[1] & 0x80) != 0 {
-        out.remove(0);
-    }
-    // If needed, also trim if the very first byte is 0
-    while out.len() > 1 && out[0] == 0 {
-        out.remove(0);
-    }
-    out
 }

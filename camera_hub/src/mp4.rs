@@ -70,13 +70,14 @@ pub struct TrakTrackerCore {
     /// is calculated using the PTS of the following sample.
     pub durations: Vec<(u32, u32)>,
     pub last_pts: Option<u64>,
+    pub last_duration: Option<u32>,
     pub tot_duration: u64,
 }
 
 impl TrakTrackerCore {
     pub fn finish(&mut self) {
         if self.last_pts.is_some() {
-            self.durations.push((1, 0));
+            self.durations.push((1, self.last_duration.unwrap_or(0)));
         }
     }
 
@@ -172,6 +173,7 @@ impl TrakTracker {
             };
             self.core.tot_duration += duration;
             let duration = u32::try_from(duration)?;
+            self.core.last_duration = Some(duration);
             match self.core.durations.last_mut() {
                 Some((s, d)) if *d == duration => *s += 1,
                 _ => self.core.durations.push((1, duration)),
@@ -350,26 +352,24 @@ impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Mp4WriterCor
                             self.audio_params.write_codec_box(buf)?;
                         });
                         audio_trak_core.write_common_stbl_parts(buf)?;
-
-                        // AAC requires two samples (really, each is a set of 960 or 1024 samples)
-                        // to decode accurately. See
-                        // https://developer.apple.com/library/archive/documentation/QuickTime/QTFF/QTFFAppenG/QTFFAppenG.html .
-                        write_box!(buf, b"sgpd", {
-                            // BMFF section 8.9.3: SampleGroupDescriptionBox
-                            buf.put_u32(0); // version
-                            buf.extend_from_slice(b"roll"); // grouping type
-                            buf.put_u32(1); // entry_count
-                                            // BMFF section 10.1: AudioRollRecoveryEntry
-                            buf.put_i16(-1); // roll_distance
-                        });
-                        write_box!(buf, b"sbgp", {
-                            // BMFF section 8.9.2: SampleToGroupBox
-                            buf.put_u32(0); // version
-                            buf.extend_from_slice(b"roll"); // grouping type
-                            buf.put_u32(1); // entry_count
-                            buf.put_u32(audio_trak_core.samples);
-                            buf.put_u32(1); // group_description_index
-                        });
+                        if let Some(roll_distance) = self.audio_params.audio_roll_distance() {
+                            write_box!(buf, b"sgpd", {
+                                // BMFF section 8.9.3: SampleGroupDescriptionBox
+                                buf.put_u32(0); // version
+                                buf.extend_from_slice(b"roll"); // grouping type
+                                buf.put_u32(1); // entry_count
+                                                // BMFF section 10.1: AudioRollRecoveryEntry
+                                buf.put_i16(roll_distance);
+                            });
+                            write_box!(buf, b"sbgp", {
+                                // BMFF section 8.9.2: SampleToGroupBox
+                                buf.put_u32(0); // version
+                                buf.extend_from_slice(b"roll"); // grouping type
+                                buf.put_u32(1); // entry_count
+                                buf.put_u32(audio_trak_core.samples);
+                                buf.put_u32(1); // group_description_index
+                            });
+                        }
                     });
                 });
             });
@@ -400,6 +400,7 @@ impl<W: AsyncWrite + AsyncSeek + Send + Unpin, V: CodecParameters, A: CodecParam
                 b'i', b's', b'o', b'm', // major_brand
                 0, 0, 0, 0, // minor_version
                 b'i', b's', b'o', b'm', // compatible_brands[0]
+                b'i', b's', b'o', b'2', // compatible_brands[1]
             ]);
         });
         buf.extend_from_slice(&b"\0\0\0\0mdat"[..]);
@@ -416,6 +417,14 @@ impl<W: AsyncWrite + AsyncSeek + Send + Unpin, V: CodecParameters, A: CodecParam
     pub async fn finish(mut self) -> Result<(), Error> {
         self.video_trak.core.finish();
         self.audio_trak.core.finish();
+        let movie_timescale = 90_000u64;
+        let movie_duration = self.video_trak.core.tot_duration.max(
+            self.audio_trak
+                .core
+                .tot_duration
+                .saturating_mul(movie_timescale)
+                / u64::from(self.core.audio_params.get_clock_rate().max(1)),
+        );
         let mut buf = BytesMut::with_capacity(
             1024 + self.video_trak.core.size_estimate()
                 + self.audio_trak.core.size_estimate()
@@ -426,8 +435,8 @@ impl<W: AsyncWrite + AsyncSeek + Send + Unpin, V: CodecParameters, A: CodecParam
                 buf.put_u32(1 << 24); // version
                 buf.put_u64(0); // creation_time
                 buf.put_u64(0); // modification_time
-                buf.put_u32(90000); // timescale
-                buf.put_u64(self.video_trak.core.tot_duration);
+                buf.put_u32(movie_timescale as u32); // timescale
+                buf.put_u64(movie_duration);
                 buf.put_u32(0x00010000); // rate
                 buf.put_u16(0x0100); // volume
                 buf.put_u16(0); // reserved
@@ -438,7 +447,7 @@ impl<W: AsyncWrite + AsyncSeek + Send + Unpin, V: CodecParameters, A: CodecParam
                 for _ in 0..6 {
                     buf.put_u32(0); // pre_defined
                 }
-                buf.put_u32(2); // next_track_id
+                buf.put_u32(3); // next_track_id
             });
             if self.video_trak.core.samples > 0 {
                 self.core

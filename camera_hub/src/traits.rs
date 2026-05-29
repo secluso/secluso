@@ -16,6 +16,9 @@ pub trait CodecParameters {
     fn write_codec_box(&self, buf: &mut BytesMut) -> Result<(), Error>;
     fn get_clock_rate(&self) -> u32;
     fn get_dimensions(&self) -> (u32, u32);
+    fn audio_roll_distance(&self) -> Option<i16> {
+        None
+    }
 }
 
 #[cfg(any(feature = "raspberry", feature = "ip"))]

@@ -8,7 +8,7 @@ authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
 default = ["logging"]
 logging = ["log"]
 ip = ["dep:rpassword", "dep:reqwest", "dep:http-auth", "dep:linfa", "dep:linfa-clustering", "dep:retina", "dep:serde_yaml2", "dep:ndarray", "dep:futures", "secluso-client-lib/camera_secret_qrcode"]
-raspberry = ["dep:secluso-motion-ai"]
+raspberry = ["dep:secluso-motion-ai", "dep:opusic-c"]
 manual = []
 telemetry = [] # todo: dep on the motion_ai crate
 test = []
@@ -46,3 +46,4 @@ linfa-clustering = { version = "0.8.1", optional = true }
 
 # Raspberry Specific Dependencies
 secluso-motion-ai = { path = "../motion_ai/pipeline", optional = true, default-features = false }
+opusic-c = { version = "1.6.1", optional = true }
