@@ -827,9 +827,6 @@ rebuild_appimage_deterministically_in_place() {
     return 1
   }
 
-  perl -e 'print pack("Q<", $ARGV[0]);' "$runtime_size" > "$tmp/runtime-offset.bin"
-  dd if="$tmp/runtime-offset.bin" of="$tmp/runtime" bs=1 seek=8 conv=notrunc status=none
-
   local squash_md5 squash_sha id_hex
   local digest_offset_hex=""
   squash_sha="$(sha256sum "$tmp/payload.squashfs" 2>/dev/null | awk '{print $1}' || true)"
