@@ -520,7 +520,7 @@ impl RaspberryPiCamera {
         // Even though these support 1080p directly, if we were to use that, the sides would be cropped out due to the aspect ratio of the sensor.
         const CAMERA_RESOLUTION_V1: (usize, usize) = (1296, 972);
         const CAMERA_RESOLUTION_V2: (usize, usize) = (1640, 1232);
-        const CAMERA_RESOLUTION_V3: (usize, usize) = (2304, 1296);
+        const CAMERA_RESOLUTION_V3: (usize, usize) = (1920, 1080);
 
         // Detection logic to determine if the attached camera module is a V1, V2 or other (which likely won't reach this point as they aren't supported in the Secluso OS image regardless)
         // Sample Output of "rpicam-hello --list-cameras" that we must parse:
