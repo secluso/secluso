@@ -21,13 +21,12 @@ use std::time::{Duration, Instant};
 use secluso_client_server_lib::auth::parse_user_credentials_full;
 
 const MULTI_PRESS_WINDOW: Duration = Duration::from_millis(5000);
-const DEBUG_LOGS_FILENAME: &str = "debug_logs.txt";
+const DEBUG_LOGS_FILENAME: &str = "/data/debug_logs.txt";
 
-fn run_command_to_completion(command: &str) {
-    let output = Command::new("sh")
-        .arg("-c")
-        .current_dir("/home/secluso/secluso/camera_hub")
-        .arg(command)
+fn run_command_to_completion(program: &str, args: &[&str]) {
+    let output = Command::new(program)
+        .args(args)
+        .current_dir("/data")
         .output()
         .expect("failed to execute process");
 
@@ -40,16 +39,49 @@ fn run_command_to_completion(command: &str) {
 
 fn reset_action() {
     // First, stop the secluso service
-    run_command_to_completion("sudo systemctl stop secluso.service");
+    run_command_to_completion(
+        "systemctl",
+        &["stop", "secluso_camera_hub.service"],
+    );
+
     // Second, reset secluso camera hub
-    run_command_to_completion("sudo LD_LIBRARY_PATH=/usr/local/lib/aarch64-linux-gnu/:${LD_LIBRARY_PATH:-} /home/secluso/secluso/camera_hub/target/release/secluso-camera-hub --reset-full");
+    run_command_to_completion(
+        "/usr/bin/secluso-camera-hub",
+        &["--reset-full"],
+    );
+
     // The previous command, if run successfully, will delete the following three directories.
     // But we'll try to delete them again in case that command failed for some reason.
-    run_command_to_completion("sudo rm -r /home/secluso/secluso/camera_hub/state");
-    run_command_to_completion("sudo rm -r /home/secluso/secluso/camera_hub/pending_videos");
-    run_command_to_completion("sudo rm -r /home/secluso/secluso/camera_hub/pending_thumbnails");
+    run_command_to_completion(
+        "rm",
+        &["-r", "/data/state"],
+    );
+
+    run_command_to_completion(
+        "rm",
+        &["-r", "/data/pending_videos"],
+    );
+
+    run_command_to_completion(
+        "rm",
+        &["-r", "/data/pending_thumbnails"],
+    );
+    
+    run_command_to_completion(
+        "rm",
+        &["/data/credentials_full"],
+    );
+    
+    run_command_to_completion(
+        "rm",
+        &[DEBUG_LOGS_FILENAME],
+    );
+
     // Finally, start the secluso service
-    run_command_to_completion("sudo systemctl start secluso.service");
+    run_command_to_completion(
+        "systemctl",
+        &["start", "secluso_camera_hub.service"],
+    );
 }
 
 fn save_logs_to_file() -> io::Result<()> {
@@ -57,7 +89,7 @@ fn save_logs_to_file() -> io::Result<()> {
     cmd.arg("--no-pager")
         .arg("--output=short-iso")
         .arg("-u")
-        .arg("secluso.service")
+        .arg("secluso_camera_hub.service")
         .arg("-n")
         .arg("10000"); // number of lines
 
@@ -76,7 +108,7 @@ fn save_logs_to_file() -> io::Result<()> {
 
 pub fn upload_logs() -> io::Result<()> {
     // Read server info
-    let credentials_full = fs::read("../camera_hub/credentials_full")?;
+    let credentials_full = fs::read("/data/credentials_full")?;
     let credentials_full_bytes = credentials_full.to_vec();
     let (server_username, server_password, server_addr) =
         parse_user_credentials_full(credentials_full_bytes).unwrap();
@@ -107,6 +139,7 @@ pub fn upload_logs() -> io::Result<()> {
         .post(server_url)
         .header("Content-Type", "application/octet-stream")
         .header("Authorization", auth_header)
+        .header("Client-Version", env!("CARGO_PKG_VERSION"))
         .body(Body::new(reader))
         .send()
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
