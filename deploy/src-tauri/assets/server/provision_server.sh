@@ -135,7 +135,7 @@ WorkingDirectory=$STATE_DIR
 ExecStart=$INSTALL_BIN_DIR/secluso-server --bind-address=${BIND_ADDRESS:-127.0.0.1} --port=${LISTEN_PORT:-8000}
 Restart=always
 RestartSec=1
-Environment=RUST_LOG=info
+Environment=ROCKET_LOG_LEVEL=${ROCKET_LOG_LEVEL:-normal}
 Environment=SECLUSO_USER_CREDENTIALS_DIR=$STATE_DIR/user_credentials
 Environment=UPDATE_HINT_PATH=$STATE_DIR/update_hint
 NoNewPrivileges=true

@@ -1261,10 +1261,17 @@ pub fn build_rocket() -> rocket::Rocket<rocket::Build> {
         }
     });
 
+    // Reflect log levels explicitly as we override the config so operators can raise
+    let log_level = std::env::var("ROCKET_LOG_LEVEL")
+        .ok()
+        .and_then(|v| v.parse::<rocket::config::LogLevel>().ok())
+        .unwrap_or(rocket::Config::default().log_level);
+
     let config = rocket::Config {
         port: listen_port.unwrap_or(8000),
         address: address.parse().unwrap(),
         limits: Limits::default().limit("json", MAX_JSON_SIZE.kibibytes()),
+        log_level,
         ..rocket::Config::default()
     };
 

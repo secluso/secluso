@@ -405,6 +405,16 @@ pub fn run_provision(
         {
             envs.push(("GITHUB_TOKEN", token));
         }
+        // Whitelist the Rocket log level
+        // Only allowlisted 3 values to prevent injection
+        if let Some(level) = plan
+            .server_log_level
+            .as_ref()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .filter(|v| matches!(v.as_str(), "off" | "critical" | "debug"))
+        {
+            envs.push(("ROCKET_LOG_LEVEL", level));
+        }
         exec_remote_script_streaming(
             app,
             run_id,
