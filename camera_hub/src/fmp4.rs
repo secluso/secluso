@@ -101,7 +101,7 @@ impl TrakTracker {
     // Writes tfdt + trun. Returns the moof-relative byte position of the i32 data_offset.
     fn write_fragment(&self, buf: &mut BytesMut) -> Result<Option<usize>, Error> {
         write_box!(buf, b"tfdt", {
-            buf.put_u32(1 << 24);      // version=1, flags=0
+            buf.put_u32(1 << 24); // version=1, flags=0
             buf.put_u64(self.fragment_start_time);
         });
 
@@ -113,7 +113,8 @@ impl TrakTracker {
         const TRUN_SAMPLE_SIZE: u32 = 0x000200;
 
         write_box!(buf, b"trun", {
-            let flags = TRUN_DATA_OFFSET | TRUN_FIRST_SAMPLE_FL | TRUN_SAMPLE_DURATION | TRUN_SAMPLE_SIZE;
+            let flags =
+                TRUN_DATA_OFFSET | TRUN_FIRST_SAMPLE_FL | TRUN_SAMPLE_DURATION | TRUN_SAMPLE_SIZE;
             buf.put_u32(flags);
             buf.put_u32(self.core.samples);
 
@@ -150,7 +151,6 @@ impl TrakTracker {
     }
 }
 
-
 /// Writes fragmented `.mp4` data to a sink.
 pub struct Fmp4Writer<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> {
     core: Mp4WriterCore<W, V, A>,
@@ -168,12 +168,12 @@ impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Fmp4Writer<W
     pub async fn new(video_params: V, audio_params: A, mut inner: W) -> Result<Self, Error> {
         let mut buf = BytesMut::new();
         write_box!(&mut buf, b"ftyp", {
-            buf.extend_from_slice(b"isom");                         // major_brand
-            buf.extend_from_slice(&0x00000200u32.to_be_bytes());    // minor_version
-            buf.extend_from_slice(b"isom");                         // compat[0]
-            buf.extend_from_slice(b"iso6");                         // compat[1]
-            buf.extend_from_slice(b"avc1");                         // compat[2]
-            buf.extend_from_slice(b"mp41");                         // compat[3]
+            buf.extend_from_slice(b"isom"); // major_brand
+            buf.extend_from_slice(&0x00000200u32.to_be_bytes()); // minor_version
+            buf.extend_from_slice(b"isom"); // compat[0]
+            buf.extend_from_slice(b"iso6"); // compat[1]
+            buf.extend_from_slice(b"avc1"); // compat[2]
+            buf.extend_from_slice(b"mp41"); // compat[3]
         });
 
         inner.write_all(&buf).await?;
@@ -201,42 +201,45 @@ impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Fmp4Writer<W
 
         write_box!(&mut buf, b"moov", {
             write_box!(&mut buf, b"mvhd", {
-                buf.put_u32(1 << 24);      // version=1
-                buf.put_u64(0);            // creation_time
-                buf.put_u64(0);            // modification_time
-                buf.put_u32(90000);        // timescale
+                buf.put_u32(1 << 24); // version=1
+                buf.put_u64(0); // creation_time
+                buf.put_u64(0); // modification_time
+                buf.put_u32(90000); // timescale
                 buf.put_u64(self.video_trak.core.tot_duration); // 0 at init is fine
-                buf.put_u32(0x00010000);   // rate
-                buf.put_u16(0x0100);       // volume
-                buf.put_u16(0);            // reserved
-                buf.put_u64(0);            // reserved
+                buf.put_u32(0x00010000); // rate
+                buf.put_u16(0x0100); // volume
+                buf.put_u16(0); // reserved
+                buf.put_u64(0); // reserved
                 for v in &[0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000] {
-                    buf.put_u32(*v);       // matrix
+                    buf.put_u32(*v); // matrix
                 }
-                for _ in 0..6 { buf.put_u32(0); } // pre_defined
-                buf.put_u32(2);             // next_track_id
+                for _ in 0..6 {
+                    buf.put_u32(0);
+                } // pre_defined
+                buf.put_u32(2); // next_track_id
             });
 
-            self.core.write_video_trak(&mut buf, &self.video_trak.core)?;
+            self.core
+                .write_video_trak(&mut buf, &self.video_trak.core)?;
             // FIXME: disabling this for now as it breaks our livestreaming.
             //self.core.write_audio_trak(&mut buf, &self.audio_trak.core)?;
 
             write_box!(&mut buf, b"mvex", {
                 write_box!(&mut buf, b"mehd", {
-                    buf.put_u32(1 << 24);  // version=1, flags=0
-                    // 0 is open-ended/unspecified duration
+                    buf.put_u32(1 << 24); // version=1, flags=0
+                                          // 0 is open-ended/unspecified duration
                     let dur = total_duration_90k.unwrap_or(0);
                     buf.put_u64(dur);
                 });
 
                 // trex for video
                 write_box!(&mut buf, b"trex", {
-                    buf.put_u32(1 << 24);  // version, flags
-                    buf.put_u32(1);        // track id (video)
-                    buf.put_u32(1);        // default sample description index
-                    buf.put_u32(0);        // default sample duration (0 is use trun)
-                    buf.put_u32(0);        // default sample size (0 is use trun)
-                    // default sample flags
+                    buf.put_u32(1 << 24); // version, flags
+                    buf.put_u32(1); // track id (video)
+                    buf.put_u32(1); // default sample description index
+                    buf.put_u32(0); // default sample duration (0 is use trun)
+                    buf.put_u32(0); // default sample size (0 is use trun)
+                                    // default sample flags
                     buf.put_u32(fmp4_flags::with_reserved(0x0001_0000));
                 });
 
@@ -264,7 +267,7 @@ impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Fmp4Writer<W
         write_box!(buf, b"traf", {
             write_box!(buf, b"tfhd", {
                 buf.put_u32(0x020000); // default-base-is-moof
-                buf.put_u32(1);        // video track_id
+                buf.put_u32(1); // video track_id
             });
             // write tfdt + trun *inside* traf
             trun_off = self.video_trak.write_fragment(buf)?;
@@ -277,7 +280,7 @@ impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Fmp4Writer<W
         write_box!(buf, b"traf", {
             write_box!(buf, b"tfhd", {
                 buf.put_u32(0x020000); // default-base-is-moof
-                buf.put_u32(2);        // audio track_id
+                buf.put_u32(2); // audio track_id
             });
             trun_off = self.audio_trak.write_fragment(buf)?;
         });
@@ -285,12 +288,15 @@ impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Fmp4Writer<W
     }
 }
 
-
 impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Mp4 for Fmp4Writer<W, V, A> {
     async fn video(&mut self, frame: &[u8], ts: u64, is_rap: bool) -> Result<(), Error> {
         let size = u32::try_from(frame.len())?;
         self.video_trak.add_sample(size, ts, is_rap)?;
-        self.core.mdat_pos = self.core.mdat_pos.checked_add(size).ok_or_else(|| anyhow!("mdat_pos overflow"))?;
+        self.core.mdat_pos = self
+            .core
+            .mdat_pos
+            .checked_add(size)
+            .ok_or_else(|| anyhow!("mdat_pos overflow"))?;
         self.fbuf_video.extend_from_slice(frame);
         Ok(())
     }
@@ -298,7 +304,11 @@ impl<W: AsyncWrite + Unpin, V: CodecParameters, A: CodecParameters> Mp4 for Fmp4
     async fn audio(&mut self, frame: &[u8], ts: u64) -> Result<(), Error> {
         let size = u32::try_from(frame.len())?;
         self.audio_trak.add_sample(size, ts, false)?;
-        self.core.mdat_pos = self.core.mdat_pos.checked_add(size).ok_or_else(|| anyhow!("mdat_pos overflow"))?;
+        self.core.mdat_pos = self
+            .core
+            .mdat_pos
+            .checked_add(size)
+            .ok_or_else(|| anyhow!("mdat_pos overflow"))?;
         self.fbuf_audio.extend_from_slice(frame);
         Ok(())
     }

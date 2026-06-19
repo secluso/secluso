@@ -13,9 +13,8 @@ use docopt::Docopt;
 use secluso_client_lib::http_client::HttpClient;
 use secluso_client_lib::mls_client::{ClientType, MlsClient};
 use secluso_client_lib::mls_clients::{
-    MlsClients, FCM, MLS_CLIENT_TAGS, MOTION, NUM_MLS_CLIENTS,
-    THUMBNAIL, LIVESTREAM_DED, CONFIG_DED,
-    MlsClientsCommon, MlsClientsDedicated,
+    MlsClients, MlsClientsCommon, MlsClientsDedicated, CONFIG_DED, FCM, LIVESTREAM_DED,
+    MLS_CLIENT_TAGS, MOTION, NUM_MLS_CLIENTS, THUMBNAIL,
 };
 use secluso_client_lib::thumbnail_meta_info::ThumbnailMetaInfo;
 use std::array;
@@ -38,8 +37,8 @@ use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
 mod motion;
 
 use crate::motion::{
-    prepare_motion_thumbnail, prepare_motion_video,
-    upload_pending_enc_thumbnails, upload_pending_enc_videos,
+    prepare_motion_thumbnail, prepare_motion_video, upload_pending_enc_thumbnails,
+    upload_pending_enc_videos,
 };
 
 mod livestream;
@@ -425,7 +424,9 @@ fn core(
         DeliveryMonitor::from_file_or_new(video_dir, thumbnail_dir, state_dir.clone());
     let livestream_request = Arc::new(Mutex::new((false, true)));
     let livestream_request_clone = Arc::clone(&livestream_request);
-    let group_livestream_name_clone = clients_ded_primary[LIVESTREAM_DED].get_group_name().unwrap();
+    let group_livestream_name_clone = clients_ded_primary[LIVESTREAM_DED]
+        .get_group_name()
+        .unwrap();
     let http_client_clone = http_client.clone();
     let group_config_name_clone = clients_ded_primary[CONFIG_DED].get_group_name().unwrap();
     let http_client_clone_2 = http_client.clone();
@@ -440,7 +441,7 @@ fn core(
         {
             println!("Livestream1 detected");
             let mut check = livestream_request_clone.lock().unwrap();
-            *check = (true, true);  // second true -> livestream command from the primary app
+            *check = (true, true); // second true -> livestream command from the primary app
         } else {
             sleep(Duration::from_secs(1));
         }
@@ -477,11 +478,7 @@ fn core(
             println!("Detected motion.");
 
             let clients_ded_sec_opt = clients_ded_secondary.lock().unwrap();
-            let num_apps = if clients_ded_sec_opt.is_some() {
-                2
-            } else {
-                1
-            };
+            let num_apps = if clients_ded_sec_opt.is_some() { 2 } else { 1 };
 
             // We send the thumbnail BEFORE the FCM notification, to ensure that when the mobile app receives it, it can download it.
             if let Some(thumbnail_image) = motion_event.thumbnail {
@@ -548,8 +545,8 @@ fn core(
                 platform_label
             );
             let notification_timestamp: u64 = 0;
-            let notification_msg = clients_com[FCM]
-                .encrypt(&bincode::serialize(&notification_timestamp).unwrap())?;
+            let notification_msg =
+                clients_com[FCM].encrypt(&bincode::serialize(&notification_timestamp).unwrap())?;
             clients_com[FCM].save_group_state().unwrap();
             match send_notification(state_dir_ref, &http_client, notification_msg) {
                 Ok(_) => {}
@@ -581,7 +578,8 @@ fn core(
                     )?;
                 } else {
                     let mut clients_ded_sec_opt = clients_ded_secondary.lock().unwrap();
-                    if let Some(ref mut clients_ded_sec) = *clients_ded_sec_opt { // Should always be the case if we get here
+                    if let Some(ref mut clients_ded_sec) = *clients_ded_sec_opt {
+                        // Should always be the case if we get here
                         livestream(
                             &mut clients_ded_sec[LIVESTREAM_DED],
                             camera,
@@ -601,11 +599,7 @@ fn core(
             || locked_delivery_check_time.unwrap().le(&Instant::now())
         {
             let clients_ded_sec_opt = clients_ded_secondary.lock().unwrap();
-            let num_apps = if clients_ded_sec_opt.is_some() {
-                2
-            } else {
-                1
-            };
+            let num_apps = if clients_ded_sec_opt.is_some() { 2 } else { 1 };
 
             if upload_pending_enc_videos(
                 &clients_com[MOTION].get_group_name().unwrap(),
@@ -667,10 +661,12 @@ fn core(
 
                         if let Some(ref clients_ded_sec) = *clients_ded_sec_opt {
                             println!("Launching threads for the second app.");
-                            let group_livestream2_name_clone = clients_ded_sec[LIVESTREAM_DED].get_group_name()?;
+                            let group_livestream2_name_clone =
+                                clients_ded_sec[LIVESTREAM_DED].get_group_name()?;
                             let livestream_request_clone_2 = Arc::clone(&livestream_request);
                             let http_client_clone_3 = http_client.clone();
-                            let group_config2_name_clone = clients_ded_sec[CONFIG_DED].get_group_name()?;
+                            let group_config2_name_clone =
+                                clients_ded_sec[CONFIG_DED].get_group_name()?;
                             let http_client_clone_4 = http_client.clone();
                             let config_enc_commands_clone_2 = Arc::clone(&config_enc_commands);
 
@@ -688,9 +684,13 @@ fn core(
                             });
 
                             thread::spawn(move || loop {
-                                if let Ok(enc_command) = http_client_clone_4.config_check(&group_config2_name_clone) {
-                                    let mut config_enc_commands = config_enc_commands_clone_2.lock().unwrap();
-                                    config_enc_commands.push((enc_command, false)); // false -> config command from the secondary app
+                                if let Ok(enc_command) =
+                                    http_client_clone_4.config_check(&group_config2_name_clone)
+                                {
+                                    let mut config_enc_commands =
+                                        config_enc_commands_clone_2.lock().unwrap();
+                                    config_enc_commands.push((enc_command, false));
+                                // false -> config command from the secondary app
                                 } else {
                                     error!("Error in receiving config command");
                                     sleep(Duration::from_secs(1));

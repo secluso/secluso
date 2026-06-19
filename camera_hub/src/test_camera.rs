@@ -2,19 +2,19 @@
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
+use crate::livestream::LivestreamWriter;
+use crate::motion::MotionResult;
+use crate::Camera;
+use crate::VideoInfo;
+use anyhow::Error;
+use image::RgbImage;
+use rand::Rng;
 use std::fs::File;
 use std::io::{self, Write};
-use rand::Rng;
-use anyhow::{Error};
-use crate::motion::MotionResult;
-use crate::livestream::LivestreamWriter;
-use crate::VideoInfo;
-use crate::Camera;
-use tokio::time::{sleep, Duration};
 use std::thread;
 use tokio::io::AsyncWriteExt;
 use tokio::runtime::Runtime;
-use image::RgbImage;
+use tokio::time::{sleep, Duration};
 
 pub struct TestCamera {
     pub name: String,
@@ -67,7 +67,7 @@ impl Camera for TestCamera {
                 motion: false,
                 detections: vec![],
                 thumbnail: None,
-            })
+            });
         }
         //create dummy thumbnail
         let width = 256;
@@ -81,8 +81,7 @@ impl Camera for TestCamera {
             data[i] = (i % 256) as u8;
         }
 
-        let img = RgbImage::from_raw(width, height, data)
-            .expect("Buffer size mismatch");
+        let img = RgbImage::from_raw(width, height, data).expect("Buffer size mismatch");
 
         Ok(MotionResult {
             motion: true,

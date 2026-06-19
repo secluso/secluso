@@ -9,6 +9,7 @@ default = ["logging"]
 logging = ["log"]
 ip = ["dep:rpassword", "dep:reqwest", "dep:http-auth", "dep:linfa", "dep:linfa-clustering", "dep:retina", "dep:serde_yaml2", "dep:ndarray", "dep:futures", "secluso-client-lib/camera_secret_qrcode"]
 raspberry = ["dep:secluso-motion-ai"]
+use_ai = ["secluso-motion-ai/ai"]
 manual = []
 telemetry = [] # todo: dep on the motion_ai crate
 test = []

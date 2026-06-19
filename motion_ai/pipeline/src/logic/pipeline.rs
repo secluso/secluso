@@ -14,7 +14,7 @@ use crate::logic::intent::{Intent, execute_intent};
 use crate::logic::stages::{PipelineStage, StageResult, StageType};
 use crate::logic::telemetry::{TelemetryPacket, TelemetryRun};
 use crate::logic::timer::{Timer, TimerManager};
-use crate::ml::models::{DetectionType, init_model_paths};
+
 use anyhow::{Context, Error};
 use log::debug;
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,9 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 use std::default::Default;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+#[cfg(feature = "ai")]
+use crate::ml::models::{DetectionType, init_model_paths};
 
 /// The main sequential container for executing image processing stages.
 /// Each stage handles a specific task (e.g., motion, detection, inference).
@@ -201,6 +204,7 @@ pub struct PipelineHostData {
     pub pipeline: Pipeline,
     pub(crate) timer: Box<dyn Timer>,
     pub frame_buffer: FrameBuffer,
+    #[cfg(feature = "ai")]
     pub latest_detections: Vec<DetectionType>,
     pub telemetry: TelemetryRun,
 }
@@ -210,6 +214,7 @@ pub struct PipelineHostData {
 pub struct PipelineResult {
     pub time: Instant,
     pub motion: bool,
+    #[cfg(feature = "ai")]
     pub detections: Vec<DetectionType>,
     pub thumbnail: RawFrame,
 }
@@ -218,7 +223,11 @@ pub struct PipelineResult {
 /// and reacting to state transitions.
 impl PipelineController {
     /// Constructs and initializes the pipeline controller and FSM registries.
-    pub fn new(pipeline: Pipeline, write_logs: bool, save_all: bool) -> Result<Self, anyhow::Error> {
+    pub fn new(
+        pipeline: Pipeline,
+        write_logs: bool,
+        save_all: bool,
+    ) -> Result<Self, anyhow::Error> {
         let mut activity_registry: FsmRegistry<ActivityState> = FsmRegistry {
             handlers: HashMap::new(),
         };
@@ -248,6 +257,7 @@ impl PipelineController {
 
         health_registry.register(HealthState::CriticalTemp, Box::new(CriticalTempState));
 
+        #[cfg(feature = "ai")]
         init_model_paths()?; // We should occasionally query this to hot-reload. But for this purpose, initializing and checking everything is OK is good enough
 
         Ok(Self {
@@ -264,6 +274,7 @@ impl PipelineController {
                     active: None,
                 },
                 telemetry: TelemetryRun::new(write_logs, save_all)?,
+                #[cfg(feature = "ai")]
                 latest_detections: Vec::new(),
             },
             last_activity_change: None,
@@ -335,9 +346,8 @@ impl PipelineController {
 
         if let Ok(Some(he)) = health_response {
             self.host_data.event_queue.push_back(he);
-        } else if let Err(e) = health_response {
-            // We should exit. Something's wrong with sensors...
-            return Err(e);
+        } else {
+            health_response?;
         }
 
         self.host_data.event_queue.push_back(PipelineEvent::Tick);
@@ -649,10 +659,11 @@ impl Default for PipelineController {
 /// Macro to concisely build a pipeline using a chained stage definition.
 #[macro_export]
 macro_rules! pipeline {
-    ( $($stage:expr), * $(,)? ) => {{
+     ( $( $(#[$meta:meta])* $stage:path ),* $(,)? ) => {{
         let mut builder = secluso_motion_ai::logic::pipeline::PipelineBuilder::new();
         $(
-        builder = builder.then($stage);
+            $(#[$meta])*
+            { builder = builder.then($stage); }
         )*
         builder.build()
     }};

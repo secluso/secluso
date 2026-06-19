@@ -18,6 +18,7 @@ use serde_json::Value;
 use std::fs;
 use std::fs::File;
 use std::io;
+use std::io::ErrorKind;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::path::Path;
@@ -26,7 +27,6 @@ use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::{thread, time::Duration};
 use url::Url;
-use std::io::ErrorKind;
 
 // Used to generate random names.
 // With 16 alphanumeric characters, the probability of collision is very low.
@@ -147,7 +147,8 @@ pub fn get_input_wifi_password() -> String {
         Ok("1") => "/provision/wifi_password",
         _ => "./wifi_password",
     };
-    let contents = fs::read_to_string(pathname).expect("Failed to read from \"wifi_password\" file. You can generate this in config tool");
+    let contents = fs::read_to_string(pathname)
+        .expect("Failed to read from \"wifi_password\" file. You can generate this in config tool");
     return contents;
 }
 
@@ -263,7 +264,14 @@ fn ensure_command_success(output: Output, context: &str) -> io::Result<Output> {
 
 fn active_connections() -> io::Result<Vec<(String, String, String)>> {
     // Read the active profile list once so readiness checks reason about the same NM view.
-    let output = nmcli_stdout(&["-t", "-f", "NAME,TYPE,DEVICE", "connection", "show", "--active"])?;
+    let output = nmcli_stdout(&[
+        "-t",
+        "-f",
+        "NAME,TYPE,DEVICE",
+        "connection",
+        "show",
+        "--active",
+    ])?;
     let mut active = Vec::new();
     for line in output.lines() {
         let mut parts = line.splitn(3, ':');
@@ -398,7 +406,10 @@ fn wait_for_wifi_readiness(ssid: &str, server_addr: &str, timeout: Duration) -> 
         // what layer is lagging: wrong active connection, no device yet, no DHCP yet, no route yet, or no relay reachability yet...
         let active_names = active_connection_names()?;
         if !active_names.iter().any(|name| name == ssid) {
-            last_reason = format!("active connections are {:?}, expected {}", active_names, ssid);
+            last_reason = format!(
+                "active connections are {:?}, expected {}",
+                active_names, ssid
+            );
             thread::sleep(Duration::from_millis(500));
             continue;
         }
@@ -458,7 +469,9 @@ fn wait_for_hotspot_shutdown(timeout: Duration) -> io::Result<()> {
         thread::sleep(Duration::from_millis(500));
     }
 
-    Err(io::Error::other("Timed out waiting for hotspot to shut down"))
+    Err(io::Error::other(
+        "Timed out waiting for hotspot to shut down",
+    ))
 }
 
 fn wait_for_ssid_visibility(ssid: &str, timeout: Duration) -> io::Result<()> {

@@ -3,18 +3,18 @@
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
+use bytes::Buf;
 use std::collections::VecDeque;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
-use std::time::{SystemTime};
+use std::time::SystemTime;
 use std::{
     io::{BufReader, Read, Write},
     process::{Command, Stdio},
     thread,
     time::Duration,
 };
-use bytes::Buf;
 
 use crate::raspberry_pi::rpi_camera::{Frame, FrameKind};
 use anyhow::anyhow;
@@ -275,9 +275,13 @@ fn extract_h264_frame(buffer: &mut BytesMut) -> anyhow::Result<Option<Frame>> {
 }
 
 fn adts_frame_len(header: &[u8]) -> Option<usize> {
-    if header.len() < 7 { return None; }
+    if header.len() < 7 {
+        return None;
+    }
     // syncword 0xFFF
-    if header[0] != 0xFF || (header[1] & 0xF0) != 0xF0 { return None; }
+    if header[0] != 0xFF || (header[1] & 0xF0) != 0xF0 {
+        return None;
+    }
     let protection_absent = header[1] & 0x01;
     let hdr_len = if protection_absent == 1 { 7 } else { 9 };
 
@@ -285,23 +289,30 @@ fn adts_frame_len(header: &[u8]) -> Option<usize> {
         | ((header[4] as usize) << 3)
         | (((header[5] & 0xE0) as usize) >> 5);
 
-    if frame_length < hdr_len { return None; }
+    if frame_length < hdr_len {
+        return None;
+    }
     Some(frame_length)
 }
 
 fn strip_adts(frame: &[u8]) -> Option<&[u8]> {
-    if frame.len() < 7 { return None; }
-    if frame[0] != 0xFF || (frame[1] & 0xF0) != 0xF0 { return None; }
+    if frame.len() < 7 {
+        return None;
+    }
+    if frame[0] != 0xFF || (frame[1] & 0xF0) != 0xF0 {
+        return None;
+    }
     let protection_absent = frame[1] & 0x01;
     let hdr_len = if protection_absent == 1 { 7 } else { 9 };
-    if frame.len() < hdr_len { return None; }
+    if frame.len() < hdr_len {
+        return None;
+    }
     Some(&frame[hdr_len..])
 }
 
 pub fn start_audio(
     frame_queue: Arc<Mutex<VecDeque<Frame>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-
     let cmd = "\
         arecord -D plughw:0,0 -f S16_LE -r 48000 -c 1 -t raw | \
         sox -t raw -b 16 -e signed-integer -r 48000 -c 1 - \
@@ -335,7 +346,9 @@ pub fn start_audio(
                         buf.extend_from_slice(&tmp[..n]);
 
                         loop {
-                            if buf.len() < 7 { break; }
+                            if buf.len() < 7 {
+                                break;
+                            }
                             let len = match adts_frame_len(&buf[..7]) {
                                 Some(l) => l,
                                 None => {
@@ -344,7 +357,9 @@ pub fn start_audio(
                                     continue;
                                 }
                             };
-                            if buf.len() < len { break; }
+                            if buf.len() < len {
+                                break;
+                            }
 
                             let adts = buf.split_to(len).to_vec();
                             if let Some(aac_au) = strip_adts(&adts) {

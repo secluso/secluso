@@ -3768,6 +3768,7 @@ name = "secluso-motion-ai"
 version = "1.0.2"
 dependencies = [
  "anyhow",
+ "cfg-if",
  "chrono",
  "crossbeam-channel",
  "fast_image_resize",

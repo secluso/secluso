@@ -45,3 +45,6 @@ secluso-v*
 __pycache__
 *.wic
 metadata.json
+
+# Prevent un-necessary Cargo.lock files from being introduced.
+Cargo.lock
