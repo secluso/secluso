@@ -135,6 +135,10 @@ fn main() -> io::Result<()> {
     let version = env!("CARGO_PKG_NAME").to_string() + ", version: " + env!("CARGO_PKG_VERSION");
     env_logger::init();
 
+    // ring TLS backend (armv6/Pi Zero W) needs provider installed before any HTTPS request
+    #[cfg(feature = "crypto-ring")]
+    secluso_client_lib::http_client::install_crypto_provider();
+
     let args: Args = Docopt::new(USAGE)
         .map(|d| d.help(true))
         .map(|d| d.version(Some(version)))
