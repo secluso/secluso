@@ -415,6 +415,9 @@ fn core(
 
     println!("[{}] Running...", camera_name);
 
+    // We start it after we've paired. It's off by default.
+    camera.set_motion_active(true);
+
     let (server_username, server_password, server_addr) = read_parse_full_credentials();
     let http_client = HttpClient::new(server_addr, server_username, server_password);
 
@@ -480,6 +483,9 @@ fn core(
             let video_info = VideoInfo::new();
             let motion_timestamp = video_info.timestamp;
             println!("Detected motion.");
+
+            // We do not want motion to continue running after we've started recording. We'll resume it again after we're done.
+            camera.set_motion_active(false);
 
             let clients_ded_sec_opt = clients_ded_secondary.lock().unwrap();
             let num_apps = if clients_ded_sec_opt.is_some() { 2 } else { 1 };
@@ -559,6 +565,8 @@ fn core(
                 }
             }
 
+            // Resume motion detection again after we're done recording.
+            camera.set_motion_active(true);
             locked_motion_check_time = Some(Instant::now().add(Duration::from_secs(60)));
         }
 
@@ -572,6 +580,9 @@ fn core(
             let primary_app = check.1;
             if check.0 {
                 info!("Livestream start detected");
+                // We do not want motion to continue running after we've started recording. We'll resume it again afterwards.
+                camera.set_motion_active(false);
+
                 *check = (false, false);
                 if primary_app {
                     livestream(
@@ -595,6 +606,8 @@ fn core(
                 }
             }
 
+            // Resume motion detection again after we're done recording.
+            camera.set_motion_active(true);
             locked_livestream_check_time = Some(Instant::now().add(Duration::from_millis(100)));
         }
 

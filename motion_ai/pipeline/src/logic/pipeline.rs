@@ -189,6 +189,7 @@ pub struct PipelineController {
     last_health_change: Option<(HealthState, Instant)>,
     last_activity_change: Option<(ActivityState, Instant)>,
     max_event_queue_len: usize,
+    run_detections: bool,
 }
 
 /// Holds the current active and standby frame references used by the pipeline.
@@ -279,6 +280,12 @@ impl PipelineController {
             },
             last_activity_change: None,
             max_event_queue_len: 0,
+
+            // By default, it should NOT run detections.
+            // It should only do so when prompted from the main loop.
+            // We could be pairing. We might be recording a motion event. We might be livestreaming.
+            // Either way, we don't need to run unnecessary computations.
+            run_detections: false,
         })
     }
 
@@ -298,6 +305,10 @@ impl PipelineController {
                 }
             }
         }
+    }
+
+    pub fn set_pipeline_active(&mut self, run_detections: bool) {
+        self.run_detections = run_detections;
     }
 
     /// Loads a new frame into the standby buffer and queues a NewFrame event.
@@ -328,6 +339,11 @@ impl PipelineController {
     /// Main loop to process events, update health/activity FSMs,
     /// emit telemetry, and dispatch intents.
     pub fn tick(&mut self, temp_label: &'static str) -> Result<bool, anyhow::Error> {
+        // We skip if we're not running detections right now.
+        if !self.run_detections {
+            return Ok(true)
+        }
+
         let time = Instant::now();
 
         // Is there a timer event?

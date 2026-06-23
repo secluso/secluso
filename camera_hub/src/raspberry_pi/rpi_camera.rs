@@ -612,6 +612,10 @@ impl Camera for RaspberryPiCamera {
         })
     }
 
+    fn set_motion_active(&self, active: bool) {
+        self.motion_detection.lock().unwrap().set_pipeline_active(active);
+    }
+
     fn record_motion_video(&self, info: &VideoInfo, duration: u64) -> io::Result<()> {
         let rt = Runtime::new()?;
 

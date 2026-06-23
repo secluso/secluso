@@ -33,6 +33,9 @@ pub trait Mp4 {
 
 pub trait Camera {
     fn is_there_motion(&mut self) -> Result<MotionResult, Error>;
+
+    // By default, this is a no-op. We override if we have a pipeline-like configuration.
+    fn set_motion_active(&self, _active: bool) {}
     fn record_motion_video(&self, info: &VideoInfo, duration: u64) -> io::Result<()>;
     fn launch_livestream(&self, livestream_writer: LivestreamWriter) -> io::Result<()>;
     fn get_name(&self) -> String;
