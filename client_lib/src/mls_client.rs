@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::io::{BufRead, BufReader, Write, Read};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::cmp;
 use std::path::{Path, PathBuf};
 use tls_codec::{Deserialize as TlsDeserialize, Serialize as TlsSerialize};
@@ -852,16 +852,28 @@ impl MlsClient {
         let group_aad = group.group_name.clone() + " AAD";
         group.mls_group.set_aad(group_aad.as_bytes().to_vec());
 
+        let create_start = Instant::now();
         let message_out = group
             .mls_group
             .create_message(&self.provider, &self.identity.signer, bytes)
             .map_err(|e| io::Error::other(format!("{e}")))?;
+        log::debug!(
+            "encrypt: create_message took {}ms for {} input bytes",
+            create_start.elapsed().as_millis(),
+            bytes.len()
+        );
 
         let msg: MlsMessageOut = message_out;
 
+        let serialize_start = Instant::now();
         let mut msg_vec = Vec::new();
         msg.tls_serialize(&mut msg_vec)
             .map_err(|e| io::Error::other(format!("tls_serialize for msg failed ({e})")))?;
+        log::debug!(
+            "encrypt: tls_serialize took {}ms for {} output bytes",
+            serialize_start.elapsed().as_millis(),
+            msg_vec.len()
+        );
 
         Ok(msg_vec)
     }

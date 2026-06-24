@@ -74,7 +74,12 @@ pub fn livestream(
     }
 
     // Update MLS epoch
+    let update_start = Instant::now();
     let (commit_msg, _epoch) = mls_client.update()?;
+    debug!(
+        "Livestream: mls_client.update() took {}ms",
+        update_start.elapsed().as_millis()
+    );
     mls_client.save_group_state().unwrap();
     let group_name = mls_client.get_group_name().unwrap();
 
@@ -99,6 +104,7 @@ pub fn livestream(
     camera.launch_livestream(livestream_writer)?;
 
     let mut chunk_number: u64 = 1;
+    let mut last_recv = Instant::now();
 
     loop {
         // We include the chunk number in the chunk itself (and check it in the app)
@@ -107,6 +113,12 @@ pub fn livestream(
             info!("Ending livestream because the camera backend stopped producing fragments.");
             break;
         };
+        debug!(
+            "Livestream: {}ms since previous fragment for chunk {}",
+            last_recv.elapsed().as_millis(),
+            chunk_number
+        );
+        last_recv = Instant::now();
         let mut data: Vec<u8> = chunk_number.to_be_bytes().to_vec();
         data.extend(fragment);
 
@@ -143,6 +155,11 @@ pub fn livestream(
             chunk_number - 1,
             curr_epoch_ms
         );
+        debug!(
+            "Livestream: {} pending chunk(s) on server after chunk {}",
+            num_pending_files,
+            chunk_number - 1
+        );
 
         // The server returns 0 when the app has explicitly ended livestream
         if num_pending_files == 0 || num_pending_files > MAX_NUM_PENDING_LIVESTREAM_CHUNKS {
@@ -151,7 +168,12 @@ pub fn livestream(
         }
     }
 
+    let save_start = Instant::now();
     mls_client.save_group_state().unwrap();
+    debug!(
+        "Livestream: final save_group_state() took {}ms",
+        save_start.elapsed().as_millis()
+    );
 
     Ok(())
 }
