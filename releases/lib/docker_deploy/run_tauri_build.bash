@@ -903,6 +903,50 @@ ensure_libgpg_error_bundled_with_libgcrypt() {
   fi
 }
 
+
+# New version of Mesa has some dependency issues with libwayland-client if it is bundled
+# https://github.com/AppImageCommunity/pkg2appimage/pull/559
+# https://gitlab.freedesktop.org/mesa/mesa/-/issues/11316
+# Bundled libwayland-client/server/egl carries private protocol-interface pointers that must match the running compositor.
+# If we use our own copy makes the client lib and the host's Wayland server disagree
+# So we drop them so the loader falls back to the host libraries
+prune_appdir_wayland_libs() {
+  local appdir="$1"
+  [[ -n "$appdir" && -d "$appdir" ]] || return 0
+
+  local removed=0 lib
+  while IFS= read -r -d '' lib; do
+    echo "==> excluding bundled $(basename "$lib") (use host copy)"
+    rm -f "$lib"
+    removed=1
+  done < <(find "$appdir" \( -type f -o -type l \) \
+    \( -name 'libwayland-client.so*' \
+       -o -name 'libwayland-server.so*' \
+       -o -name 'libwayland-egl.so*' \) -print0 2>/dev/null)
+
+  [[ "$removed" -eq 1 ]] || echo "==> no bundled libwayland-{client,server,egl} found in AppDir"
+}
+
+# https://github.com/tauri-apps/tauri/issues/9304: webkit2gtk is broken under 2.44 with Nvidia GPUs
+# "KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied" [https://github.com/secluso/core/issues/113]
+# WEBKIT_DISABLE_DMABUF_RENDERER falls back to portable compositing
+# AppRun sources apprun-hooks sh files at startup
+install_webkit_dmabuf_apprun_hook() {
+  local appdir="$1"
+  [[ -n "$appdir" && -d "$appdir" ]] || return 0
+
+  local hooks_dir="$appdir/apprun-hooks"
+  mkdir -p "$hooks_dir"
+  local hook="$hooks_dir/zz-secluso-webkit-dmabuf.sh"
+  echo "==> installing AppRun hook to disable WebKit DMABuf renderer ($hook)"
+  cat >"$hook" <<'EOS'
+#!/bin/sh
+# Disable WebKitGTK's DMABuf renderer unless the user opted into it.
+export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
+EOS
+  chmod 0644 "$hook"
+}
+
 canonicalize_linux_bundle_outputs_deterministically() {
   [[ "$TAURI_TARGET" == *"-unknown-linux-"* ]] || return 0
 
@@ -947,6 +991,14 @@ canonicalize_linux_bundle_outputs_deterministically() {
   if [[ -n "$appdir" && -d "$appdir" ]]; then
     ensure_libgpg_error_bundled_with_libgcrypt "$appdir" || {
       echo "==> error: failed to bundle libgpg-error alongside libgcrypt in $appdir" >&2
+      return 1
+    }
+    prune_appdir_wayland_libs "$appdir" || {
+      echo "==> error: failed to prune bundled libwayland from $appdir" >&2
+      return 1
+    }
+    install_webkit_dmabuf_apprun_hook "$appdir" || {
+      echo "==> error: failed to install WebKit DMABuf AppRun hook in $appdir" >&2
       return 1
     }
   fi
