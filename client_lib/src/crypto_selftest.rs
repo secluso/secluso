@@ -30,7 +30,7 @@ pub fn thread_cpu_time() -> anyhow::Result<Duration> {
     if rc != 0 {
         return Ok(Duration::ZERO);
     }
-    Ok(Duration::new(ts.tv_sec.cast_unsigned(), u32::try_from(ts.tv_nsec)?))
+    Ok(Duration::new(ts.tv_sec.cast_unsigned().into(), u32::try_from(ts.tv_nsec)?))
 }
 
 fn report(name: &str, wall: Duration, cpu: Duration, bytes: usize) -> anyhow::Result<()> {
