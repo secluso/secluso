@@ -5,9 +5,11 @@
 use crate::logic::activity_states::ActivityState;
 use crate::logic::health_states::HealthState;
 use crate::logic::pipeline::{PipelineResult, RunId};
-use crate::ml::models::ModelKind;
 use crate::motion::detector::MotionDetection;
-use std::collections::HashMap;
+use std::{collections::HashMap, env};
+
+#[cfg(feature = "ai")]
+use crate::ml::models::ModelKind;
 
 /// Per-run, in-memory state updated by the FSM and stages
 pub struct StateContext {
@@ -15,6 +17,8 @@ pub struct StateContext {
     pub(crate) activity: ActivityState,
     /// Coarse health classification (Normal / High Temp / etc)
     pub(crate) health: HealthState,
+
+    #[cfg(feature = "ai")]
     /// Currently selected ML model for inference
     pub(crate) active_model: ModelKind,
     /// Motion detection accumulator and thresholds.
@@ -39,14 +43,17 @@ impl StateContext {
         Self {
             activity: ActivityState::Idle,
             health: HealthState::Normal,
+
+            #[cfg(feature = "ai")]
             active_model: ModelKind::Accurate,
+
             motion_detection: MotionDetection::new(),
             run_id: RunId::new(), // Will be replaced with the first frame, so it can be this instead of an Option for ease-of-use
             //last_motion_time: None,
             //// latency_ema: 0.0,
             // temp_history: Default::default(),
             // backoff_until: None,
-            use_inference: true,
+            use_inference: env::var("CARGO_FEATURE_AI").is_ok(),
             // metadata: Default::default(),
             stats: Default::default(),
             last_detection: None,

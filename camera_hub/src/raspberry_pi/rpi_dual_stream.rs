@@ -3,18 +3,19 @@
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
+use bytes::Buf;
 use std::collections::VecDeque;
 use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
-use std::time::{SystemTime};
+use std::time::SystemTime;
 use std::{
     io::{BufReader, Read, Write},
     process::{Command, Stdio},
     thread,
     time::Duration,
 };
-use bytes::Buf;
 
 use crate::raspberry_pi::rpi_camera::{Frame, FrameKind};
 use anyhow::anyhow;
@@ -34,6 +35,7 @@ pub fn start(
     frame_queue: Arc<Mutex<VecDeque<Frame>>>,
     ps_tx: Sender<Frame>,
     motion_fps: u8,
+    motion_active: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // For 8-bit yuv420p, frame size = width * height * 3/2 bytes.
     // However, we need to take into account how the width is padded to 64-bytes.
@@ -93,12 +95,12 @@ pub fn start(
                                 }
                             }
                             Err(e) => {
-                                println!("Got error {:?}", e);
+                                println!("Got error {e:?}");
                             }
                         }
                     }
                     Err(e) => {
-                        eprintln!("Error reading rpicam stdout: {:?}", e);
+                        eprintln!("Error reading rpicam stdout: {e:?}");
                         break;
                     }
                 }
@@ -107,37 +109,37 @@ pub fn start(
     }
 
     // Spawn a thread that will continuously read full frames from a UNIX domain socket in the modified rpicam-vid
+    // Only holds the connection open while detection is active.
+    // Re-connect after motion/livestream event is sent out.
     {
-        thread::spawn(move || {
-            let stream_attempt: Option<UnixStream> = connect_to_socket();
-            if stream_attempt.is_none() {
+        thread::spawn(move || loop {
+            // Park (cheaply) until detection is active.
+            while !motion_active.load(Ordering::Relaxed) {
+                sleep(Duration::from_millis(100));
+            }
+
+            // (Re)connect and request our motion FPS.
+            let Some(mut stream) = connect_to_socket() else {
                 panic!("Was unable to connect to the rpicam-vid socket. Are you using the built rpicam-apps secluso fork?");
-            }
-
-            let mut stream = stream_attempt.unwrap(); // Unwrap will work since we checked is_none()
-
-            // Write the motion_fps we want the output to synchronize to for maximum efficiency.
+            };
             if let Err(e) = stream.write(&[motion_fps]) {
-                panic!("Failed to write Motion FPS to rpicam-vid: {:?}", e);
+                panic!("Failed to write Motion FPS to rpicam-vid: {e:?}");
             }
 
-            // Continuously read in frames from the secondary stream
-            loop {
+            // Continuously read in frames from the secondary stream (while connection stays active)
+            while motion_active.load(Ordering::Relaxed) {
                 let mut buffer = vec![0u8; yuv_frame_size];
-
                 match stream.read_exact(&mut buffer) {
-                    Ok(_) => {
+                    Ok(()) => {
                         let raw_frame = RawFrame::create_from_buffer(buffer, width, height);
-                        {
-                            let mut lock = pipeline_controller.lock().unwrap();
-                            lock.push_frame(raw_frame);
-                        }
+                        let mut lock = pipeline_controller.lock().unwrap();
+                        lock.push_frame(raw_frame);
                     }
                     Err(e) => {
-                        panic!(
-                            "Error reading from UNIX domain socket from secondary stream: {:?}",
-                            e
+                        eprintln!(
+                            "Error reading from secondary stream socket: {e:?}; will reconnect.",
                         );
+                        break;
                     }
                 }
             }
@@ -275,9 +277,13 @@ fn extract_h264_frame(buffer: &mut BytesMut) -> anyhow::Result<Option<Frame>> {
 }
 
 fn adts_frame_len(header: &[u8]) -> Option<usize> {
-    if header.len() < 7 { return None; }
+    if header.len() < 7 {
+        return None;
+    }
     // syncword 0xFFF
-    if header[0] != 0xFF || (header[1] & 0xF0) != 0xF0 { return None; }
+    if header[0] != 0xFF || (header[1] & 0xF0) != 0xF0 {
+        return None;
+    }
     let protection_absent = header[1] & 0x01;
     let hdr_len = if protection_absent == 1 { 7 } else { 9 };
 
@@ -285,23 +291,30 @@ fn adts_frame_len(header: &[u8]) -> Option<usize> {
         | ((header[4] as usize) << 3)
         | (((header[5] & 0xE0) as usize) >> 5);
 
-    if frame_length < hdr_len { return None; }
+    if frame_length < hdr_len {
+        return None;
+    }
     Some(frame_length)
 }
 
 fn strip_adts(frame: &[u8]) -> Option<&[u8]> {
-    if frame.len() < 7 { return None; }
-    if frame[0] != 0xFF || (frame[1] & 0xF0) != 0xF0 { return None; }
+    if frame.len() < 7 {
+        return None;
+    }
+    if frame[0] != 0xFF || (frame[1] & 0xF0) != 0xF0 {
+        return None;
+    }
     let protection_absent = frame[1] & 0x01;
     let hdr_len = if protection_absent == 1 { 7 } else { 9 };
-    if frame.len() < hdr_len { return None; }
+    if frame.len() < hdr_len {
+        return None;
+    }
     Some(&frame[hdr_len..])
 }
 
 pub fn start_audio(
     frame_queue: Arc<Mutex<VecDeque<Frame>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-
     let cmd = "\
         arecord -D plughw:0,0 -f S16_LE -r 48000 -c 1 -t raw | \
         sox -t raw -b 16 -e signed-integer -r 48000 -c 1 - \
@@ -335,7 +348,9 @@ pub fn start_audio(
                         buf.extend_from_slice(&tmp[..n]);
 
                         loop {
-                            if buf.len() < 7 { break; }
+                            if buf.len() < 7 {
+                                break;
+                            }
                             let len = match adts_frame_len(&buf[..7]) {
                                 Some(l) => l,
                                 None => {
@@ -344,7 +359,9 @@ pub fn start_audio(
                                     continue;
                                 }
                             };
-                            if buf.len() < len { break; }
+                            if buf.len() < len {
+                                break;
+                            }
 
                             let adts = buf.split_to(len).to_vec();
                             if let Some(aac_au) = strip_adts(&adts) {

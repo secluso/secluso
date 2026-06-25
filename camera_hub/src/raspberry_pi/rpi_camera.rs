@@ -7,7 +7,10 @@ use std::{
     collections::VecDeque,
     io,
     process::Command,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::Duration,
 };
@@ -29,6 +32,8 @@ use crossbeam_channel::unbounded;
 use image::RgbImage;
 use secluso_client_lib::thumbnail_meta_info::GeneralDetectionType;
 use secluso_motion_ai::logic::pipeline::PipelineController;
+
+#[cfg(feature = "use_ai")]
 use secluso_motion_ai::ml::models::DetectionType;
 use secluso_motion_ai::pipeline;
 use tokio::runtime::Runtime;
@@ -79,6 +84,9 @@ pub struct RaspberryPiCamera {
     sps_frame: Frame,
     pps_frame: Frame,
     motion_detection: Arc<Mutex<PipelineController>>,
+    // Mirrors the pipeline's run_detections.
+    // When false (while recording), the raw-frame reader thread closes the secondary-stream socket, so rpicam stops sending raw frames
+    motion_active: Arc<AtomicBool>,
     resolution: CameraResolution,
 }
 
@@ -102,7 +110,9 @@ impl RaspberryPiCamera {
         // Start motion detection using raw frames from the shared stream.
         let pipeline = pipeline![
             secluso_motion_ai::logic::stages::MotionStage,
+            #[cfg(feature = "use_ai")]
             secluso_motion_ai::logic::stages::InferenceStage,
+            secluso_motion_ai::logic::stages::EmitFrameIfDetected,
         ];
 
         let write_logs = cfg!(feature = "telemetry");
@@ -141,7 +151,10 @@ impl RaspberryPiCamera {
             debug!("Exited controller tick loop");
         });
 
-        let resolution: CameraResolution = Self::fetch_resolution().expect("A supported camera module was not found");
+        let resolution: CameraResolution =
+            Self::fetch_resolution().expect("A supported camera module was not found");
+
+        let motion_active = Arc::new(AtomicBool::new(false));
 
         // Start the new shared stream.
         rpi_dual_stream::start(
@@ -153,8 +166,9 @@ impl RaspberryPiCamera {
             Arc::clone(&frame_queue),
             ps_tx,
             motion_fps as u8,
+            Arc::clone(&motion_active),
         )
-            .expect("Failed to start shared stream");
+        .expect("Failed to start shared stream");
 
         rpi_dual_stream::start_audio(Arc::clone(&frame_queue))
             .expect("Failed to start audio stream");
@@ -189,6 +203,7 @@ impl RaspberryPiCamera {
             sps_frame,
             pps_frame,
             motion_detection,
+            motion_active,
             resolution,
         }
     }
@@ -315,7 +330,7 @@ impl RaspberryPiCamera {
             RpiCameraAudioParameters::new(),
             file,
         )
-            .await?;
+        .await?;
 
         // Process the rest of the frames, writing both to the MP4 writer and to the raw file.
         Self::copy(&mut mp4, Some(duration), frame_queue).await?;
@@ -435,7 +450,7 @@ impl RaspberryPiCamera {
             RpiCameraAudioParameters::new(),
             livestream_writer,
         )
-            .await?;
+        .await?;
         fmp4.finish_header(None).await?;
 
         Self::copy(&mut fmp4, None, frame_queue).await?;
@@ -556,7 +571,7 @@ impl RaspberryPiCamera {
             })
         } else {
             None
-        }
+        };
     }
 }
 
@@ -570,15 +585,26 @@ impl Camera for RaspberryPiCamera {
                 let img = RgbImage::from_raw(frame.width as u32, frame.height as u32, data)
                     .expect("Failed to convert RGB data into RgbImage");
 
-                // TODO: We have to manually map these until we connect the IP camera to motion_ai
-                let mut detections: Vec<GeneralDetectionType> = Vec::new();
-                for detection in pipeline_result.detections {
-                    if detection == DetectionType::Animal {
-                        detections.push(GeneralDetectionType::Pet);
-                    } else if detection == DetectionType::Human {
-                        detections.push(GeneralDetectionType::Human);
-                    } else if detection == DetectionType::Car {
-                        detections.push(GeneralDetectionType::Car);
+                cfg_if::cfg_if! {
+                    if #[cfg(feature = "use_ai")] {
+                        // TODO: We have to manually map these until we connect the IP camera to motion_ai
+                        let mut detections: Vec<GeneralDetectionType> = Vec::new();
+
+                        // If AI feature is off, the Vec will be empty.
+                        // That means no AI detections, which fits here.
+                        // Although, will the app send notifications for just motion?
+                        // TODO: Should the app be notified if the camera is AI capable?
+                        for detection in pipeline_result.detections {
+                            if detection == DetectionType::Animal {
+                                detections.push(GeneralDetectionType::Pet);
+                            } else if detection == DetectionType::Human {
+                                detections.push(GeneralDetectionType::Human);
+                            } else if detection == DetectionType::Car {
+                                detections.push(GeneralDetectionType::Car);
+                            }
+                        }
+                    } else {
+                        let detections: Vec<GeneralDetectionType> = Vec::new();
                     }
                 }
 
@@ -596,6 +622,11 @@ impl Camera for RaspberryPiCamera {
         })
     }
 
+    fn set_motion_active(&self, active: bool) {
+        self.motion_active.store(active, Ordering::Relaxed);
+        self.motion_detection.lock().unwrap().set_pipeline_active(active);
+    }
+
     fn record_motion_video(&self, info: &VideoInfo, duration: u64) -> io::Result<()> {
         let rt = Runtime::new()?;
 
@@ -608,7 +639,7 @@ impl Camera for RaspberryPiCamera {
             Arc::clone(&self.frame_queue),
             self.sps_frame.clone(),
             self.pps_frame.clone(),
-            self.resolution.clone()
+            self.resolution.clone(),
         );
 
         rt.block_on(future).unwrap();
@@ -634,7 +665,7 @@ impl Camera for RaspberryPiCamera {
                 frame_queue_clone,
                 sps_frame_clone,
                 pps_frame_clone,
-                resolution_clone
+                resolution_clone,
             );
             if let Err(e) = rt.block_on(future) {
                 eprintln!("[Livestream] write_fmp4 error: {e:?}");
@@ -669,7 +700,11 @@ struct RpiCameraVideoParameters {
 
 impl RpiCameraVideoParameters {
     pub fn new(sps: Vec<u8>, pps: Vec<u8>, dimensions: CameraResolution) -> Self {
-        Self { sps, pps, dimensions }
+        Self {
+            sps,
+            pps,
+            dimensions,
+        }
     }
 }
 
@@ -757,7 +792,10 @@ impl CodecParameters for RpiCameraVideoParameters {
     }
 
     fn get_dimensions(&self) -> (u32, u32) {
-        ((self.dimensions.width as u32) << 16, (self.dimensions.height as u32) << 16)
+        (
+            (self.dimensions.width as u32) << 16,
+            (self.dimensions.height as u32) << 16,
+        )
     }
 }
 

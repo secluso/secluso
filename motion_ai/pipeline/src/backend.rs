@@ -36,7 +36,10 @@ struct FrontEvent {
 
 // Normalizes a UUID-like string into the standard lowercase dashed format.
 fn canon_uuid_like(s: &str) -> String {
-    let t = s.trim().trim_matches(|c| c == '{' || c == '}').to_lowercase();
+    let t = s
+        .trim()
+        .trim_matches(|c| c == '{' || c == '}')
+        .to_lowercase();
     // already dashed UUID?
     if t.len() == 36
         && t.as_bytes().get(8) == Some(&b'-')
@@ -451,7 +454,10 @@ async fn app_js_route(
 #[get("/sessions?<q..>")]
 async fn get_sessions(state: &State<AppState>, q: Option<SessionQuery>) -> Json<SessionPage> {
     let q = q.unwrap_or_default();
-    let limit = q.limit.unwrap_or(DEFAULT_SESSION_LIMIT).clamp(1, MAX_SESSION_LIMIT);
+    let limit = q
+        .limit
+        .unwrap_or(DEFAULT_SESSION_LIMIT)
+        .clamp(1, MAX_SESSION_LIMIT);
     let offset = q.offset.unwrap_or(0);
 
     let ids = state.session_ids.read().unwrap();
@@ -719,31 +725,37 @@ fn build_series_from_telemetry(path: &Path, tail: Option<usize>) -> Result<Serie
                     as_f32_any(&v, &["ram_pct", "ram", "mem_pct", "mem"]),
                     as_f32_any(&v, &["temp_c", "temp", "temp_celsius"]),
                 ) {
-                    push_tail(&mut health, SeriesHealth {
-                        ts,
-                        cpu,
-                        ram,
-                        temp,
-                        run: run_key_from_json(&v),
-                    });
+                    push_tail(
+                        &mut health,
+                        SeriesHealth {
+                            ts,
+                            cpu,
+                            ram,
+                            temp,
+                            run: run_key_from_json(&v),
+                        },
+                    );
                 }
             }
             "tick_stats" | "tick" => {
                 let ts = as_u128_opt(&v, "ts");
                 let q = as_usize_any(&v, &["event_queue_len", "queue_len", "queue"]);
-                let mq = as_usize_any(&v, &["max_event_queue_len", "max_queue_len", "max_queue"])
-                    .or(q);
+                let mq =
+                    as_usize_any(&v, &["max_event_queue_len", "max_queue_len", "max_queue"]).or(q);
                 let shf = as_bool_any(&v, &["standby_has_frame", "standby"]).unwrap_or(false);
                 let ahf = as_bool_any(&v, &["active_has_frame", "active"]).unwrap_or(false);
                 if let (Some(ts), Some(q), Some(mq)) = (ts, q, mq) {
-                    push_tail_tick(&mut ticks, SeriesTick {
-                        ts,
-                        queue: q,
-                        max_queue: mq,
-                        standby: shf,
-                        active: ahf,
-                        run: run_key_from_json(&v),
-                    });
+                    push_tail_tick(
+                        &mut ticks,
+                        SeriesTick {
+                            ts,
+                            queue: q,
+                            max_queue: mq,
+                            standby: shf,
+                            active: ahf,
+                            run: run_key_from_json(&v),
+                        },
+                    );
                 }
             }
             _ => { /* ignore */ }
@@ -906,7 +918,10 @@ fn build_events_from_telemetry(path: &Path, tail: Option<usize>) -> (Vec<FrontEv
                     v.get("threshold").and_then(|x| x.as_u64()),
                     v.get("w_b").and_then(|x| x.as_f64()),
                 ) {
-                    push_ev(format!("Motion pts {}/{} thr {} w_b {}", cp, tp, th, w_b), None);
+                    push_ev(
+                        format!("Motion pts {}/{} thr {} w_b {}", cp, tp, th, w_b),
+                        None,
+                    );
                 }
             }
             "detections_summary" => {
@@ -923,7 +938,10 @@ fn build_events_from_telemetry(path: &Path, tail: Option<usize>) -> (Vec<FrontEv
                         let max = row.get(3).and_then(|x| x.as_f64()).unwrap_or(0.0) as f32;
                         stats.push((label as i32, count as usize, avg, max));
                     }
-                    stats.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.3.partial_cmp(&a.3).unwrap_or(Ordering::Equal)));
+                    stats.sort_by(|a, b| {
+                        b.1.cmp(&a.1)
+                            .then_with(|| b.3.partial_cmp(&a.3).unwrap_or(Ordering::Equal))
+                    });
                     let total: usize = stats.iter().map(|(_, count, _, _)| *count).sum();
                     let mut parts: Vec<String> = stats
                         .iter()

@@ -3554,7 +3554,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",
@@ -3738,6 +3740,7 @@ dependencies = [
  "base64-url",
  "bincode",
  "image",
+ "libc",
  "log",
  "openmls",
  "openmls_basic_credential",
@@ -3748,6 +3751,7 @@ dependencies = [
  "qrcode",
  "rand 0.9.4",
  "reqwest",
+ "rustls",
  "serde",
  "serde_derive",
  "serde_json",
@@ -3768,6 +3772,7 @@ name = "secluso-motion-ai"
 version = "1.0.2"
 dependencies = [
  "anyhow",
+ "cfg-if",
  "chrono",
  "crossbeam-channel",
  "fast_image_resize",

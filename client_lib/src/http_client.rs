@@ -15,6 +15,15 @@ use std::path::Path;
 use std::time::Duration;
 use std::env;
 
+/// Installs the process-wide rustls crypto provider for the ring backend.
+#[cfg(feature = "crypto-ring")]
+pub fn install_crypto_provider() {
+    // install_default() errors only if a provider is already installed.
+    if rustls::crypto::ring::default_provider().install_default().is_err() {
+        log::warn!("[Pairing] rustls crypto provider was already installed. Expected ring");
+    }
+}
+
 // Some of these constants are based on the ones in server/main.rs.
 const MAX_MOTION_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50 mebibytes
 const MAX_LIVESTREAM_FILE_SIZE: u64 = 20 * 1024 * 1024; // 20 mebibytes

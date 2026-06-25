@@ -1,12 +1,17 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
 use crate::logic::pipeline::RunId;
-use crate::ml::models::DetectionType;
-use crate::ml::models::{BoxInfo, DetectionResult};
+
+cfg_if::cfg_if! {
+    if #[cfg(feature = "ai")] {
+        use crate::ml::models::{DetectionType, BoxInfo, DetectionResult};
+        use imageproc::{drawing::draw_hollow_rect_mut, rect::Rect};
+        use image::Rgb;
+    }
+}
+
 use flume::{Receiver, Sender};
-use image::{GrayImage, Rgb, RgbImage};
-use imageproc::drawing::draw_hollow_rect_mut;
-use imageproc::rect::Rect;
+use image::{GrayImage, RgbImage};
 use log::{debug, warn};
 use once_cell::sync::Lazy;
 use rayon::iter::IndexedParallelIterator;
@@ -42,6 +47,7 @@ pub struct RawFrame {
     pub timestamp: SystemTime,
     pub width: usize,
     pub height: usize,
+    #[cfg(feature = "ai")]
     pub detection_result: Option<DetectionResult>,
     pub dma_aligned: bool,
 }
@@ -184,7 +190,7 @@ fn is_run_rejected(run_id: &str) -> bool {
     REJECTED_RUNS
         .read()
         .ok()
-        .map_or(false, |set| set.contains(run_id))
+        .is_some_and(|set| set.contains(run_id))
 }
 
 fn is_rejected_path(path: &Path) -> bool {
@@ -246,7 +252,7 @@ impl RawFrame {
         session_id: &str,
         run_id: &RunId,
         file_name: &str,
-        draw_bb: bool,
+        #[cfg(feature = "ai")] draw_bb: bool,
     ) -> image::ImageResult<String> {
         if !SAVE_IMAGES.load(Ordering::Relaxed) {
             return Ok("".into());
@@ -291,6 +297,7 @@ impl RawFrame {
         use image::imageops::FilterType;
         img = image::imageops::resize(&img, 416, 416, FilterType::CatmullRom);
 
+        #[cfg(feature = "ai")]
         if draw_bb && let Some(det) = &self.detection_result {
             img = self.draw_boxes(img, &det.results)
         }
@@ -331,6 +338,7 @@ impl RawFrame {
     }
 
     /// Maps a label ID to a color using a fixed color palette. Used for drawing bounding boxes.
+    #[cfg(feature = "ai")]
     fn get_color_for_label(label: i32) -> [u8; 3] {
         let color_palette: [[u8; 3]; 5] = [
             [255, 0, 0],   // Red
@@ -344,6 +352,7 @@ impl RawFrame {
     }
 
     /// Draws bounding boxes onto an RGB image for detections that are not classified as 'Other'.
+    #[cfg(feature = "ai")]
     fn draw_boxes(&self, mut img: RgbImage, boxes: &Vec<BoxInfo>) -> RgbImage {
         let len = boxes.len();
         debug!("Drawing {len} boxes");
@@ -419,6 +428,7 @@ impl RawFrame {
             timestamp: SystemTime::now(),
             width: actual_width,
             height: actual_height,
+            #[cfg(feature = "ai")]
             detection_result: None,
             dma_aligned: true,
         }

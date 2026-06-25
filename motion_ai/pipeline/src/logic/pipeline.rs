@@ -14,7 +14,7 @@ use crate::logic::intent::{Intent, execute_intent};
 use crate::logic::stages::{PipelineStage, StageResult, StageType};
 use crate::logic::telemetry::{TelemetryPacket, TelemetryRun};
 use crate::logic::timer::{Timer, TimerManager};
-use crate::ml::models::{DetectionType, init_model_paths};
+
 use anyhow::{Context, Error};
 use log::debug;
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,9 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 use std::default::Default;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+#[cfg(feature = "ai")]
+use crate::ml::models::{DetectionType, init_model_paths};
 
 /// The main sequential container for executing image processing stages.
 /// Each stage handles a specific task (e.g., motion, detection, inference).
@@ -186,6 +189,7 @@ pub struct PipelineController {
     last_health_change: Option<(HealthState, Instant)>,
     last_activity_change: Option<(ActivityState, Instant)>,
     max_event_queue_len: usize,
+    run_detections: bool,
 }
 
 /// Holds the current active and standby frame references used by the pipeline.
@@ -201,6 +205,7 @@ pub struct PipelineHostData {
     pub pipeline: Pipeline,
     pub(crate) timer: Box<dyn Timer>,
     pub frame_buffer: FrameBuffer,
+    #[cfg(feature = "ai")]
     pub latest_detections: Vec<DetectionType>,
     pub telemetry: TelemetryRun,
 }
@@ -210,6 +215,7 @@ pub struct PipelineHostData {
 pub struct PipelineResult {
     pub time: Instant,
     pub motion: bool,
+    #[cfg(feature = "ai")]
     pub detections: Vec<DetectionType>,
     pub thumbnail: RawFrame,
 }
@@ -218,7 +224,11 @@ pub struct PipelineResult {
 /// and reacting to state transitions.
 impl PipelineController {
     /// Constructs and initializes the pipeline controller and FSM registries.
-    pub fn new(pipeline: Pipeline, write_logs: bool, save_all: bool) -> Result<Self, anyhow::Error> {
+    pub fn new(
+        pipeline: Pipeline,
+        write_logs: bool,
+        save_all: bool,
+    ) -> Result<Self, anyhow::Error> {
         let mut activity_registry: FsmRegistry<ActivityState> = FsmRegistry {
             handlers: HashMap::new(),
         };
@@ -248,6 +258,7 @@ impl PipelineController {
 
         health_registry.register(HealthState::CriticalTemp, Box::new(CriticalTempState));
 
+        #[cfg(feature = "ai")]
         init_model_paths()?; // We should occasionally query this to hot-reload. But for this purpose, initializing and checking everything is OK is good enough
 
         Ok(Self {
@@ -264,10 +275,17 @@ impl PipelineController {
                     active: None,
                 },
                 telemetry: TelemetryRun::new(write_logs, save_all)?,
+                #[cfg(feature = "ai")]
                 latest_detections: Vec::new(),
             },
             last_activity_change: None,
             max_event_queue_len: 0,
+
+            // By default, it should NOT run detections.
+            // It should only do so when prompted from the main loop.
+            // We could be pairing. We might be recording a motion event. We might be livestreaming.
+            // Either way, we don't need to run unnecessary computations.
+            run_detections: false,
         })
     }
 
@@ -289,12 +307,24 @@ impl PipelineController {
         }
     }
 
+    pub fn set_pipeline_active(&mut self, run_detections: bool) {
+        self.run_detections = run_detections;
+    }
+
     /// Loads a new frame into the standby buffer and queues a NewFrame event.
     pub fn push_frame(&mut self, frame: RawFrame) {
         self.host_data.frame_buffer.standby = Some(frame); // Replace the standby frame with a more recent one.
-        self.host_data
+        // Only enqueue a NewFrame if one isn't already pending. Above already replaces with latest, no need for duplicates.
+        if !self
+            .host_data
             .event_queue
-            .push_back(PipelineEvent::NewFrame); // Should this be an event? We'd only need this to run once per tick, maybe use a boolean field
+            .iter()
+            .any(|e| matches!(e, PipelineEvent::NewFrame))
+        {
+            self.host_data
+                .event_queue
+                .push_back(PipelineEvent::NewFrame);
+        }
     }
 
     /// Begins processing by queuing a MotionStart event.
@@ -317,6 +347,11 @@ impl PipelineController {
     /// Main loop to process events, update health/activity FSMs,
     /// emit telemetry, and dispatch intents.
     pub fn tick(&mut self, temp_label: &'static str) -> Result<bool, anyhow::Error> {
+        // We skip if we're not running detections right now.
+        if !self.run_detections {
+            return Ok(true)
+        }
+
         let time = Instant::now();
 
         // Is there a timer event?
@@ -335,9 +370,8 @@ impl PipelineController {
 
         if let Ok(Some(he)) = health_response {
             self.host_data.event_queue.push_back(he);
-        } else if let Err(e) = health_response {
-            // We should exit. Something's wrong with sensors...
-            return Err(e);
+        } else {
+            health_response?;
         }
 
         self.host_data.event_queue.push_back(PipelineEvent::Tick);
@@ -649,10 +683,11 @@ impl Default for PipelineController {
 /// Macro to concisely build a pipeline using a chained stage definition.
 #[macro_export]
 macro_rules! pipeline {
-    ( $($stage:expr), * $(,)? ) => {{
+     ( $( $(#[$meta:meta])* $stage:path ),* $(,)? ) => {{
         let mut builder = secluso_motion_ai::logic::pipeline::PipelineBuilder::new();
         $(
-        builder = builder.then($stage);
+            $(#[$meta])*
+            { builder = builder.then($stage); }
         )*
         builder.build()
     }};

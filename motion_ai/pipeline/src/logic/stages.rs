@@ -1,21 +1,28 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
+cfg_if::cfg_if! {
+    if #[cfg(feature = "ai")] {
+        use crate::ml::models::DetectionType;
+        use std::collections::HashSet;
+    }
+}
+
 use crate::frame::RawFrame;
 use crate::logic::context::StateContext;
 use crate::logic::pipeline::PipelineResult;
 use crate::logic::telemetry::{TelemetryPacket, TelemetryRun};
-use crate::ml::models::DetectionType;
 use log::debug;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::fmt;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Describes the type of stage within the pipeline (e.g., motion, inference).
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize, Hash, Eq)]
 pub enum StageType {
     Motion,
     Inference,
+    EmitFrameIfDetected,
     Custom(String),
 }
 
@@ -25,6 +32,7 @@ impl fmt::Display for StageType {
         match self {
             StageType::Motion => write!(f, "motion"),
             StageType::Inference => write!(f, "inference"),
+            StageType::EmitFrameIfDetected => write!(f, "emit_frame_if_detected"),
             StageType::Custom(s) => write!(f, "{s}"),
         }
     }
@@ -109,136 +117,187 @@ impl PipelineStage for MotionStage {
     }
 }
 
-/// Performs object detection using the currently active ML model.
-pub struct InferenceStage;
+cfg_if::cfg_if! {
+if #[cfg(feature = "ai")] {
+    /// Performs object detection using the currently active ML model.
+    pub struct InferenceStage;
 
-/// Pipeline stage that runs inference and filters based on required labels (e.g., human detection).
-impl PipelineStage for InferenceStage {
+    /// Pipeline stage that runs inference and filters based on required labels (e.g., human detection).
+    impl PipelineStage for InferenceStage {
+        fn name(&self) -> &'static str {
+            "inference"
+        }
+
+        fn kind(&self) -> StageType {
+            StageType::Inference
+        }
+
+        fn handle(
+            &self,
+            frame: &mut RawFrame,
+            ctx: &mut StateContext,
+            telemetry: &mut TelemetryRun,
+        ) -> Result<StageResult, anyhow::Error> {
+            if !ctx.use_inference {
+                let ts = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis();
+                telemetry.write(&TelemetryPacket::InferenceSkipped {
+                    run_id: ctx.run_id.clone(),
+                    ts,
+                    reason: "use_inference=false",
+                })?;
+                telemetry.reject_run(&ctx.run_id);
+                return Ok(StageResult::Continue);
+            }
+
+            debug!("Inference stage handle called!");
+
+            // Run the current model and handle inference errors.
+            let result = match ctx.active_model.run(frame, telemetry, &ctx.run_id) {
+                Ok(res) => res,
+                Err(e) => {
+                            log::error!("Model run failed: {e:?}");
+                            let ts = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis();
+                            telemetry.write(&TelemetryPacket::DroppedFrame {
+                                run_id: ctx.run_id.clone(),
+                                ts,
+                                reason: "infer_error",
+                            })?;
+                            telemetry.reject_run(&ctx.run_id);
+                            return Ok(StageResult::Fault("Failed to run model".into()));
+                        }
+                    };
+
+                    // Attach detection results to the frame.
+                    frame.detection_result = Some(result.clone());
+
+                    // Save annotated detection frame to disk.
+                    let rel_path = match frame.save_png(
+                        telemetry.run_id.clone().as_str(),
+                        &ctx.run_id,
+                        "det_box",
+                        true,
+                    ) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            log::error!("PNG write error: {e:?}");
+                            let ts = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis();
+                            telemetry.write(&TelemetryPacket::DroppedFrame {
+                                run_id: ctx.run_id.clone(),
+                                ts,
+                                reason: "io_error:save_png",
+                            })?;
+                            telemetry.reject_run(&ctx.run_id);
+                            return Ok(StageResult::Fault("Failed to write image".into()));
+                        }
+                    };
+
+                    let pkt = TelemetryPacket::Detection {
+                        run_id: ctx.run_id.clone(),
+                        frame_rel: rel_path.as_str(),
+                        detections: result.results.len(),
+                        latency_ms: result.runtime.as_millis() as u32,
+                        ts: SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .expect("Time should go forward.")
+                            .as_millis(),
+                    };
+
+                    if let Err(e) = telemetry.write(&pkt) {
+                        log::error!("Telemetry write error: {e:?}");
+                        telemetry.reject_run(&ctx.run_id);
+                        return Ok(StageResult::Fault("Failed to write telemetry".into()));
+                    }
+
+                    // TODO: Make this adjustable.
+                    const REQUIRED_LABEL: DetectionType = DetectionType::Human;
+                    if result.results.iter().any(|b| b.det_type == REQUIRED_LABEL) {
+                        let mut detection_results = HashSet::new();
+                        for box_data in result.results {
+                            match box_data.det_type {
+                                DetectionType::Human | DetectionType::Car | DetectionType::Animal => {
+                                    detection_results.insert(box_data.det_type);
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        debug!("Updating detection results: {}", detection_results.len());
+                        telemetry.approve_run(&ctx.run_id);
+                        Ok(StageResult::Continue)
+                    } else {
+                        let ts = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis();
+                        telemetry.write(&TelemetryPacket::DroppedFrame {
+                            run_id: ctx.run_id.clone(),
+                            ts,
+                            reason: "no_human",
+                        })?;
+                        telemetry.reject_run(&ctx.run_id);
+                        Ok(StageResult::Drop("no human detected".into()))
+                    }
+            }
+        }
+    }
+}
+
+// TODO: Make an end stage that saves the results. Detects if only motion or inference too
+//       Then sets the detections accordingly and the last_detected_frame
+
+pub struct EmitFrameIfDetected;
+
+impl PipelineStage for EmitFrameIfDetected {
     fn name(&self) -> &'static str {
-        "inference"
+        "emit_frame_if_detected"
     }
 
     fn kind(&self) -> StageType {
-        StageType::Inference
+        StageType::EmitFrameIfDetected
     }
 
     fn handle(
         &self,
         frame: &mut RawFrame,
         ctx: &mut StateContext,
-        telemetry: &mut TelemetryRun,
+        _telemetry: &mut TelemetryRun,
     ) -> Result<StageResult, anyhow::Error> {
-        if !ctx.use_inference {
-            let ts = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis();
-            telemetry.write(&TelemetryPacket::InferenceSkipped {
-                run_id: ctx.run_id.clone(),
-                ts,
-                reason: "use_inference=false",
-            })?;
-            telemetry.reject_run(&ctx.run_id);
-            return Ok(StageResult::Continue);
-        }
+        // If this stage is reached, that means that it passed detection.
+        // Otherwise, it would be StageResult::Drop.
 
-        debug!("Inference stage handle called!");
-
-        // Run the current model and handle inference errors.
-        let result = match ctx.active_model.run(frame, telemetry, &ctx.run_id) {
-            Ok(res) => res,
-            Err(e) => {
-                log::error!("Model run failed: {e:?}");
-                let ts = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis();
-                telemetry.write(&TelemetryPacket::DroppedFrame {
-                    run_id: ctx.run_id.clone(),
-                    ts,
-                    reason: "infer_error",
-                })?;
-                telemetry.reject_run(&ctx.run_id);
-                return Ok(StageResult::Fault("Failed to run model".into()));
-            }
-        };
-
-        // Attach detection results to the frame.
-        frame.detection_result = Some(result.clone());
-
-        // Save annotated detection frame to disk.
-        let rel_path = match frame.save_png(
-            telemetry.run_id.clone().as_str(),
-            &ctx.run_id,
-            "det_box",
-            true,
-        ) {
-            Ok(p) => p,
-            Err(e) => {
-                log::error!("PNG write error: {e:?}");
-                let ts = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis();
-                telemetry.write(&TelemetryPacket::DroppedFrame {
-                    run_id: ctx.run_id.clone(),
-                    ts,
-                    reason: "io_error:save_png",
-                })?;
-                telemetry.reject_run(&ctx.run_id);
-                return Ok(StageResult::Fault("Failed to write image".into()));
-            }
-        };
-
-        let pkt = TelemetryPacket::Detection {
-            run_id: ctx.run_id.clone(),
-            frame_rel: rel_path.as_str(),
-            detections: result.results.len(),
-            latency_ms: result.runtime.as_millis() as u32,
-            ts: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("Time should go forward.")
-                .as_millis(),
-        };
-
-        if let Err(e) = telemetry.write(&pkt) {
-            log::error!("Telemetry write error: {e:?}");
-            telemetry.reject_run(&ctx.run_id);
-            return Ok(StageResult::Fault("Failed to write telemetry".into()));
-        }
-
-        const REQUIRED_LABEL: DetectionType = DetectionType::Human;
-        if result.results.iter().any(|b| b.det_type == REQUIRED_LABEL) {
-            let mut detection_results = HashSet::new();
-            for box_data in result.results {
-                match box_data.det_type {
-                    DetectionType::Human | DetectionType::Car | DetectionType::Animal => {
-                        detection_results.insert(box_data.det_type);
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "ai")] {
+                let mut detection_results = HashSet::new();
+                if let Some(result) = &frame.detection_result {
+                    for box_data in &result.results {
+                        match box_data.det_type {
+                            DetectionType::Human | DetectionType::Car | DetectionType::Animal => {
+                                detection_results.insert(box_data.det_type.clone());
+                            }
+                            _ => {}
+                        }
                     }
-                    _ => {}
                 }
             }
-            ctx.last_detection = Some(PipelineResult {
-                time: Instant::now(),
-                motion: true,
-                detections: detection_results.clone().into_iter().collect(),
-                thumbnail: frame.clone(),
-            });
-            debug!("Updating detection results: {}", detection_results.len());
-            telemetry.approve_run(&ctx.run_id);
-            Ok(StageResult::Continue)
-        } else {
-            let ts = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis();
-            telemetry.write(&TelemetryPacket::DroppedFrame {
-                run_id: ctx.run_id.clone(),
-                ts,
-                reason: "no_human",
-            })?;
-            telemetry.reject_run(&ctx.run_id);
-            Ok(StageResult::Drop("no human detected".into()))
         }
+
+        ctx.last_detection = Some(PipelineResult {
+            time: Instant::now(),
+            motion: true,
+            #[cfg(feature = "ai")]
+            detections: detection_results.into_iter().collect(),
+            thumbnail: frame.clone(),
+        });
+
+        Ok(StageResult::Continue)
     }
 }

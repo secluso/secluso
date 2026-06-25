@@ -8,7 +8,6 @@ use crate::logic::fsm::{StateHandler, TransitionDecision};
 use crate::logic::intent::Intent;
 use crate::logic::pipeline::PipelineEvent::TemperatureDrop;
 use crate::logic::pipeline::{Pipeline, PipelineEvent};
-use crate::ml::models::ModelKind;
 use std::fmt;
 
 use crate::logic::telemetry::{TelemetryPacket, TelemetryRun};
@@ -19,6 +18,9 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use sysinfo::{Components, CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 use thiserror::Error;
+
+#[cfg(feature = "ai")]
+use crate::ml::models::ModelKind;
 
 /// Represents the health status of the system based on temperature and resource usage.
 #[derive(Hash, Eq, PartialEq, Clone, Debug, Copy, Serialize, Deserialize)]
@@ -132,7 +134,9 @@ impl StateHandler<HealthState> for NormalState {
                 to: HealthState::HighTemp,
                 reason: "temp high".into(),
                 intents: vec![
+                    #[cfg(feature = "ai")]
                     Intent::SwitchModel(ModelKind::Fast),
+                    #[cfg(feature = "ai")]
                     Intent::AllowInference(true),
                 ],
             },
@@ -140,7 +144,9 @@ impl StateHandler<HealthState> for NormalState {
                 to: HealthState::ResourceLow,
                 reason: "cpu/ram high".into(),
                 intents: vec![
+                    #[cfg(feature = "ai")]
                     Intent::SwitchModel(ModelKind::Fast),
+                    #[cfg(feature = "ai")]
                     Intent::AllowInference(true),
                 ],
             },
@@ -170,7 +176,9 @@ impl StateHandler<HealthState> for HighTempState {
                 to: HealthState::Normal,
                 reason: "cooled below high".into(),
                 intents: vec![
+                    #[cfg(feature = "ai")]
                     Intent::SwitchModel(ModelKind::Accurate), // <-- back to big model
+                    #[cfg(feature = "ai")]
                     Intent::AllowInference(true),
                 ],
             },
@@ -195,7 +203,9 @@ impl StateHandler<HealthState> for ResourceLowState {
                 to: HealthState::Normal,
                 reason: "resources normal".into(),
                 intents: vec![
+                    #[cfg(feature = "ai")]
                     Intent::SwitchModel(ModelKind::Accurate), // <-- restore
+                    #[cfg(feature = "ai")]
                     Intent::AllowInference(true),
                 ],
             },

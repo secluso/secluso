@@ -5,5 +5,6 @@ pub mod backend;
 mod config;
 pub mod frame;
 pub mod logic;
+#[cfg(feature = "ai")]
 pub mod ml;
 pub mod motion;

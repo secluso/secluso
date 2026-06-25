@@ -5,17 +5,20 @@ use crate::logic::health_states::HealthState;
 use crate::logic::pipeline::{PipelineEvent, PipelineHostData, RunId};
 use crate::logic::stages::{StageResult, StageType};
 use crate::logic::telemetry::TelemetryPacket;
-use crate::ml::models::ModelKind;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[cfg(feature = "ai")]
+use crate::ml::models::ModelKind;
 
 /// Represents actions or commands that can be issued within the pipeline to modify behavior, log transitions, or trigger processing stages.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Intent {
-    RunStage(StageType),    // Triggers execution of a specific pipeline stage
-    StartTimer(Duration),   // Starts a countdown timer
-    CancelTimer,            // Cancels any running timer
-    AllowInference(bool),   // Enables or disables ML inference
+    RunStage(StageType),  // Triggers execution of a specific pipeline stage
+    StartTimer(Duration), // Starts a countdown timer
+    CancelTimer,          // Cancels any running timer
+    AllowInference(bool), // Enables or disables ML inference
+    #[cfg(feature = "ai")]
     SwitchModel(ModelKind), // Switches active ML model
     LogActivity {
         // Logs an activity state transition
@@ -72,6 +75,7 @@ pub(crate) fn execute_intent(
                     host_data.telemetry.run_id.clone().as_str(),
                     &host_data.ctx.run_id,
                     "acceptance",
+                    #[cfg(feature = "ai")]
                     false,
                 )?;
             }
@@ -153,10 +157,16 @@ pub(crate) fn execute_intent(
 
         // Enables or disables the inference stage based on resource or health context.
         Intent::AllowInference(choice) => {
+            // If it's true while we have AI disabled, we should panic.
+            #[cfg(feature = "ai")]
+            if *choice {
+                panic!("AllowInference cannot be enabled when the AI feature is enabled");
+            }
             host_data.ctx.use_inference = *choice; // todo: check this flag when running InferenceStage to either run the stage or just return a blanket Continue
         }
 
         // Switches the active model and logs the transition based on current health context.
+        #[cfg(feature = "ai")]
         Intent::SwitchModel(model) => {
             let prev_model = host_data.ctx.active_model;
             host_data.ctx.active_model = *model;

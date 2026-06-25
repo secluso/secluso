@@ -134,16 +134,16 @@ impl ManualCamera {
 
                 let video_path = PathBuf::from(&tokens[1]);
                 if !video_path.exists() {
-                    return Err(format!("Video file does not exist: {}", video_path.display()));
+                    return Err(format!(
+                        "Video file does not exist: {}",
+                        video_path.display()
+                    ));
                 }
 
                 let thumbnail_path = if let Some(thumbnail_token) = tokens.get(2) {
                     let path = PathBuf::from(thumbnail_token);
                     if !path.exists() {
-                        return Err(format!(
-                            "Thumbnail file does not exist: {}",
-                            path.display()
-                        ));
+                        return Err(format!("Thumbnail file does not exist: {}", path.display()));
                     }
 
                     Some(path)
@@ -247,11 +247,12 @@ impl ManualCamera {
     }
 
     fn default_webcam_command() -> String {
-        let device = std::env::var("SECLUSO_MANUAL_WEBCAM_DEVICE").unwrap_or_else(|_| "FaceTime HD Camera".to_string());
+        let device = std::env::var("SECLUSO_MANUAL_WEBCAM_DEVICE")
+            .unwrap_or_else(|_| "FaceTime HD Camera".to_string());
         let frame_rate =
             std::env::var("SECLUSO_MANUAL_WEBCAM_FPS").unwrap_or_else(|_| "30".to_string());
-        let video_size = std::env::var("SECLUSO_MANUAL_WEBCAM_SIZE")
-            .unwrap_or_else(|_| "640x480".to_string());
+        let video_size =
+            std::env::var("SECLUSO_MANUAL_WEBCAM_SIZE").unwrap_or_else(|_| "640x480".to_string());
         let input_pixel_format = std::env::var("SECLUSO_MANUAL_WEBCAM_PIXEL_FORMAT")
             .unwrap_or_else(|_| "nv12".to_string());
 

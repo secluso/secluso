@@ -124,8 +124,7 @@ impl DeliveryMonitor {
         file.sync_all().unwrap();
 
         //delete old state files
-        let d_files =
-            Self::get_state_files_sorted(&self.state_dir, "delivery_monitor_").unwrap();
+        let d_files = Self::get_state_files_sorted(&self.state_dir, "delivery_monitor_").unwrap();
         assert!(d_files[0] == "delivery_monitor_".to_owned() + &current_timestamp.to_string());
         for f in &d_files[1..] {
             let _ = fs::remove_file(self.state_dir.clone() + "/" + f);
@@ -278,7 +277,9 @@ impl DeliveryMonitor {
 
     pub fn get_thumbnail_file_path(&self, info: &ThumbnailMetaInfo) -> PathBuf {
         let video_dir_path = Path::new(&self.thumbnail_dir);
-        video_dir_path.join(ThumbnailMetaInfo::get_filename_from_timestamp(info.timestamp))
+        video_dir_path.join(ThumbnailMetaInfo::get_filename_from_timestamp(
+            info.timestamp,
+        ))
     }
 
     pub fn get_enc_video_file_path(&self, info: &VideoInfo) -> PathBuf {

@@ -5,10 +5,14 @@ edition = "2021"
 authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
 
 [features]
-default = ["logging"]
+default = ["logging", "crypto-aws-lc"]
 logging = ["log"]
+# crypto-ring on armv6 (Pi Zero W)
+crypto-aws-lc = ["secluso-client-lib/crypto-aws-lc"]
+crypto-ring = ["secluso-client-lib/crypto-ring"]
 ip = ["dep:rpassword", "dep:reqwest", "dep:http-auth", "dep:linfa", "dep:linfa-clustering", "dep:retina", "dep:serde_yaml2", "dep:ndarray", "dep:futures", "secluso-client-lib/camera_secret_qrcode"]
 raspberry = ["dep:secluso-motion-ai"]
+use_ai = ["secluso-motion-ai/ai"]
 manual = []
 telemetry = [] # todo: dep on the motion_ai crate
 test = []

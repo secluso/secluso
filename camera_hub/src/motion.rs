@@ -6,7 +6,7 @@ use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
 use image::RgbImage;
 use secluso_client_lib::http_client::HttpClient;
 use secluso_client_lib::mls_client::MlsClient;
-use secluso_client_lib::mls_clients::{MAX_OFFLINE_WINDOW};
+use secluso_client_lib::mls_clients::MAX_OFFLINE_WINDOW;
 use secluso_client_lib::thumbnail_meta_info::{GeneralDetectionType, ThumbnailMetaInfo};
 use secluso_client_lib::video::{encrypt_thumbnail_file, encrypt_video_file};
 use std::io;
