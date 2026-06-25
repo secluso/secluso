@@ -7,7 +7,10 @@ use std::{
     collections::VecDeque,
     io,
     process::Command,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::Duration,
 };
@@ -81,6 +84,9 @@ pub struct RaspberryPiCamera {
     sps_frame: Frame,
     pps_frame: Frame,
     motion_detection: Arc<Mutex<PipelineController>>,
+    // Mirrors the pipeline's run_detections.
+    // When false (while recording), the raw-frame reader thread closes the secondary-stream socket, so rpicam stops sending raw frames
+    motion_active: Arc<AtomicBool>,
     resolution: CameraResolution,
 }
 
@@ -148,6 +154,8 @@ impl RaspberryPiCamera {
         let resolution: CameraResolution =
             Self::fetch_resolution().expect("A supported camera module was not found");
 
+        let motion_active = Arc::new(AtomicBool::new(false));
+
         // Start the new shared stream.
         rpi_dual_stream::start(
             resolution.width,
@@ -158,6 +166,7 @@ impl RaspberryPiCamera {
             Arc::clone(&frame_queue),
             ps_tx,
             motion_fps as u8,
+            Arc::clone(&motion_active),
         )
         .expect("Failed to start shared stream");
 
@@ -194,6 +203,7 @@ impl RaspberryPiCamera {
             sps_frame,
             pps_frame,
             motion_detection,
+            motion_active,
             resolution,
         }
     }
@@ -613,6 +623,7 @@ impl Camera for RaspberryPiCamera {
     }
 
     fn set_motion_active(&self, active: bool) {
+        self.motion_active.store(active, Ordering::Relaxed);
         self.motion_detection.lock().unwrap().set_pipeline_active(active);
     }
 

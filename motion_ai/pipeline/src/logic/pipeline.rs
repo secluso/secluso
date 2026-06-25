@@ -314,9 +314,17 @@ impl PipelineController {
     /// Loads a new frame into the standby buffer and queues a NewFrame event.
     pub fn push_frame(&mut self, frame: RawFrame) {
         self.host_data.frame_buffer.standby = Some(frame); // Replace the standby frame with a more recent one.
-        self.host_data
+        // Only enqueue a NewFrame if one isn't already pending. Above already replaces with latest, no need for duplicates.
+        if !self
+            .host_data
             .event_queue
-            .push_back(PipelineEvent::NewFrame); // Should this be an event? We'd only need this to run once per tick, maybe use a boolean field
+            .iter()
+            .any(|e| matches!(e, PipelineEvent::NewFrame))
+        {
+            self.host_data
+                .event_queue
+                .push_back(PipelineEvent::NewFrame);
+        }
     }
 
     /// Begins processing by queuing a MotionStart event.

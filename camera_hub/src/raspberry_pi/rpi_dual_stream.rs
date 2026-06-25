@@ -6,6 +6,7 @@
 use bytes::Buf;
 use std::collections::VecDeque;
 use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::SystemTime;
@@ -34,6 +35,7 @@ pub fn start(
     frame_queue: Arc<Mutex<VecDeque<Frame>>>,
     ps_tx: Sender<Frame>,
     motion_fps: u8,
+    motion_active: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // For 8-bit yuv420p, frame size = width * height * 3/2 bytes.
     // However, we need to take into account how the width is padded to 64-bytes.
@@ -93,12 +95,12 @@ pub fn start(
                                 }
                             }
                             Err(e) => {
-                                println!("Got error {:?}", e);
+                                println!("Got error {e:?}");
                             }
                         }
                     }
                     Err(e) => {
-                        eprintln!("Error reading rpicam stdout: {:?}", e);
+                        eprintln!("Error reading rpicam stdout: {e:?}");
                         break;
                     }
                 }
@@ -107,37 +109,37 @@ pub fn start(
     }
 
     // Spawn a thread that will continuously read full frames from a UNIX domain socket in the modified rpicam-vid
+    // Only holds the connection open while detection is active.
+    // Re-connect after motion/livestream event is sent out.
     {
-        thread::spawn(move || {
-            let stream_attempt: Option<UnixStream> = connect_to_socket();
-            if stream_attempt.is_none() {
+        thread::spawn(move || loop {
+            // Park (cheaply) until detection is active.
+            while !motion_active.load(Ordering::Relaxed) {
+                sleep(Duration::from_millis(100));
+            }
+
+            // (Re)connect and request our motion FPS.
+            let Some(mut stream) = connect_to_socket() else {
                 panic!("Was unable to connect to the rpicam-vid socket. Are you using the built rpicam-apps secluso fork?");
-            }
-
-            let mut stream = stream_attempt.unwrap(); // Unwrap will work since we checked is_none()
-
-            // Write the motion_fps we want the output to synchronize to for maximum efficiency.
+            };
             if let Err(e) = stream.write(&[motion_fps]) {
-                panic!("Failed to write Motion FPS to rpicam-vid: {:?}", e);
+                panic!("Failed to write Motion FPS to rpicam-vid: {e:?}");
             }
 
-            // Continuously read in frames from the secondary stream
-            loop {
+            // Continuously read in frames from the secondary stream (while connection stays active)
+            while motion_active.load(Ordering::Relaxed) {
                 let mut buffer = vec![0u8; yuv_frame_size];
-
                 match stream.read_exact(&mut buffer) {
-                    Ok(_) => {
+                    Ok(()) => {
                         let raw_frame = RawFrame::create_from_buffer(buffer, width, height);
-                        {
-                            let mut lock = pipeline_controller.lock().unwrap();
-                            lock.push_frame(raw_frame);
-                        }
+                        let mut lock = pipeline_controller.lock().unwrap();
+                        lock.push_frame(raw_frame);
                     }
                     Err(e) => {
-                        panic!(
-                            "Error reading from UNIX domain socket from secondary stream: {:?}",
-                            e
+                        eprintln!(
+                            "Error reading from secondary stream socket: {e:?}; will reconnect.",
                         );
+                        break;
                     }
                 }
             }
