@@ -3740,6 +3740,7 @@ dependencies = [
  "base64-url",
  "bincode",
  "image",
+ "libc",
  "log",
  "openmls",
  "openmls_basic_credential",

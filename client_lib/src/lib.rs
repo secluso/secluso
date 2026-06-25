@@ -1,6 +1,7 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
 pub mod config;
+pub mod crypto_selftest;
 pub mod identity;
 pub mod mls_client;
 pub mod mls_clients;

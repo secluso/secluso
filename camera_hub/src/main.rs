@@ -131,13 +131,20 @@ struct Args {
     flag_save_all: bool,
 }
 
-fn main() -> io::Result<()> {
+fn main() -> anyhow::Result<()> {
     let version = env!("CARGO_PKG_NAME").to_string() + ", version: " + env!("CARGO_PKG_VERSION");
     env_logger::init();
 
     // ring TLS backend (armv6/Pi Zero W) needs provider installed before any HTTPS request
     #[cfg(feature = "crypto-ring")]
     secluso_client_lib::http_client::install_crypto_provider();
+
+    // SECLUSO_CRYPTO_SELFTEST=1 RUST_LOG=info /usr/bin/secluso-camera-hub
+    // Runs MLS in hot loop on the otherwise idle process, then exits without starting the camera pipeline
+    if std::env::var_os("SECLUSO_CRYPTO_SELFTEST").is_some() {
+        secluso_client_lib::crypto_selftest::run()?;
+        return Ok(());
+    }
 
     let args: Args = Docopt::new(USAGE)
         .map(|d| d.help(true))

@@ -7,6 +7,7 @@
 
 use super::identity::Identity;
 use super::openmls_rust_persistent_crypto::OpenMlsRustPersistentCrypto;
+use crate::crypto_selftest::thread_cpu_time;
 use openmls_traits::{storage::StorageProvider as StorageProviderTrait};
 use crate::pairing;
 use openmls::prelude::*;
@@ -853,13 +854,16 @@ impl MlsClient {
         group.mls_group.set_aad(group_aad.as_bytes().to_vec());
 
         let create_start = Instant::now();
+        let create_cpu_start = thread_cpu_time().expect("thread cpu time failed");
         let message_out = group
             .mls_group
             .create_message(&self.provider, &self.identity.signer, bytes)
             .map_err(|e| io::Error::other(format!("{e}")))?;
+        let create_cpu_end = thread_cpu_time().expect("thread cpu time failed");
         log::debug!(
-            "encrypt: create_message took {}ms for {} input bytes",
+            "encrypt: create_message took {}ms wall / {}ms cpu for {} input bytes",
             create_start.elapsed().as_millis(),
+            (create_cpu_end - create_cpu_start).as_millis(),
             bytes.len()
         );
 
