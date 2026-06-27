@@ -17,7 +17,7 @@ use secluso_client_lib::mls_clients::{
     CONFIG, FCM, LIVESTREAM, MLS_CLIENT_TAGS, MOTION, NUM_MLS_CLIENTS, THUMBNAIL,
     NUM_COMMON_MLS_CLIENTS, NUM_DEDICATED_MLS_CLIENTS,
 };
-use secluso_client_lib::pairing::{self, MAX_ALLOWED_MSG_LEN};
+use secluso_client_lib::pairing::{self, MAX_ALLOWED_MSG_LEN, generate_add_app_secret};
 use secluso_client_lib::video::{encrypt_video_file, decrypt_video_file, decrypt_thumbnail_file};
 use openmls::prelude::KeyPackage;
 use serde::{Deserialize, Serialize};
@@ -781,6 +781,12 @@ pub fn process_heartbeat_config_response(
             )))
         }
     }
+}
+
+pub fn get_add_app_secret() -> io::Result<String> {
+    generate_add_app_secret()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+
 }
 
 pub fn get_key_packages(clients: &mut Option<Box<Clients>>) -> io::Result<Vec<u8>> {

@@ -8,8 +8,21 @@ use reqwest::Url;
 use secluso_server_backbone::types::{IosRelayBinding, NotificationTarget};
 use std::{env, time::Duration};
 use web_push_native::{p256, Auth, WebPushBuilder};
+use rocket::tokio::fs as tokio_fs;
+use rocket::tokio::io::AsyncWriteExt;
+use std::collections::HashSet;
+use std::io::{self, ErrorKind};
+use std::path::Path;
+use std::sync::OnceLock;
+use rocket::tokio::sync::Mutex;
+
+use crate::security::check_path_sandboxed;
 
 pub const UNIFIEDPUSH_ALLOWED_HOSTS_ENV: &str = "SECLUSO_UNIFIEDPUSH_ALLOWED_HOSTS";
+const LEGACY_NOTIFICATION_TARGET_FILE: &str = "notification_target.json";
+const NOTIFICATION_TARGETS_DIR: &str = "notification_targets";
+const NOTIFICATION_TARGET_FILE_PREFIX: &str = "notification_target_";
+const NOTIFICATION_TARGET_FILE_SUFFIX: &str = ".json";
 
 // Hosted distributors we intentionally support out of the box. Self-hosted
 // backends must be added explicitly via SECLUSO_UNIFIEDPUSH_ALLOWED_HOSTS.
@@ -300,6 +313,215 @@ pub async fn send_notification(
         anyhow::bail!("UnifiedPush endpoint returned {}: {}", status, body);
     }
     Ok(())
+}
+
+fn is_notification_target_file(file_name: &str) -> bool {
+    file_name.starts_with(NOTIFICATION_TARGET_FILE_PREFIX)
+        && file_name.ends_with(NOTIFICATION_TARGET_FILE_SUFFIX)
+}
+
+fn notification_target_key(target: &NotificationTarget) -> String {
+    let platform = target.platform.to_ascii_lowercase();
+
+    if platform == "android_unified" {
+        return format!(
+            "android_unified:{}",
+            target
+                .unifiedpush_endpoint_url
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+        );
+    }
+
+    if platform == "ios" {
+        if let Some(binding) = target.ios_relay_binding.as_ref() {
+            return format!(
+                "ios:{}:{}",
+                binding.hub_id.trim(),
+                binding.app_install_id.trim()
+            );
+        }
+
+        return "ios:placeholder".to_string();
+    }
+
+    serde_json::to_string(target).unwrap_or(platform)
+}
+
+static NOTIFICATION_TARGET_STORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+// FIXME: we only add notification_targets, but never remove stale ones.
+pub(crate) async fn store_notification_target(
+    root: &Path,
+    target: &NotificationTarget,
+) -> io::Result<()> {
+    // Two overlapping calls to store_notification_target from one app can
+    // result in duplicates. This lock is used to prevent that.
+    let lock = NOTIFICATION_TARGET_STORE_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock.lock().await;
+
+    tokio_fs::create_dir_all(root).await?;
+
+    let targets_dir = root.join(NOTIFICATION_TARGETS_DIR);
+    check_path_sandboxed(root, &targets_dir)?;
+    tokio_fs::create_dir_all(&targets_dir).await?;
+
+    let target_json = serde_json::to_vec(target)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    let target_key = notification_target_key(target);
+
+    let mut entries = tokio_fs::read_dir(&targets_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        if !entry.file_type().await?.is_file() {
+            continue;
+        }
+
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+
+        if !is_notification_target_file(file_name) {
+            continue;
+        }
+
+        let path = entry.path();
+        check_path_sandboxed(root, &path)?;
+
+        let existing_raw = match tokio_fs::read_to_string(&path).await {
+            Ok(value) => value,
+            Err(e) if e.kind() == ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+
+        let existing = match serde_json::from_str::<NotificationTarget>(&existing_raw) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+
+        if notification_target_key(&existing) == target_key {
+            let mut file = tokio_fs::File::create(&path).await?;
+            file.write_all(&target_json).await?;
+            file.sync_all().await?;
+            return Ok(());
+        }
+    }
+
+    for index in 1u64.. {
+        let target_path = targets_dir.join(format!(
+            "{}{}{}",
+            NOTIFICATION_TARGET_FILE_PREFIX,
+            index,
+            NOTIFICATION_TARGET_FILE_SUFFIX
+        ));
+        check_path_sandboxed(root, &target_path)?;
+
+        let mut file = match tokio_fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target_path)
+            .await
+        {
+            Ok(file) => file,
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        };
+
+        file.write_all(&target_json).await?;
+        file.sync_all().await?;
+        return Ok(());
+    }
+
+    unreachable!()
+}
+
+async fn read_notification_target_file(
+    path: &Path,
+    notification_target_policy: &UnifiedPushPolicy,
+) -> io::Result<Option<NotificationTarget>> {
+    let raw = match tokio_fs::read_to_string(path).await {
+        Ok(value) => value,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+
+    let parsed = match serde_json::from_str::<NotificationTarget>(&raw) {
+        Ok(value) => value,
+        Err(e) => {
+            warn!("Ignoring invalid notification target JSON: {e}");
+            return Ok(None);
+        }
+    };
+
+    if let Err(err) = validate_notification_target(notification_target_policy, &parsed) {
+        warn!("Ignoring invalid persisted notification target: {err}");
+        return Ok(None);
+    }
+
+    Ok(Some(parsed))
+}
+
+pub(crate) async fn load_notification_targets(
+    root: &Path,
+    notification_target_policy: &UnifiedPushPolicy,
+) -> io::Result<Vec<NotificationTarget>> {
+    let mut targets = Vec::new();
+    let mut seen = HashSet::new();
+
+    if !root.exists() {
+        return Ok(targets);
+    }
+
+    let legacy_target_path = root.join(LEGACY_NOTIFICATION_TARGET_FILE);
+    check_path_sandboxed(root, &legacy_target_path)?;
+    if legacy_target_path.exists() {
+        if let Some(target) =
+            read_notification_target_file(&legacy_target_path, notification_target_policy).await?
+        {
+            let key = notification_target_key(&target);
+            if seen.insert(key) {
+                targets.push(target);
+            }
+        }
+    }
+
+    let targets_dir = root.join(NOTIFICATION_TARGETS_DIR);
+    check_path_sandboxed(root, &targets_dir)?;
+
+    if !targets_dir.exists() {
+        return Ok(targets);
+    }
+
+    let mut entries = tokio_fs::read_dir(&targets_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        if !entry.file_type().await?.is_file() {
+            continue;
+        }
+
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+
+        if !is_notification_target_file(file_name) {
+            continue;
+        }
+
+        let target_path = entry.path();
+        check_path_sandboxed(root, &target_path)?;
+
+        if let Some(target) =
+            read_notification_target_file(&target_path, notification_target_policy).await?
+        {
+            let key = notification_target_key(&target);
+            if seen.insert(key) {
+                targets.push(target);
+            }
+        }
+    }
+
+    Ok(targets)
 }
 
 #[cfg(test)]

@@ -185,6 +185,25 @@ pub fn generate_raspberry_camera_secret(
     Ok(())
 }
 
+pub fn generate_add_app_secret() -> anyhow::Result<String> {
+    let crypto = OpenMlsRustCrypto::default();
+    let secret = crypto
+        .crypto()
+        .random_vec(NUM_SECRET_BYTES)
+        .context("Failed to generate camera secret bytes")?;
+
+    let add_app_secret = CameraSecret {
+        version: CAMERA_SECRET_VERSION.to_string(),
+        secret: base64_url::encode(&secret),
+        wifi_password: None,
+    };
+
+    let qr_content = serde_json::to_string(&add_app_secret)
+        .context("Failed to serialize add_app secret into JSON")?;
+
+    Ok(qr_content)
+}
+
 impl App {
     pub fn new(key_package: KeyPackage) -> Self {
         Self { key_package }

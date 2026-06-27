@@ -12,8 +12,18 @@ use reqwest::Url;
 use secluso_server_backbone::types::ConfigResponse;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashSet;
 use std::error::Error;
+use std::io::{self, ErrorKind};
+use std::path::Path;
 use std::{fs, thread, time};
+use std::sync::OnceLock;
+use rocket::tokio::sync::Mutex;
+
+use rocket::tokio::fs as tokio_fs;
+use rocket::tokio::io::AsyncWriteExt;
+
+use crate::security::check_path_sandboxed;
 
 // Fixed bundle id used to locate the Firebase app
 const BUNDLE_ID: &str = "com.secluso.mobile";
@@ -24,6 +34,10 @@ const OAUTH_TOKEN_ALLOWED_HOSTS: &[&str] = &[
     "www.googleapis.com",
     "accounts.google.com",
 ];
+
+const LEGACY_FCM_TOKEN_FILE: &str = "fcm_token";
+const FCM_TOKENS_DIR: &str = "fcm_tokens";
+const FCM_TOKEN_FILE_PREFIX: &str = "fcm_token_";
 
 // In this file we send very sensitive stuff over HTTP requests: a JWT assertion signed with the
 // Firebase service-account private key, bearer access tokens, and push payloads tied to user
@@ -562,4 +576,121 @@ pub fn send_notification(device_token: String, msg: Vec<u8>) -> Result<(), Box<d
     }
 
     Ok(())
+}
+
+static FCM_TOKEN_STORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+// FIXME: we only add fcm_tokens, but never remove stale ones.
+pub(crate) async fn store_fcm_token(root: &Path, token: &str) -> io::Result<()> {
+    // Two overlapping calls to store_fcm_token from one app for the same token can
+    // result in duplicates. This lock is used to prevent that.
+    let lock = FCM_TOKEN_STORE_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock.lock().await;
+
+    tokio_fs::create_dir_all(root).await?;
+
+    let tokens_dir = root.join(FCM_TOKENS_DIR);
+    check_path_sandboxed(root, &tokens_dir)?;
+    tokio_fs::create_dir_all(&tokens_dir).await?;
+
+    let mut entries = tokio_fs::read_dir(&tokens_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        if !entry.file_type().await?.is_file() {
+            continue;
+        }
+
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+
+        if !file_name.starts_with(FCM_TOKEN_FILE_PREFIX) {
+            continue;
+        }
+
+        let path = entry.path();
+        check_path_sandboxed(root, &path)?;
+
+        let existing = tokio_fs::read_to_string(&path).await?;
+        if existing.trim() == token {
+            return Ok(());
+        }
+    }
+
+    for index in 1u64.. {
+        let token_path = tokens_dir.join(format!("{}{}", FCM_TOKEN_FILE_PREFIX, index));
+        check_path_sandboxed(root, &token_path)?;
+
+        let mut file = match tokio_fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&token_path)
+            .await
+        {
+            Ok(file) => file,
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        };
+
+        file.write_all(token.as_bytes()).await?;
+        file.sync_all().await?;
+        return Ok(());
+    }
+
+    unreachable!()
+}
+
+pub(crate) async fn load_fcm_tokens(root: &Path) -> io::Result<Vec<String>> {
+    let mut tokens = Vec::new();
+    let mut seen = HashSet::new();
+
+    if !root.exists() {
+        return Ok(tokens);
+    }
+
+    let legacy_token_path = root.join(LEGACY_FCM_TOKEN_FILE);
+    check_path_sandboxed(root, &legacy_token_path)?;
+    if legacy_token_path.exists() {
+        let token = tokio_fs::read_to_string(&legacy_token_path).await?;
+        let token = token.trim().to_string();
+
+        if !token.is_empty() && seen.insert(token.clone()) {
+            tokens.push(token);
+        }
+    }
+
+    let tokens_dir = root.join(FCM_TOKENS_DIR);
+    check_path_sandboxed(root, &tokens_dir)?;
+
+    if !tokens_dir.exists() {
+        return Ok(tokens);
+    }
+
+    let mut entries = tokio_fs::read_dir(&tokens_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        if !entry.file_type().await?.is_file() {
+            continue;
+        }
+
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+
+        if !file_name.starts_with(FCM_TOKEN_FILE_PREFIX) {
+            continue;
+        }
+
+        let token_path = entry.path();
+        check_path_sandboxed(root, &token_path)?;
+
+        let token = tokio_fs::read_to_string(token_path).await?;
+        let token = token.trim().to_string();
+
+        if !token.is_empty() && seen.insert(token.clone()) {
+            tokens.push(token);
+        }
+    }
+
+    Ok(tokens)
 }

@@ -22,6 +22,7 @@ const MAX_COMMAND_FILE_SIZE: u64 = 100 * 1024; // 100 kibibytes
 const MAX_CHECK_RESP_SIZE: u64 = 20 * 1024; // 20 kibibytes
 const MAX_NOTIFICATION_TARGET_SIZE: u64 = 10 * 1024; // 10 kibibytes
 const IOS_NOTIFICATION_RESP_MAX_SIZE: u64 = 10 * 1024; // 10 kibibytes
+const MAX_ADD_APP_REQUEST_SIZE: u64 = 100 * 1024; // 100 kibibytes
 
 #[derive(Clone)]
 pub struct HttpClient {
@@ -900,6 +901,71 @@ impl HttpClient {
         }
 
         Ok(response_vec)
+    }
+
+    pub fn add_app_check(&self, op: &str) -> io::Result<Vec<u8>> {
+        let max_size = MAX_ADD_APP_REQUEST_SIZE;
+
+        let server_url = format!("{}/add_app_check/{}", self.server_addr, op);
+
+        let client = Client::builder()
+            .timeout(None)
+            .build()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        let response = self.authorized_headers(client
+            .get(&server_url))
+            .send()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        if response.status() == StatusCode::CONFLICT {
+            Self::give_hint_to_updater();
+        }
+
+        if !response.status().is_success() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Server error: {}", response.status()),
+            ));
+        }
+
+        let mut data = Vec::new();
+        let mut limited = response.take(max_size);
+        limited.read_to_end(&mut data)?;
+
+        if data.len() >= max_size as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Add app request exceeded maximum allowed size",
+            ));
+        }
+
+        Ok(data)
+    }
+
+    pub fn add_app_request(&self, op: &str, data: Vec<u8>) -> io::Result<()> {
+        let server_url = format!("{}/add_app_request/{}", self.server_addr, op);
+
+        let client = Client::new();
+        let response = self.authorized_headers(client
+            .post(server_url))
+            .header("Content-Type", "application/octet-stream")
+            .body(data)
+            .send()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+        if response.status() == StatusCode::CONFLICT {
+            Self::give_hint_to_updater();
+        }
+
+        if !response.status().is_success() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Server error: {}", response.status()),
+            ));
+        }
+
+        Ok(())
     }
 }
 

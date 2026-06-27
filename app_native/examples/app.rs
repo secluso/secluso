@@ -20,15 +20,12 @@ use docopt::Docopt;
 use std::env;
 use std::fs;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Write, Read};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::net::{TcpListener, TcpStream, SocketAddr};
-use std::str::FromStr;
-use std::io::ErrorKind;
 
 // This is a simple app that pairs with the Secluso camera, receives motion videos,
 // and launches livestream sessions.
@@ -41,7 +38,6 @@ use std::io::ErrorKind;
 const CAMERA_ADDR: &str = "127.0.0.1";
 const CAMERA_NAME: &str = "Camera";
 const DATA_DIR: &str = "example_app_data";
-const FIRST_APP_ADDR: &str = "127.0.0.1";
 
 pub const MAX_ALLOWED_MSG_LEN: u64 = 65536;
 
@@ -94,6 +90,11 @@ fn main() -> io::Result<()> {
     let clients: Arc<Mutex<Option<Box<Clients>>>> = Arc::new(Mutex::new(None));
     let http_client = HttpClient::new(server_addr, server_username, server_password);
 
+    // We assume here that the new secret is shared via
+    // another channel, e.g., QR code scan.
+    // Also, a new secret needs to be used for every app added.
+    let add_app_secret = vec![2u8; NUM_SECRET_BYTES];
+
     if first_time {
         if args.flag_reset {
             panic!("No state to reset!");
@@ -122,25 +123,19 @@ fn main() -> io::Result<()> {
             )
         } else {
             println!("Sending the add_app request");
-            let addr = SocketAddr::from_str(&(FIRST_APP_ADDR.to_owned() + ":12350"))
-                .map_err(|e| io::Error::other(format!("{e}")))?;
-
-            let mut stream = TcpStream::connect(&addr)?;
 
             // get key packages
             let key_packages_vec = get_key_packages(&mut clients.lock().unwrap())?;
 
-            write_varying_len(&mut stream, &key_packages_vec)?;
-
-            let new_app_data_vec = read_varying_len(&mut stream)?;
-
-            // We assume here that the new secret is shared via
-            // another channel, e.g., QR code scan.
-            let new_secret = vec![2u8; NUM_SECRET_BYTES];
+            println!("About to send add_app request");
+            http_client.add_app_request("test_add_app_request_token", key_packages_vec)?;
+            println!("About to wait for add_app response");
+            let new_app_data_vec = http_client.add_app_check("test_add_app_response_token")?;
+            println!("Received add_app response");
 
             let epochs: [u64; NUM_MLS_CLIENTS] = join_camera_groups(
                 &mut clients.lock().unwrap(),
-                new_secret.clone(),
+                add_app_secret.clone(),
                 new_app_data_vec,
             )?;
 
@@ -166,30 +161,35 @@ fn main() -> io::Result<()> {
         }
     }
 
-    let add_app_request: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
+    let add_app_request: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
 
     if !args.flag_secondary_app {
         let add_app_request_clone = Arc::clone(&add_app_request);
+        let http_client_clone = http_client.clone();
 
         thread::spawn(move || loop {
-            let listener = TcpListener::bind("0.0.0.0:12350").unwrap();
-            for incoming in listener.incoming() {
-                match incoming {
-                    Ok(stream) => {
-                        println!("Incoming connection accepted.");
-                        let mut stream_opt = add_app_request_clone.lock().unwrap();
-                        *stream_opt = Some(stream);
-                    },
+            println!("About to wait for add_app request");
+            match http_client_clone.add_app_check("test_add_app_request_token") {
+                Ok(data) => {
+                    println!("Received add_app request.");
+                    let mut data_opt = add_app_request_clone.lock().unwrap();
+                    *data_opt = Some(data);
+                },
 
-                    Err(e) => {
-                        println!("Incoming connection error: {e}");
-                    }
-                }        
-            }
+                Err(e) => {
+                    println!("Error listening for add_app requests: {e}");
+                }
+            }        
         });
     }
 
-    main_loop(clients, http_client, add_app_request, args.flag_num_iters)?;
+    main_loop(
+        clients,
+        http_client,
+        add_app_request,
+        args.flag_num_iters,
+        add_app_secret,
+    )?;
 
     Ok(())
 }
@@ -212,8 +212,9 @@ fn deregister_all(
 fn main_loop(
     clients: Arc<Mutex<Option<Box<Clients>>>>,
     http_client: HttpClient,
-    add_app_request: Arc<Mutex<Option<TcpStream>>>,
+    add_app_request: Arc<Mutex<Option<Vec<u8>>>>,
     num_iters: usize,
+    add_app_secret: Vec<u8>,
 ) -> io::Result<()> {
     for iter in 0..num_iters {
         thread::sleep(Duration::from_secs(1));
@@ -230,15 +231,16 @@ fn main_loop(
             livestream(Arc::clone(&clients), &http_client, 2)?;
         }
 
-        let mut add_app_stream_opt = add_app_request.lock().unwrap();
-        if let Some(add_app_stream) = add_app_stream_opt.as_mut() {
+        let mut add_app_data_opt = add_app_request.lock().unwrap();
+        if let Some(add_app_data) = add_app_data_opt.as_ref() {
             println!("Add app request detected");
             handle_add_app_request(
                 Arc::clone(&clients),
                 &http_client,
-                add_app_stream,
+                add_app_data,
+                add_app_secret.clone(),
             )?;
-            *add_app_stream_opt = None;
+            *add_app_data_opt = None;
         }
     }
 
@@ -248,15 +250,15 @@ fn main_loop(
 fn handle_add_app_request(
     clients: Arc<Mutex<Option<Box<Clients>>>>,
     http_client: &HttpClient,
-    stream: &mut TcpStream,
+    add_app_data: &Vec<u8>,
+    add_app_secret: Vec<u8>,
 ) -> io::Result<()> {
     println!("handle_add_app_request called");
-    let new_secret = vec![2u8; NUM_SECRET_BYTES];
 
-    let new_app_key_packages_vec = read_varying_len(stream)?;
+    let new_app_key_packages_vec = add_app_data.clone();
 
     let config_msg_enc =
-        generate_add_app_request_config_command(&mut clients.lock().unwrap(), new_app_key_packages_vec, new_secret.clone())?;
+        generate_add_app_request_config_command(&mut clients.lock().unwrap(), new_app_key_packages_vec, add_app_secret.clone())?;
 
     let config_group_name = get_group_name(&mut clients.lock().unwrap(), "config")?;
 
@@ -286,13 +288,13 @@ fn handle_add_app_request(
     let new_app_data_vec = process_add_app_config_response(
         &mut clients.lock().unwrap(),
         config_response.clone(),
-        new_secret,
+        add_app_secret,
     ).unwrap();
 
     increment_epoch("motion_epoch");
     increment_epoch("thumbnail_epoch");
 
-    write_varying_len(stream, &new_app_data_vec)?;
+    http_client.add_app_request("test_add_app_response_token", new_app_data_vec)?;
 
     Ok(())
 }
@@ -515,67 +517,4 @@ fn fetch_livestream_chunk(
         io::ErrorKind::Other,
         format!("Error: could not fetch livestream chunk (timeout)!"),
     ));
-}
-
-// FIXME: copied from camera_hub/src/pairing.rs.
-fn write_varying_len(stream: &mut TcpStream, msg: &[u8]) -> io::Result<()> {
-    // FIXME: is u64 necessary?
-    let len = msg.len() as u64;
-    let len_data = len.to_be_bytes();
-
-    stream.write_all(&len_data)?;
-    stream.write_all(msg)?;
-    stream.flush()?;
-
-    Ok(())
-}
-
-fn read_varying_len(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
-    let mut len_data = [0u8; 8];
-
-    match stream.read_exact(&mut len_data) {
-        Ok(_) => {}
-        Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
-            return Err(io::Error::new(
-                ErrorKind::WouldBlock,
-                "Length read would block",
-            ));
-        }
-        Err(e) => return Err(e),
-    }
-
-    let len = u64::from_be_bytes(len_data);
-
-    if len > MAX_ALLOWED_MSG_LEN {
-        println!("Communicated message length ({len}) exceeds the allowed length ({MAX_ALLOWED_MSG_LEN})");
-        return Err(io::Error::new(
-            ErrorKind::InvalidInput,
-            "Intended message length is too large",
-        ))
-    }
-
-    let mut msg = vec![0u8; len as usize];
-    let mut offset = 0;
-
-    while offset < msg.len() {
-        match stream.read(&mut msg[offset..]) {
-            Ok(0) => {
-                return Err(io::Error::new(
-                    ErrorKind::UnexpectedEof,
-                    "Socket closed during read",
-                ))
-            }
-            Ok(n) => {
-                offset += n;
-            }
-            Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
-                // retry a few times with a short delay
-                thread::sleep(Duration::from_millis(10));
-                continue;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-
-    Ok(msg)
 }

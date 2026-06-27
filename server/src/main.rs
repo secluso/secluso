@@ -49,7 +49,7 @@ pub mod notification_target;
 pub mod security;
 
 use self::auth::{initialize_users, BasicAuth, FailStore};
-use self::fcm::send_notification;
+use self::fcm::{send_notification, store_fcm_token, load_fcm_tokens};
 use self::security::{check_path_sandboxed, join_validated_child};
 
 // Store the version of the current crate, which we'll use in all responses.
@@ -103,9 +103,17 @@ struct PairingEntry {
     expired: bool,
 }
 
+// Add App Structures
+struct AddAppEntry {
+    payload: AsyncMutex<Option<Vec<u8>>>,
+    notify: Notify,
+}
+
 type PairingSessionKey = (String, String);
 type SharedPairingState = Arc<Mutex<HashMap<PairingSessionKey, Arc<Mutex<PairingEntry>>>>>;
 type AllEventState = Arc<DashMap<String, EventState>>;
+type AddAppKey = (String, String);
+type SharedAddAppState = Arc<DashMap<AddAppKey, Arc<AddAppEntry>>>;
 
 // Simple rate limiters for the server
 const MAX_MOTION_FILE_SIZE: usize = 50; // in mebibytes
@@ -113,11 +121,13 @@ const MAX_NUM_PENDING_MOTION_FILES: usize = 100;
 const MAX_LIVESTREAM_FILE_SIZE: usize = 20; // in mebibytes
 const MAX_NUM_PENDING_LIVESTREAM_FILES: usize = 50;
 const MAX_COMMAND_FILE_SIZE: usize = 100; // in kibibytes
+const MAX_ADD_APP_REQUEST_SIZE: usize = 100; // in kibibytes
 const MAX_JSON_SIZE: usize = 10; // in kibibytes
 #[cfg(not(test))]
 const PAIRING_SESSION_TIMEOUT: Duration = Duration::from_secs(45);
 #[cfg(test)]
 const PAIRING_SESSION_TIMEOUT: Duration = Duration::from_millis(250);
+const ADD_APP_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 
 async fn get_num_files(path: &Path) -> io::Result<usize> {
     let mut entries = fs::read_dir(path).await?;
@@ -137,38 +147,16 @@ async fn persist_pair_notification_target(
     target: &NotificationTarget,
 ) -> io::Result<()> {
     let root = Path::new("data").join(&auth.username);
-    let target_path = root.join("notification_target.json");
-    check_path_sandboxed(&root, &target_path)?;
-
-    fs::create_dir_all(&root).await?;
-    let target_json = serde_json::to_vec(target)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    fs::write(target_path, target_json).await?;
-    Ok(())
+    notification_target::store_notification_target(&root, target).await
 }
 
 async fn load_notification_target(
     root: &Path,
     notification_target_policy: &notification_target::UnifiedPushPolicy,
 ) -> io::Result<Option<NotificationTarget>> {
-    let target_path = root.join("notification_target.json");
-    check_path_sandboxed(root, &target_path)?;
-
-    if !target_path.exists() {
-        return Ok(None);
-    }
-
-    let raw = fs::read_to_string(target_path).await?;
-    let parsed = serde_json::from_str::<NotificationTarget>(&raw)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    if let Err(err) =
-        notification_target::validate_notification_target(notification_target_policy, &parsed)
-    {
-        warn!("Ignoring invalid persisted notification target: {err}");
-        return Ok(None);
-    }
-
-    Ok(Some(parsed))
+    let targets =
+        notification_target::load_notification_targets(root, notification_target_policy).await?;
+    Ok(targets.into_iter().next())
 }
 
 #[post("/pair", data = "<data>")]
@@ -195,8 +183,8 @@ async fn pair(
     let token = &data.pairing_token;
 
     // Check for disallowed quote characters in the token
-    if token.contains('"') {
-        debug!("[PAIR] Invalid token contains quote character: {}", token);
+    if token.is_empty() || token.contains('"') {
+        debug!("[PAIR] Invalid token (empty or contains quote character: {})", token);
         return Json(PairingResponse {
             status: "invalid_token".into(),
             notification_target: None,
@@ -571,15 +559,20 @@ async fn delete_camera(camera: &str, auth: &BasicAuth) -> io::Result<()> {
 #[post("/fcm_token", data = "<data>")]
 async fn upload_fcm_token(data: Data<'_>, auth: &BasicAuth) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
-    let token_path = root.join("fcm_token");
-    check_path_sandboxed(&root, &token_path)?;
+    
+    let token_bytes = data.open(5.kibibytes()).into_bytes().await?;
+    let token = String::from_utf8(token_bytes.to_vec())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    let token = token.trim();
 
-    let mut file = fs::File::create(&token_path).await?;
-    // FIXME: hardcoded max size
-    let mut stream = data.open(5.kibibytes());
-    tokio::io::copy(&mut stream, &mut file).await?;
-    // Flush the file to disk
-    file.sync_all().await?;
+    if token.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Error: FCM token is empty.",
+        ));
+    }
+
+    store_fcm_token(&root, token).await?;
 
     Ok("ok".to_string())
 }
@@ -595,13 +588,7 @@ async fn upload_notification_target(
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
 
     let root = Path::new("data").join(&auth.username);
-    let target_path = root.join("notification_target.json");
-    check_path_sandboxed(&root, &target_path)?;
-
-    fs::create_dir_all(&root).await?;
-    let target_json = serde_json::to_vec(&target)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    fs::write(target_path, target_json).await?;
+    notification_target::store_notification_target(&root, &target).await?;
 
     Ok("ok".to_string())
 }
@@ -626,52 +613,67 @@ async fn send_fcm_notification(
     auth: &BasicAuth,
 ) -> io::Result<String> {
     let root = Path::new("data").join(&auth.username);
-    let notification_target =
-        load_notification_target(&root, notification_target_policy.inner()).await?;
+    let notification_targets =
+        notification_target::load_notification_targets(&root, notification_target_policy.inner())
+            .await?;
     let notification_msg = data.open(8.kibibytes()).into_bytes().await?;
 
-    if let Some(target) = notification_target.as_ref() {
-        if target.platform.eq_ignore_ascii_case("android_unified") {
-            let endpoint_url = match target.unifiedpush_endpoint_url.as_deref() {
-                Some(value) if !value.trim().is_empty() => value,
-                _ => {
-                    debug!("Skipping UnifiedPush notification; endpoint URL not available");
-                    return Ok("ok".to_string());
-                }
-            };
-            let pub_key = match target.unifiedpush_pub_key.as_deref() {
-                Some(value) if !value.trim().is_empty() => value,
-                _ => {
-                    debug!("Skipping UnifiedPush notification; public key not available");
-                    return Ok("ok".to_string());
-                }
-            };
-            let auth_secret = match target.unifiedpush_auth.as_deref() {
-                Some(value) if !value.trim().is_empty() => value,
-                _ => {
-                    debug!("Skipping UnifiedPush notification; auth secret not available");
-                    return Ok("ok".to_string());
-                }
-            };
+    let mut attempted_notification_target = false;
+    // FIXME: caller won't know if the notification failed to send
+    let mut notification_target_success_count: usize = 0;
 
-            match notification_target::send_notification(
-                notification_target_policy.inner(),
-                endpoint_url,
-                pub_key,
-                auth_secret,
-                notification_msg.as_ref(),
-            )
-            .await
-            {
-                Ok(_) => {
-                    debug!("UnifiedPush notification sent successfully.");
-                }
-                Err(e) => {
-                    debug!("Failed to send UnifiedPush notification: {}", e);
-                }
-            }
-            return Ok("ok".to_string());
+    for target in notification_targets.iter() {
+        if !target.platform.eq_ignore_ascii_case("android_unified") {
+            continue;
         }
+
+        attempted_notification_target = true;
+
+        let endpoint_url = match target.unifiedpush_endpoint_url.as_deref() {
+            Some(value) if !value.trim().is_empty() => value,
+            _ => {
+                debug!("Skipping UnifiedPush notification; endpoint URL not available");
+                return Ok("ok".to_string());
+            }
+        };
+        let pub_key = match target.unifiedpush_pub_key.as_deref() {
+            Some(value) if !value.trim().is_empty() => value,
+            _ => {
+                debug!("Skipping UnifiedPush notification; public key not available");
+                return Ok("ok".to_string());
+            }
+        };
+        let auth_secret = match target.unifiedpush_auth.as_deref() {
+            Some(value) if !value.trim().is_empty() => value,
+            _ => {
+                debug!("Skipping UnifiedPush notification; auth secret not available");
+                return Ok("ok".to_string());
+            }
+        };
+
+        match notification_target::send_notification(
+            notification_target_policy.inner(),
+            endpoint_url,
+            pub_key,
+            auth_secret,
+            notification_msg.as_ref(),
+        )
+        .await
+        {
+            Ok(_) => {
+                notification_target_success_count += 1;
+                debug!("UnifiedPush notification sent successfully.");
+            }
+            Err(e) => {
+                debug!("Failed to send UnifiedPush notification: {}", e);
+            }
+        }
+    }
+
+    if attempted_notification_target {
+        debug!(
+            "UnifiedPush notification fan-out completed: {notification_target_success_count} successful sends."
+        );
     }
 
     if fcm_config.inner().is_none() {
@@ -679,25 +681,33 @@ async fn send_fcm_notification(
         return Ok("ok".to_string());
     }
 
-    let token_path = root.join("fcm_token");
-    check_path_sandboxed(&root, &token_path)?;
-    if !token_path.exists() {
+    let tokens = load_fcm_tokens(&root).await?;
+    if tokens.is_empty() {
         return Err(io::Error::other("Error: FCM token not available."));
     }
-    let token = fs::read_to_string(token_path).await?;
+
+    let notification_payload = notification_msg.to_vec();
 
     task::block_in_place(|| {
         // FIXME: caller won't know if the notification failed to send
+        let mut success_count: usize = 0;
 
-        match send_notification(token, notification_msg.to_vec()) {
-            Ok(_) => {
-                debug!("Notification sent successfully.");
-            }
-            Err(e) => {
-                debug!("Failed to send notification: {}", e);
+        for token in tokens {
+            match send_notification(token, notification_payload.clone()) {
+                Ok(_) => {
+                    success_count += 1;
+                    debug!("Notification sent successfully.");
+                }
+                Err(e) => {
+                    debug!("Failed to send notification: {}", e);
+                }
             }
         }
+
+        debug!("FCM notification fan-out completed: {success_count} successful sends.");
     });
+
+
     Ok("ok".to_string())
 }
 
@@ -1208,6 +1218,87 @@ async fn upload_debug_logs(data: Data<'_>, auth: &BasicAuth) -> io::Result<Strin
     Ok("ok".to_string())
 }
 
+#[get("/add_app_check/<op>")]
+async fn add_app_check(
+    op: &str,
+    auth: &BasicAuth,
+    state: &rocket::State<SharedAddAppState>,
+) -> Result<Vec<u8>, Custom<String>> {
+    if op.is_empty() || op.contains('"') {
+        debug!("[ADD_APP_CHECK] Invalid op (empty or contains quote character: {})", op);
+        return Err(Custom(Status::BadRequest, "invalid op".to_string()));
+    }
+
+    let key = (auth.username.clone(), op.to_string());
+    let entry = state
+        .entry(key.clone())
+        .or_insert_with(|| {
+            Arc::new(AddAppEntry {
+                payload: AsyncMutex::new(None),
+                notify: Notify::new(),
+            })
+        })
+        .clone();
+
+    let result = timeout(ADD_APP_REQUEST_TIMEOUT, async {
+        loop {
+            let notified = entry.notify.notified();
+            if let Some(payload) = entry.payload.lock().await.take() {
+                return payload;
+            }
+            notified.await;
+        }
+    })
+    .await;
+
+    state.remove(&key);
+    result.map_err(|_| Custom(Status::RequestTimeout, "request timed out".to_string()))
+}
+
+#[post("/add_app_request/<op>", data = "<data>")]
+async fn add_app_request(
+    op: &str,
+    data: Data<'_>,
+    auth: &BasicAuth,
+    state: &rocket::State<SharedAddAppState>,
+) -> Result<String, Custom<String>> {
+    if op.is_empty() || op.contains('"') {
+        debug!("[ADD_APP_REQUEST] Invalid op (empty or contains quote character: {})", op);
+        return Err(Custom(Status::BadRequest, "invalid op".to_string()));
+    }
+
+    let key = (auth.username.clone(), op.to_string());
+    let entry = state
+        .get(&key)
+        .map(|entry| entry.value().clone())
+        .ok_or_else(|| Custom(Status::NotFound, "no app is waiting for this op".to_string()))?;
+
+    let payload = data
+        .open(MAX_ADD_APP_REQUEST_SIZE.kibibytes())
+        .into_bytes()
+        .await
+        .map_err(|error| Custom(Status::BadRequest, error.to_string()))?;
+    if !payload.is_complete() {
+        return Err(Custom(
+            Status::PayloadTooLarge,
+            "request payload is too large".to_string(),
+        ));
+    }
+
+    let mut pending_payload = entry.payload.lock().await;
+    if pending_payload.is_some() {
+        return Err(Custom(
+            Status::Conflict,
+            "a request is already pending for this op".to_string(),
+        ));
+    }
+    *pending_payload = Some(payload.into_inner());
+    drop(pending_payload);
+    entry.notify.notify_one();
+
+    Ok("ok".to_string())
+}
+
 #[launch]
 fn rocket() -> rocket::Rocket<rocket::Build> {
     build_rocket()
@@ -1216,6 +1307,7 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
 pub fn build_rocket() -> rocket::Rocket<rocket::Build> {
     let all_event_state: AllEventState = Arc::new(DashMap::new());
     let pairing_state: SharedPairingState = Arc::new(Mutex::new(HashMap::new()));
+    let add_app_state: SharedAddAppState = Arc::new(DashMap::new());
     let failure_store: FailStore = Arc::new(DashMap::new());
 
     let mut network_type: Option<String> = None;
@@ -1292,6 +1384,7 @@ pub fn build_rocket() -> rocket::Rocket<rocket::Build> {
         .manage(pairing_state)
         .manage(fcm_config)
         .manage(notification_target_policy)
+        .manage(add_app_state)
         .mount(
             "/",
             routes![
@@ -1317,6 +1410,8 @@ pub fn build_rocket() -> rocket::Rocket<rocket::Build> {
                 upload_debug_logs,
                 retrieve_fcm_data,
                 retrieve_server_status,
+                add_app_check,
+                add_app_request,
             ],
         )
 }
