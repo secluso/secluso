@@ -31,7 +31,6 @@ const AUDIO_SIGNAL_PEAK_THRESHOLD: i16 = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AudioCaptureMode {
-    I2s32StereoLeft,
     Mono16,
 }
 
@@ -40,14 +39,6 @@ struct AudioCaptureCandidate {
     device: String,
     mode: AudioCaptureMode,
     forced: bool,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum I2sDecodeMode {
-    LeftShift16,
-    LeftShift8,
-    RightShift16,
-    RightShift8,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -363,44 +354,7 @@ pub fn start_audio(
 fn audio_device_candidates() -> Vec<AudioCaptureCandidate> {
     let mut devices = Vec::new();
 
-    if let Ok(device) = std::env::var("SECLUSO_AUDIO_DEVICE") {
-        let device = device.trim();
-        if !device.is_empty() {
-            eprintln!(
-                "SECLUSO_AUDIO_DEVICE is set. Forcing audio capture attempts on {}.",
-                device
-            );
-            devices.push(AudioCaptureCandidate {
-                device: device.to_string(),
-                mode: AudioCaptureMode::I2s32StereoLeft,
-                forced: true,
-            });
-            devices.push(AudioCaptureCandidate {
-                device: device.to_string(),
-                mode: AudioCaptureMode::Mono16,
-                forced: true,
-            });
-            eprintln!(
-                "Audio candidate list: {} ({:?}, forced), {} ({:?}, forced).",
-                device,
-                AudioCaptureMode::I2s32StereoLeft,
-                device,
-                AudioCaptureMode::Mono16
-            );
-            return devices;
-        }
-    }
-
-    devices.push(AudioCaptureCandidate {
-        device: "plughw:ICS43432Mic,0".to_string(),
-        mode: AudioCaptureMode::I2s32StereoLeft,
-        forced: false,
-    });
-    // We prioritize the HAT capture device first because that is our default config
-    eprintln!(
-        "Audio candidate list starts with HAT device {} ({:?}).",
-        devices[0].device, devices[0].mode
-    );
+    // TODO: Add ICS-43432 support
 
     for device in detect_usb_capture_devices() {
         let candidate = AudioCaptureCandidate {
@@ -475,18 +429,6 @@ fn spawn_arecord(
     candidate: &AudioCaptureCandidate,
 ) -> Result<(Child, ChildStdout), Box<dyn std::error::Error>> {
     let args: &[&str] = match candidate.mode {
-        AudioCaptureMode::I2s32StereoLeft => &[
-            "-D",
-            &candidate.device,
-            "-f",
-            "S32_LE",
-            "-r",
-            "48000",
-            "-c",
-            "2",
-            "-t",
-            "raw",
-        ],
         AudioCaptureMode::Mono16 => &[
             "-D",
             &candidate.device,
@@ -556,7 +498,6 @@ fn encode_audio_stream(
     }
 
     let bytes_per_frame = match candidate.mode {
-        AudioCaptureMode::I2s32StereoLeft => (OPUS_FRAME_SAMPLES as usize) * 8,
         AudioCaptureMode::Mono16 => (OPUS_FRAME_SAMPLES as usize) * 2,
     };
     eprintln!(
@@ -590,49 +531,7 @@ fn encode_audio_stream(
         return false;
     }
 
-    let i2s_decode_mode = match candidate.mode {
-        AudioCaptureMode::I2s32StereoLeft => {
-            let mut best_mode = I2sDecodeMode::LeftShift16;
-            let mut best_stats = AudioProbeStats { rms: 0.0, peak: 0 };
-
-            // The I2S microphone has not always presented its usable 16-bit audio samples in the same byte position / slot arrangement across our boards and overlays.
-            // Thus, we score a few plausible interpretations and keep whichever one produces the strongest signal.
-            for mode in [
-                I2sDecodeMode::LeftShift16,
-                I2sDecodeMode::LeftShift8,
-                I2sDecodeMode::RightShift16,
-                I2sDecodeMode::RightShift8,
-            ] {
-                let stats = probe_i2s_mode(&probe_raw, mode);
-                if stats.rms > best_stats.rms
-                    || (stats.rms == best_stats.rms && stats.peak > best_stats.peak)
-                {
-                    best_mode = mode;
-                    best_stats = stats;
-                }
-            }
-
-            eprintln!(
-                "Audio probe for {} picked {:?} with rms={:.2} peak={}.",
-                candidate.device, best_mode, best_stats.rms, best_stats.peak
-            );
-            Some(best_mode)
-        }
-        AudioCaptureMode::Mono16 => {
-            let stats = probe_mono16(&probe_raw);
-            eprintln!(
-                "Audio probe for {} mono16 rms={:.2} peak={}.",
-                candidate.device, stats.rms, stats.peak
-            );
-            None
-        }
-    };
-
     let probe_stats = match candidate.mode {
-        AudioCaptureMode::I2s32StereoLeft => probe_i2s_mode(
-            &probe_raw,
-            i2s_decode_mode.expect("i2s decode mode must be selected"),
-        ),
         AudioCaptureMode::Mono16 => probe_mono16(&probe_raw),
     };
     let signal_present = probe_stats.rms >= AUDIO_SIGNAL_RMS_THRESHOLD
@@ -659,15 +558,15 @@ fn encode_audio_stream(
     }
 
     eprintln!(
-        "Beginning steady-state audio encode for {} using mode {:?} and decode {:?}.",
-        candidate.device, candidate.mode, i2s_decode_mode
+        "Beginning steady-state audio encode for {} using mode {:?}.",
+        candidate.device, candidate.mode
     );
     let start_time = SystemTime::now();
     let mut packets_encoded = 0usize;
     let mut audio_bytes_encoded = 0usize;
 
     for frame in probe_raw.chunks_exact(bytes_per_frame) {
-        fill_pcm_samples(frame, candidate.mode, i2s_decode_mode, &mut pcm_samples);
+        fill_pcm_samples(frame, candidate.mode, &mut pcm_samples);
         if let Some(encoded_len) =
             encode_packet(&mut encoder, &pcm_samples, &mut opus_packet, &frame_queue)
         {
@@ -682,12 +581,7 @@ fn encode_audio_stream(
             break;
         }
 
-        fill_pcm_samples(
-            &pcm_bytes,
-            candidate.mode,
-            i2s_decode_mode,
-            &mut pcm_samples,
-        );
+        fill_pcm_samples(&pcm_bytes, candidate.mode, &mut pcm_samples);
 
         if let Some(encoded_len) =
             encode_packet(&mut encoder, &pcm_samples, &mut opus_packet, &frame_queue)
@@ -748,16 +642,9 @@ fn encode_packet(
 fn fill_pcm_samples(
     bytes: &[u8],
     mode: AudioCaptureMode,
-    i2s_decode_mode: Option<I2sDecodeMode>,
     pcm_samples: &mut [u16],
 ) {
     match mode {
-        AudioCaptureMode::I2s32StereoLeft => {
-            let decode_mode = i2s_decode_mode.expect("i2s decode mode must be selected");
-            for (dst, frame) in pcm_samples.iter_mut().zip(bytes.chunks_exact(8)) {
-                *dst = decode_i2s_sample(frame, decode_mode);
-            }
-        }
         AudioCaptureMode::Mono16 => {
             for (dst, chunk) in pcm_samples.iter_mut().zip(bytes.chunks_exact(2)) {
                 *dst = u16::from_le_bytes([chunk[0], chunk[1]]);
@@ -770,13 +657,6 @@ fn probe_mono16(bytes: &[u8]) -> AudioProbeStats {
     let samples = bytes
         .chunks_exact(2)
         .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]));
-    compute_probe_stats(samples)
-}
-
-fn probe_i2s_mode(bytes: &[u8], mode: I2sDecodeMode) -> AudioProbeStats {
-    let samples = bytes
-        .chunks_exact(8)
-        .map(|frame| i16::from_ne_bytes(decode_i2s_sample(frame, mode).to_ne_bytes()));
     compute_probe_stats(samples)
 }
 
@@ -802,16 +682,4 @@ fn compute_probe_stats(samples: impl Iterator<Item = i16>) -> AudioProbeStats {
     };
 
     AudioProbeStats { rms, peak }
-}
-
-fn decode_i2s_sample(frame: &[u8], mode: I2sDecodeMode) -> u16 {
-    let left = i32::from_le_bytes([frame[0], frame[1], frame[2], frame[3]]);
-    let right = i32::from_le_bytes([frame[4], frame[5], frame[6], frame[7]]);
-    let sample_i16 = match mode {
-        I2sDecodeMode::LeftShift16 => (left >> 16) as i16,
-        I2sDecodeMode::LeftShift8 => (left >> 8) as i16,
-        I2sDecodeMode::RightShift16 => (right >> 16) as i16,
-        I2sDecodeMode::RightShift8 => (right >> 8) as i16,
-    };
-    sample_i16 as u16
 }
