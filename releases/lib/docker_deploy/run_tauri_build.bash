@@ -927,26 +927,6 @@ prune_appdir_wayland_libs() {
   [[ "$removed" -eq 1 ]] || echo "==> no bundled libwayland-{client,server,egl} found in AppDir"
 }
 
-# https://github.com/tauri-apps/tauri/issues/9304: webkit2gtk is broken under 2.44 with Nvidia GPUs
-# "KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied" [https://github.com/secluso/core/issues/113]
-# WEBKIT_DISABLE_DMABUF_RENDERER falls back to portable compositing
-# AppRun sources apprun-hooks sh files at startup
-install_webkit_dmabuf_apprun_hook() {
-  local appdir="$1"
-  [[ -n "$appdir" && -d "$appdir" ]] || return 0
-
-  local hooks_dir="$appdir/apprun-hooks"
-  mkdir -p "$hooks_dir"
-  local hook="$hooks_dir/zz-secluso-webkit-dmabuf.sh"
-  echo "==> installing AppRun hook to disable WebKit DMABuf renderer ($hook)"
-  cat >"$hook" <<'EOS'
-#!/bin/sh
-# Disable WebKitGTK's DMABuf renderer unless the user opted into it.
-export WEBKIT_DISABLE_DMABUF_RENDERER="${WEBKIT_DISABLE_DMABUF_RENDERER:-1}"
-EOS
-  chmod 0644 "$hook"
-}
-
 canonicalize_linux_bundle_outputs_deterministically() {
   [[ "$TAURI_TARGET" == *"-unknown-linux-"* ]] || return 0
 
@@ -995,10 +975,6 @@ canonicalize_linux_bundle_outputs_deterministically() {
     }
     prune_appdir_wayland_libs "$appdir" || {
       echo "==> error: failed to prune bundled libwayland from $appdir" >&2
-      return 1
-    }
-    install_webkit_dmabuf_apprun_hook "$appdir" || {
-      echo "==> error: failed to install WebKit DMABuf AppRun hook in $appdir" >&2
       return 1
     }
   fi

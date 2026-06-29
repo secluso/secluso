@@ -46,11 +46,6 @@ linuxdeploy_plugin_gtk_commit="b5eb8d05b4c0ed40107fe2158c5d8527f94568ef"
 linuxdeploy_plugin_gtk_url="https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gtk/${linuxdeploy_plugin_gtk_commit}/linuxdeploy-plugin-gtk.sh"
 linuxdeploy_plugin_gtk_sha256="cb379f9b0733e9ad9f8bd78f8c2fa038aef2478523bb7d4c8e64ff6a1ea3501a"
 
-# https://github.com/linuxdeploy/linuxdeploy-plugin-gstreamer/commit/2a2e67491c32995a3f279ad0ecbe77abd512b42a
-linuxdeploy_plugin_gstreamer_commit="2a2e67491c32995a3f279ad0ecbe77abd512b42a"
-linuxdeploy_plugin_gstreamer_url="https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gstreamer/${linuxdeploy_plugin_gstreamer_commit}/linuxdeploy-plugin-gstreamer.sh"
-linuxdeploy_plugin_gstreamer_sha256="c107b49d84edbffc6ab226ed1007e0626a4f7aa2c3a36b7782bef62351d49e94"
-
 # Keep linuxdeploy at the canonical path as a real AppImage binary.
 # The appimage output plugin mutates the running linuxdeploy file with the dd utility
 # If this path is a shell wrapper, that mutation corrupts the wrapper shebang
