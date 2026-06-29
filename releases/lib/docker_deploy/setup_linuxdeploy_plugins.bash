@@ -64,19 +64,16 @@ if [ ! -x "$linuxdeploy_bin" ]; then
 fi
 
 # The Tauri appimage pipeline looks for plugins in /root/.cache/tauri.
-# Bundle GStreamer so WebKitGTK gets its media elements (e.g. appsink) from inside the AppImage; means it doesn't need gst-plugins-base on the host.
-download_verified_file \
-  "$linuxdeploy_plugin_gstreamer_url" \
-  /root/.cache/tauri/linuxdeploy-plugin-gstreamer.real.sh \
-  "$linuxdeploy_plugin_gstreamer_sha256" \
-  "linuxdeploy-plugin-gstreamer.sh"
-chmod +x /root/.cache/tauri/linuxdeploy-plugin-gstreamer.real.sh
-
 cat >/root/.cache/tauri/linuxdeploy-plugin-gstreamer.sh <<'EOS' && chmod +x /root/.cache/tauri/linuxdeploy-plugin-gstreamer.sh
 #!/bin/sh
 set -eu
 
-exec bash /root/.cache/tauri/linuxdeploy-plugin-gstreamer.real.sh "$@"
+if [ "${1:-}" = "--plugin-api-version" ]; then
+  echo "0"
+  exit 0
+fi
+
+exit 0
 EOS
 
 download_verified_file \

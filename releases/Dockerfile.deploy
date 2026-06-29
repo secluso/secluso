@@ -76,8 +76,6 @@ RUN set -eux; \
       librsvg2-dev \
       libglib2.0-bin \
       libgdk-pixbuf2.0-bin \
-      libgstreamer1.0-0 \
-      gstreamer1.0-plugins-base \
       patchelf file xz-utils zip unzip \
       squashfs-tools desktop-file-utils \
       strace procps binutils \
