@@ -11,9 +11,11 @@ pub mod routes {
     const PARAM_NONE: &[&str] = &[];
     const PARAM_CAMERA: &[&str] = &["camera"];
     const PARAM_CAMERA_FILENAME: &[&str] = &["camera", "filename"];
+    const PARAM_CAMERA_FILENAME_COUNTER: &[&str] = &["camera", "filename", "counter"];
+    const PARAM_OP: &[&str] = &["op"];
 
     pub const ROUTE_PAIR: &str = "/pair";
-    pub const ROUTE_UPLOAD: &str = "/<camera>/<filename>";
+    pub const ROUTE_UPLOAD: &str = "/<camera>/<filename>/<counter>";
     pub const ROUTE_BULK_CHECK: &str = "/bulkCheck";
     pub const ROUTE_RETRIEVE: &str = "/<camera>/<filename>";
     pub const ROUTE_DELETE_FILE: &str = "/<camera>/<filename>";
@@ -33,6 +35,8 @@ pub mod routes {
     pub const ROUTE_FCM_CONFIG: &str = "/fcm_config";
     pub const ROUTE_STATUS: &str = "/status";
     pub const ROUTE_DEBUG_LOGS: &str = "/debug_logs";
+    pub const ROUTE_ADD_APP_CHECK: &str = "/add_app_check/<op>";
+    pub const ROUTE_ADD_APP_REQUEST: &str = "/add_app_request/<op>";
 
     pub const BASE_ROUTES: &[RouteSpec] = &[
         RouteSpec {
@@ -43,7 +47,7 @@ pub mod routes {
         RouteSpec {
             method: HttpMethod::Post,
             path: ROUTE_UPLOAD,
-            params: PARAM_CAMERA_FILENAME,
+            params: PARAM_CAMERA_FILENAME_COUNTER,
         },
         RouteSpec {
             method: HttpMethod::Post,
@@ -144,6 +148,16 @@ pub mod routes {
             method: HttpMethod::Post,
             path: ROUTE_DEBUG_LOGS,
             params: PARAM_NONE,
+        },
+        RouteSpec {
+            method: HttpMethod::Get,
+            path: ROUTE_ADD_APP_CHECK,
+            params: PARAM_OP,
+        },
+        RouteSpec {
+            method: HttpMethod::Post,
+            path: ROUTE_ADD_APP_REQUEST,
+            params: PARAM_OP,
         },
     ];
 }
