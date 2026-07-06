@@ -34,7 +34,6 @@ use std::io::SeekFrom;
 use tokio::io::{AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 
 /// Writes a box length for everything appended in the supplied scope.
-#[macro_export]
 macro_rules! write_box {
     ($buf:expr, $fourcc:expr, $b:block) => {{
         let _: &mut BytesMut = $buf; // type-check.
@@ -50,6 +49,8 @@ macro_rules! write_box {
         r
     }};
 }
+
+pub(crate) use write_box;
 
 /// A chunk: a group of samples that have consecutive byte positions and same sample description.
 pub struct Chunk {

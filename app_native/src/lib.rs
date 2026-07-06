@@ -17,32 +17,25 @@ use secluso_client_lib::mls_clients::{
     CONFIG, FCM, LIVESTREAM, MLS_CLIENT_TAGS, MOTION, NUM_MLS_CLIENTS, THUMBNAIL,
     NUM_COMMON_MLS_CLIENTS, NUM_DEDICATED_MLS_CLIENTS,
 };
-use secluso_client_lib::pairing::{self, MAX_ALLOWED_MSG_LEN, generate_add_app_secret};
+use secluso_client_lib::pairing::{self, generate_add_app_secret, MessageTransport,
+    TcpStreamTransport, RelayTransport};
 use secluso_client_lib::video::{encrypt_video_file, decrypt_video_file, decrypt_thumbnail_file};
+use secluso_client_server_lib::auth::parse_user_credentials_full;
 use openmls::prelude::KeyPackage;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::array;
 use std::fs;
 use std::io;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::SocketAddr;
-use std::net::TcpStream;
+use std::io::{BufRead, BufReader, Write};
 use std::str;
-use std::str::FromStr;
-use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::io::ErrorKind;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // Used to generate random names.
 // With 16 alphanumeric characters, the probability of collision is very low.
 // Note: even if collision happens, it has no impact on
 // our security guarantees. Will only cause availability issues.
 const NUM_RANDOM_CHARS: u8 = 16;
-const CAMERA_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
-const CAMERA_IO_TIMEOUT: Duration = Duration::from_secs(12);
-const CAMERA_CONNECT_RETRIES: usize = 3;
-const CAMERA_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(350);
 
 #[derive(Serialize)]
 struct HeartbeatStatus {
@@ -112,52 +105,21 @@ fn get_app_name(first_time: bool, file_dir: String, filename: String) -> String 
     app_name
 }
 
-fn write_varying_len(stream: &mut TcpStream, msg: &[u8]) -> io::Result<()> {
-    // FIXME: is u64 necessary?
-    let len = msg.len() as u64;
-    let len_data = len.to_be_bytes();
-
-    stream.write_all(&len_data)?;
-    stream.write_all(msg)?;
-    stream.flush()?;
-
-    Ok(())
-}
-
-fn read_varying_len(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
-    let mut len_data = [0u8; 8];
-    stream.read_exact(&mut len_data)?;
-    let len = u64::from_be_bytes(len_data);
-
-    if len > MAX_ALLOWED_MSG_LEN {
-        error!("Communicated message length ({len}) exceeds the allowed length ({MAX_ALLOWED_MSG_LEN})");
-        return Err(io::Error::new(
-            ErrorKind::InvalidInput,
-            "Intended message length is too large",
-        ))
-    }
-
-    let mut msg = vec![0u8; len as usize];
-    stream.read_exact(&mut msg)?;
-
-    Ok(msg)
-}
-
 fn perform_pairing_handshake(
-    stream: &mut TcpStream,
+    msg_transport: &mut dyn MessageTransport,
     app_key_package: KeyPackage,
 ) -> anyhow::Result<KeyPackage> {
     let pairing = pairing::App::new(app_key_package);
     let app_msg = pairing.generate_msg_to_camera();
-    write_varying_len(stream, &app_msg)?;
-    let camera_msg = read_varying_len(stream)?;
+    msg_transport.send_msg(&app_msg, "app_msg")?;
+    let camera_msg = msg_transport.receive_msg("camera_msg")?;
     let camera_key_package = pairing.process_camera_msg(camera_msg)?;
 
     Ok(camera_key_package)
 }
 
 fn send_wifi_and_pairing_info(
-    stream: &mut TcpStream,
+    msg_transport: &mut dyn MessageTransport,
     mls_client: &mut MlsClient,
     wifi_ssid: String,
     wifi_password: String,
@@ -177,7 +139,7 @@ fn send_wifi_and_pairing_info(
         }
     };
     info!("Before Wifi Msg Sent");
-    write_varying_len(stream, &wifi_info_msg)?;
+    msg_transport.send_msg(&wifi_info_msg, "")?;
     info!("After Wifi Msg Sent");
 
     mls_client.save_group_state().unwrap();
@@ -186,7 +148,7 @@ fn send_wifi_and_pairing_info(
 }
 
 fn send_credentials_full(
-    stream: &mut TcpStream,
+    msg_transport: &mut dyn MessageTransport,
     mls_client: &mut MlsClient,
     credentials_full: String,
 ) -> io::Result<()> {
@@ -199,7 +161,7 @@ fn send_credentials_full(
         }
     };
 
-    write_varying_len(stream, &encrypted_msg)?;
+    msg_transport.send_msg(&encrypted_msg, "")?;
 
     mls_client.save_group_state().unwrap();
 
@@ -207,57 +169,28 @@ fn send_credentials_full(
 }
 
 fn receive_camera_version_info(
-    stream: &mut TcpStream,
+    msg_transport: &mut dyn MessageTransport,
 ) -> anyhow::Result<CameraVersionInfo> {
     info!("Receiving camera version info");
-    let version_info_bytes = read_varying_len(stream)?;
+    let version_info_bytes = msg_transport.receive_msg("firmware_version")?;
     let version_info = serde_json::from_slice::<CameraVersionInfo>(&version_info_bytes)?;
 
     Ok(version_info)
 }
 
 fn send_timestamp(
-    stream: &mut TcpStream,
+    msg_transport: &mut dyn MessageTransport,
 ) -> anyhow::Result<()> {
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let timestamp_vec = bincode::serialize(&timestamp).unwrap();
-    write_varying_len(stream, &timestamp_vec)?;
+    msg_transport.send_msg(&timestamp_vec, "")?;
 
     Ok(())
 }
 
-fn connect_camera_stream(addr: &SocketAddr) -> io::Result<TcpStream> {
-    let mut last_error: Option<io::Error> = None;
-
-    for attempt in 1..=CAMERA_CONNECT_RETRIES {
-        info!(
-            "Connecting to camera (attempt {attempt}/{CAMERA_CONNECT_RETRIES}, addr={addr})"
-        );
-
-        match TcpStream::connect_timeout(addr, CAMERA_CONNECT_TIMEOUT) {
-            Ok(stream) => {
-                stream.set_read_timeout(Some(CAMERA_IO_TIMEOUT))?;
-                stream.set_write_timeout(Some(CAMERA_IO_TIMEOUT))?;
-                let _ = stream.set_nodelay(true);
-                info!("Connected to camera transport (addr={addr})");
-                return Ok(stream);
-            }
-            Err(e) => {
-                info!("Error (connect attempt {attempt}): {e}");
-                last_error = Some(e);
-                if attempt < CAMERA_CONNECT_RETRIES {
-                    thread::sleep(CAMERA_CONNECT_RETRY_DELAY);
-                }
-            }
-        }
-    }
-
-    Err(last_error.unwrap_or_else(|| io::Error::other("camera connect failed")))
-}
-
 #[flutter_rust_bridge::frb]
 fn pair_with_camera(
-    stream: &mut TcpStream,
+    msg_transport: &mut dyn MessageTransport,
     camera_name: &str,
     mls_clients: &mut MlsClients,
     secret: Vec<u8>,
@@ -267,10 +200,10 @@ fn pair_with_camera(
 
         let app_key_package = mls_client.key_package();
 
-        let camera_key_package = perform_pairing_handshake(stream, app_key_package)?;
+        let camera_key_package = perform_pairing_handshake(msg_transport, app_key_package)?;
 
-        let camera_welcome_msg = read_varying_len(stream)?;
-        let group_name = read_varying_len(stream)?;
+        let camera_welcome_msg = msg_transport.receive_msg("welcome")?;
+        let group_name = msg_transport.receive_msg("group_name")?;
         let group_name_string = str::from_utf8(&group_name)?.to_string();
 
         let contact = MlsClient::create_contact(camera_name, camera_key_package)?;
@@ -332,6 +265,7 @@ pub fn add_camera(
     wifi_password: String,
     pairing_token: String,
     credentials_full: String,
+    android_camera: bool,
 ) -> String {
     if clients_reg.is_none() {
         info!("Error: clients not initialized!");
@@ -349,19 +283,31 @@ pub fn add_camera(
     }
 
     // Connect to the camera
-    //FIXME: port number hardcoded.
-    let addr = match SocketAddr::from_str(&(camera_ip + ":12348")) {
-        Ok(a) => a,
-        Err(e) => {
-            info!("Error: invalid IP address: {e}");
-            return "Error".to_string();
-        }
+    let msg_transport_ret: io::Result<Box<dyn MessageTransport>> = if android_camera {
+        let (server_username, server_password, server_addr) =
+            match parse_user_credentials_full(credentials_full.clone().into_bytes()) {
+                Ok(creds) => creds,
+                Err(e) => {
+                    info!("Error (parse credentials): {e}");
+                    return "Error".to_string();
+                }
+            };
+
+        RelayTransport::initialize_connect(
+            server_username,
+            server_password,
+            server_addr,
+        )
+        .map(|transport| Box::new(transport) as Box<dyn MessageTransport>)
+    } else {
+        TcpStreamTransport::initialize_connect(camera_ip)
+            .map(|transport| Box::new(transport) as Box<dyn MessageTransport>)
     };
 
-    let mut stream = match connect_camera_stream(&addr) {
-        Ok(s) => s,
+    let mut msg_transport = match msg_transport_ret {
+        Ok(m) => m,
         Err(e) => {
-            info!("Error (connect): {e}");
+            info!("Error (MessageTransport initialize): {e}");
             return "Error".to_string();
         }
     };
@@ -370,7 +316,7 @@ pub fn add_camera(
         // Need to send timestamp. RPi needs it for setting date/time.
         info!("Sending timestamp to camera");
         if let Err(e) = send_timestamp(
-            &mut stream,
+            msg_transport.as_mut(),
         ) {
             info!("Error (sending timestamp): {e}");
             return "Error".to_string();
@@ -379,7 +325,7 @@ pub fn add_camera(
 
     info!("Waiting for firmware version from camera");
     let version_info =
-        match receive_camera_version_info(&mut stream) {
+        match receive_camera_version_info(msg_transport.as_mut()) {
             Ok(version_info) => version_info,
             Err(e) => {
                 info!("Error (firmware): {e}");
@@ -399,7 +345,7 @@ pub fn add_camera(
     // Perform pairing
     info!("Starting camera pairing handshake");
     if let Err(e) = pair_with_camera(
-        &mut stream,
+        msg_transport.as_mut(),
         &camera_name,
         &mut clients.as_mut().mls_clients,
         secret_vec,
@@ -410,21 +356,23 @@ pub fn add_camera(
     info!("Camera pairing handshake completed");
 
     // Send credentials (username, password, and IP address of the server)
-    info!("Sending credentials to camera");
-    if let Err(e) = send_credentials_full(
-        &mut stream,
-        &mut clients.mls_clients[CONFIG],
-        credentials_full,
-    ) {
-        info!("Error (credentials): {e}");
-        return "Error".to_string();
+    if !android_camera {
+        info!("Sending credentials to camera");
+        if let Err(e) = send_credentials_full(
+            msg_transport.as_mut(),
+            &mut clients.mls_clients[CONFIG],
+            credentials_full,
+        ) {
+            info!("Error (credentials): {e}");
+            return "Error".to_string();
+        }
     }
 
     // Send Wi-Fi info
     if standalone_camera {
         info!("Sending Wi-Fi info to camera");
         if let Err(e) = send_wifi_and_pairing_info(
-            &mut stream,
+            msg_transport.as_mut(),
             &mut clients.mls_clients[CONFIG],
             wifi_ssid,
             wifi_password,

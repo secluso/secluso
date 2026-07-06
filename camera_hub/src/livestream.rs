@@ -3,7 +3,7 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
 use crate::delivery_monitor::DeliveryMonitor;
-use crate::Camera;
+use crate::traits::Camera;
 use secluso_client_lib::http_client::HttpClient;
 use secluso_client_lib::mls_client::MlsClient;
 use secluso_client_lib::mls_clients::MAX_OFFLINE_WINDOW;

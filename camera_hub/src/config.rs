@@ -4,7 +4,7 @@
 
 use crate::pairing::io::get_names;
 use crate::version::camera_version_info;
-use crate::DeliveryMonitor;
+use crate::delivery_monitor::DeliveryMonitor;
 use secluso_client_lib::config::{
     AddAppRequest, AddAppResponseCommon, AddAppResponseDedicated, Heartbeat, HeartbeatRequest,
     OPCODE_ADD_APP_REQUEST, OPCODE_ADD_APP_RESPONSE, OPCODE_HEARTBEAT_REQUEST,
@@ -145,25 +145,20 @@ fn handle_add_app_request(
 
     let add_app_resps_com: [AddAppResponseCommon; NUM_COMMON_MLS_CLIENTS] =
         std::array::from_fn(|i| {
-            println!("handle_add_app_request [1]");
             let camera_key_package = clients_com[i].key_package();
 
             // FIXME: "app2" is hardcoded.
-            println!("handle_add_app_request [2]");
             let camera_contact =
                 MlsClient::create_contact("app2", add_app_requests[i].new_app_key_package.clone())
                     .unwrap();
 
-            println!("handle_add_app_request [3]");
             // FIXME: Use a different secret per channel
             let (welcome_msg_vec, psk_proposal_vec, commit_msg_vec) = clients_com[i]
                 .invite_with_secret(&camera_contact, add_app_requests[i].secret.clone())
                 .unwrap();
 
-            println!("handle_add_app_request [4]");
             clients_com[i].save_group_state().unwrap();
 
-            println!("handle_add_app_request [5]");
             AddAppResponseCommon {
                 camera_key_package,
                 welcome_msg_vec,
@@ -188,7 +183,6 @@ fn handle_add_app_request(
     config_msg.extend(bincode::serialize(&add_app_resp_combined)?);
 
     let config_msg_enc = clients_ded[CONFIG_DED].encrypt(&config_msg)?;
-    println!("[1]: config_msg_enc len = {:?}", config_msg_enc.len());
     clients_ded[CONFIG_DED].save_group_state()?;
 
     http_client.config_response(

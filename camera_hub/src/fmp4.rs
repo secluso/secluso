@@ -26,7 +26,7 @@
 
 use crate::mp4::{Mp4WriterCore, TrakTrackerCore};
 use crate::traits::{CodecParameters, Mp4};
-use crate::write_box;
+use crate::mp4::write_box;
 use anyhow::{anyhow, Error};
 use bytes::{BufMut, BytesMut};
 

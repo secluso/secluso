@@ -4,11 +4,17 @@ version = "1.0.2"
 edition = "2021"
 authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
 
+[lib]
+name = "secluso_camera_hub"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
 [features]
 default = ["logging"]
 logging = ["log"]
 ip = ["dep:rpassword", "dep:reqwest", "dep:http-auth", "dep:linfa", "dep:linfa-clustering", "dep:retina", "dep:serde_yaml2", "dep:ndarray", "dep:futures", "secluso-client-lib/camera_secret_qrcode"]
 raspberry = ["dep:secluso-motion-ai"]
+android = ["dep:ndk-sys", "dep:secluso-motion-ai"]
 manual = []
 telemetry = [] # todo: dep on the motion_ai crate
 test = []
@@ -37,6 +43,7 @@ crossbeam-channel = "0.5.15"
 cfg-if = "1.0.4"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json"], optional = true }
 serde_json = { version = "1.0" }
+ndk-sys = { version = "0.6.0+11769913", optional = true }
 
 # IP Specific Dependencies
 rpassword = {version = "7.4", optional = true }

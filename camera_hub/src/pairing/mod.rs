@@ -7,12 +7,15 @@
 //      No pairing logic.
 //
 // wifi - networking utilities (e.g. nmcli-based).
-//        Only for cameras that manage their own WiFi hotspot
+//        Only for cameras that manage their own WiFi hotspot.
 //        IP cameras don't need it.
-
-#[cfg(any(feature = "raspberry", feature = "test"))]
-pub mod wifi;
+//
+// relay - relay-based pairing.
+//         Only for cameras that perform pairing via the relay.
 
 pub mod flow;
 
 pub mod io;
+
+#[cfg(feature = "raspberry")]
+pub mod wifi;

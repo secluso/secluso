@@ -1,4 +1,4 @@
-//! Code to manage the Raspberry Pi Camera
+//! Code to manage the Android Camera
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -6,14 +6,13 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::{
     collections::VecDeque,
     io,
-    process::Command,
     sync::{Arc, Mutex},
     thread,
     time::Duration,
 };
 
 use crate::motion::MotionResult;
-use crate::raspberry_pi::rpi_dual_stream;
+use crate::android::android_dual_stream;
 use crate::traits::Mp4;
 use crate::{
     delivery_monitor::VideoInfo,
@@ -21,20 +20,23 @@ use crate::{
     livestream::LivestreamWriter,
     mp4::Mp4Writer,
     traits::{Camera, CodecParameters},
-    mp4::write_box,
 };
+use crate::mp4::write_box;
 use anyhow::Error;
 use bytes::{BufMut, BytesMut};
 use crossbeam_channel::unbounded;
-use image::RgbImage;
-use secluso_client_lib::thumbnail_meta_info::GeneralDetectionType;
-use secluso_motion_ai::logic::pipeline::PipelineController;
-use secluso_motion_ai::ml::models::DetectionType;
-use secluso_motion_ai::pipeline;
+//FIXME
+//use secluso_client_lib::thumbnail_meta_info::GeneralDetectionType;
+//use secluso_motion_ai::logic::pipeline::PipelineController;
+//use secluso_motion_ai::ml::models::DetectionType;
+//use secluso_motion_ai::pipeline;
 use tokio::runtime::Runtime;
+
+//FIXME: this file has A LOT in common with rpi_camera.rs. Consolidate.
 
 const TOTAL_FRAME_RATE: usize = 10;
 const I_FRAME_INTERVAL: usize = TOTAL_FRAME_RATE; // 1-second fragments
+const DEFAULT_BITRATE: usize = 2_000_000;
 
 //These are for our local SPS/PPS channel
 #[derive(PartialEq, Debug, Clone)]
@@ -53,24 +55,13 @@ pub struct Frame {
     pub timestamp: SystemTime,
 }
 
-impl Frame {
-    pub fn new(data: Vec<u8>, kind: FrameKind) -> Self {
-        Self {
-            data,
-            kind,
-            timestamp: SystemTime::now(),
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct CameraResolution {
     width: usize,
     height: usize,
 }
 
-/// RaspberryPiCamera uses the shared stream for both motion detection (via raw YUV420 frames) and recording/livestreaming (via H.264).
-pub struct RaspberryPiCamera {
+pub struct AndroidCamera {
     name: String,
     state_dir: String,
     video_dir: String,
@@ -78,20 +69,24 @@ pub struct RaspberryPiCamera {
     frame_queue: Arc<Mutex<VecDeque<Frame>>>,
     sps_frame: Frame,
     pps_frame: Frame,
-    motion_detection: Arc<Mutex<PipelineController>>,
+    //FIXME
+    //motion_detection: Arc<Mutex<PipelineController>>,
     resolution: CameraResolution,
+    _stream_handle: android_dual_stream::AndroidStreamHandle,
 }
 
-impl RaspberryPiCamera {
+impl AndroidCamera {
     pub fn new(
         name: String,
         state_dir: String,
         video_dir: String,
         thumbnail_dir: String,
         motion_fps: u64,
-        save_all: bool,
+        //FIXME
+        _save_all: bool,
+        facing: i32,
     ) -> Self {
-        println!("Initializing Raspberry Pi Camera...");
+        println!("Initializing Android Camera...");
 
         // Create a channel to receive SPS/PPS frames.
         let (ps_tx, ps_rx) = unbounded::<Frame>();
@@ -99,6 +94,8 @@ impl RaspberryPiCamera {
         // Frame queue holds recently processed H.264 and audio frames.
         let frame_queue = Arc::new(Mutex::new(VecDeque::new()));
 
+        //FIXME
+        /*
         // Start motion detection using raw frames from the shared stream.
         let pipeline = pipeline![
             secluso_motion_ai::logic::stages::MotionStage,
@@ -140,24 +137,39 @@ impl RaspberryPiCamera {
 
             debug!("Exited controller tick loop");
         });
+        */
 
-        let resolution: CameraResolution = Self::fetch_resolution().expect("A supported camera module was not found");
+        // FIXME: hard-coded.
+        let resolution = CameraResolution {
+            width: 1280,
+            height: 720,
+        };
+
+        log::info!(
+            "AndroidCamera: starting dual stream facing={} resolution={}x{} fps={}",
+            facing,
+            resolution.width,
+            resolution.height,
+            TOTAL_FRAME_RATE
+        );
 
         // Start the new shared stream.
-        rpi_dual_stream::start(
+        let stream_handle = android_dual_stream::start(
+            facing,
             resolution.width,
             resolution.height,
             TOTAL_FRAME_RATE,
             I_FRAME_INTERVAL,
-            Arc::clone(&motion_detection),
+            DEFAULT_BITRATE,
+            //FIXME
+            //Arc::clone(&motion_detection),
             Arc::clone(&frame_queue),
             ps_tx,
             motion_fps as u8,
         )
-            .expect("Failed to start shared stream");
+        .expect("Failed to start shared stream");
 
-        rpi_dual_stream::start_audio(Arc::clone(&frame_queue))
-            .expect("Failed to start audio stream");
+        log::info!("AndroidCamera: waiting for encoder SPS/PPS");
 
         // Wait for the SPS and PPS frames before continuing.
         let mut sps_frame_opt = None;
@@ -169,16 +181,29 @@ impl RaspberryPiCamera {
             }
 
             let frame = frame_attempt.unwrap();
+
+            log::info!(
+                "AndroidCamera: received frame while waiting for SPS/PPS: kind={:?}, len={}",
+                frame.kind,
+                frame.data.len()
+            );
+
             match frame.kind {
-                FrameKind::Sps => sps_frame_opt = Some(frame),
-                FrameKind::Pps => pps_frame_opt = Some(frame),
-                _ => {} // ignore unexpected frames
+                FrameKind::Sps => {
+                    log::info!("AndroidCamera: received SPS");
+                    sps_frame_opt = Some(frame);
+                }
+                FrameKind::Pps => {
+                    log::info!("AndroidCamera: received PPS");
+                    pps_frame_opt = Some(frame);
+                }
+                _ => {}
             }
         }
         let sps_frame = sps_frame_opt.expect("SPS frame missing");
         let pps_frame = pps_frame_opt.expect("PPS frame missing");
 
-        println!("RaspberryPiCamera initialized.");
+        println!("AndroidCamera initialized.");
 
         Self {
             name,
@@ -188,8 +213,10 @@ impl RaspberryPiCamera {
             frame_queue,
             sps_frame,
             pps_frame,
-            motion_detection,
+            //FIXME
+            //motion_detection,
             resolution,
+            _stream_handle: stream_handle,
         }
     }
 
@@ -306,13 +333,13 @@ impl RaspberryPiCamera {
 
         let sps_bytes = sps_frame.data[sps_start_len..].to_vec();
         let pps_bytes = pps_frame.data[pps_start_len..].to_vec();
-
+        
         let mut mp4 = Mp4Writer::new(
-            RpiCameraVideoParameters::new(
+            AndroidVideoParameters::new(
                 // For MP4, remove the start code (assumes a 4-byte start code).
                 sps_bytes, pps_bytes, resolution,
             ),
-            RpiCameraAudioParameters::new(),
+            AndroidAudioParameters::new(),
             file,
         )
             .await?;
@@ -431,8 +458,8 @@ impl RaspberryPiCamera {
         }
 
         let mut fmp4 = Fmp4Writer::new(
-            RpiCameraVideoParameters::new(sps.to_vec(), pps.to_vec(), resolution),
-            RpiCameraAudioParameters::new(),
+            AndroidVideoParameters::new(sps.to_vec(), pps.to_vec(), resolution),
+            AndroidAudioParameters::new(),
             livestream_writer,
         )
             .await?;
@@ -509,60 +536,13 @@ impl RaspberryPiCamera {
         }
         out
     }
-
-    pub fn fetch_resolution() -> Option<CameraResolution> {
-        debug!("Attempting to fetch the type of sensor attached to the Raspberry Pi");
-
-        // Hard coded width x height based on the Camera Module connected to the Raspberry Pi.
-        // Camera Module V1 (OV5647): 1296 x 972 (60% of 1080p)
-        // Camera Module V2 (IMX219): 1640 x 1232 (97% of 1080p)
-        // Even though these support 1080p directly, if we were to use that, the sides would be cropped out due to the aspect ratio of the sensor.
-        const CAMERA_RESOLUTION_V1: (usize, usize) = (1296, 972);
-        const CAMERA_RESOLUTION_V2: (usize, usize) = (1640, 1232);
-
-        // Detection logic to determine if the attached camera module is a V1, V2 or other (which likely won't reach this point as they aren't supported in the Secluso OS image regardless)
-        // Sample Output of "rpicam-hello --list-cameras" that we must parse:
-        //
-        // Available cameras
-        // -----------------
-        // 0 : imx219 [3280x2464] (/base/soc/i2c0mux/i2c@1/imx219@10)
-        //     Modes: 'SRGGB10_CSI2P' : 640x480 [206.65 fps - (1000, 752)/1280x960 crop]
-        //                              1640x1232 [41.85 fps - (0, 0)/3280x2464 crop] **NOTICE** how this says (0,0) crop. That means that unlike 1920x1080, the sides aren't cut out, and we can get a wider view. This is only a 3% drop in resolution
-        //                              1920x1080 [47.57 fps - (680, 692)/1920x1080 crop]
-        //                              3280x2464 [21.19 fps - (0, 0)/3280x2464 crop]
-        //            'SRGGB8' : 640x480 [206.65 fps - (1000, 752)/1280x960 crop]
-        //                       1640x1232 [41.85 fps - (0, 0)/3280x2464 crop]
-        //                       1920x1080 [47.57 fps - (680, 692)/1920x1080 crop]
-        //                       3280x2464 [21.19 fps - (0, 0)/3280x2464 crop]
-
-        let output = Command::new("rpicam-hello")
-            .args(["--list-cameras"])
-            .output()
-            .expect("failed to execute rpicam-hello --list-cameras to get sensor type");
-
-        // Extract the raw-bytes that we captured from the rpicam-hello command
-        let stdout = String::from_utf8(output.stdout).unwrap();
-
-        // Parse the output (as seen in the example above)
-        return if stdout.contains("imx219") {
-            Some(CameraResolution {
-                width: CAMERA_RESOLUTION_V2.0,
-                height: CAMERA_RESOLUTION_V2.1,
-            })
-        } else if stdout.contains("ov5647") {
-            Some(CameraResolution {
-                width: CAMERA_RESOLUTION_V1.0,
-                height: CAMERA_RESOLUTION_V1.1,
-            })
-        } else {
-            None
-        }
-    }
 }
 
-impl Camera for RaspberryPiCamera {
+impl Camera for AndroidCamera {
     /// When Ok, there's motion
     fn is_there_motion(&mut self) -> Result<MotionResult, Error> {
+        //FIXME
+        /*
         if let Some(pipeline_result) = self.motion_detection.lock().unwrap().motion_recently()? {
             if pipeline_result.motion {
                 let frame = pipeline_result.thumbnail;
@@ -591,6 +571,12 @@ impl Camera for RaspberryPiCamera {
         }
         Ok(MotionResult {
             motion: false,
+            thumbnail: None,
+            detections: vec![],
+        })
+        */
+        Ok(MotionResult {
+            motion: true,
             thumbnail: None,
             detections: vec![],
         })
@@ -661,19 +647,19 @@ impl Camera for RaspberryPiCamera {
     }
 }
 
-struct RpiCameraVideoParameters {
+struct AndroidVideoParameters {
     sps: Vec<u8>,
     pps: Vec<u8>,
     dimensions: CameraResolution,
 }
 
-impl RpiCameraVideoParameters {
-    pub fn new(sps: Vec<u8>, pps: Vec<u8>, dimensions: CameraResolution) -> Self {
+impl AndroidVideoParameters {
+    fn new(sps: Vec<u8>, pps: Vec<u8>, dimensions: CameraResolution) -> Self {
         Self { sps, pps, dimensions }
     }
 }
 
-impl CodecParameters for RpiCameraVideoParameters {
+impl CodecParameters for AndroidVideoParameters {
     fn write_codec_box(&self, buf: &mut BytesMut) -> Result<(), Error> {
         write_box!(buf, b"avc1", {
             // VisualSampleEntry per ISO/IEC 14496-12
@@ -761,13 +747,13 @@ impl CodecParameters for RpiCameraVideoParameters {
     }
 }
 
-struct RpiCameraAudioParameters {
+struct AndroidAudioParameters {
     sample_rate: u32, // 48000
     channels: u16,    // 1
     asc: [u8; 2],     // AudioSpecificConfig
 }
 
-impl RpiCameraAudioParameters {
+impl AndroidAudioParameters {
     fn new() -> Self {
         Self {
             sample_rate: 48_000,
@@ -777,7 +763,7 @@ impl RpiCameraAudioParameters {
     }
 }
 
-impl CodecParameters for RpiCameraAudioParameters {
+impl CodecParameters for AndroidAudioParameters {
     fn write_codec_box(&self, buf: &mut BytesMut) -> Result<(), Error> {
         write_box!(buf, b"mp4a", {
             // 6 reserved bytes
