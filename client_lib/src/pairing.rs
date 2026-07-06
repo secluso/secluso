@@ -14,6 +14,7 @@ use openmls_traits::random::OpenMlsRand;
 use openmls_traits::OpenMlsProvider;
 use rand::distr::Uniform;
 use rand::Rng;
+#[cfg(feature = "http_client")]
 use crate::http_client::HttpClient;
 use log::{error, info};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -376,10 +377,12 @@ impl MessageTransport for TcpStreamTransport {
     }
 }
 
+#[cfg(feature = "http_client")]
 pub struct RelayTransport {
     http_client: HttpClient,
 }
 
+#[cfg(feature = "http_client")]
 impl RelayTransport {
     pub fn initialize_connect(
         server_username: String,
@@ -412,6 +415,7 @@ impl RelayTransport {
     }
 }
 
+#[cfg(feature = "http_client")]
 impl MessageTransport for RelayTransport {
     fn send_msg(&mut self, msg: &[u8], msg_tag: &str) -> io::Result<()> {
         // If RelayTransport is used, all msgs have to have tags.
