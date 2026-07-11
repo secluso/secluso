@@ -3,8 +3,7 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::collections::VecDeque;
-use std::ffi::CStr;
-use std::os::raw::{c_char, c_int, c_uchar, c_void};
+use std::os::raw::c_int;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -22,7 +21,7 @@ struct AndroidStreamState {
 
 pub struct AndroidStreamHandle {
     _native: ndk::NativeCamera,
-    _state: Box<AndroidStreamState>,
+    _state: Arc<AndroidStreamState>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -39,7 +38,7 @@ pub fn start(
     ps_tx: Sender<Frame>,
     motion_fps: u8,
 ) -> anyhow::Result<AndroidStreamHandle> {
-    let mut state = Box::new(AndroidStreamState {
+    let state = Arc::new(AndroidStreamState {
         frame_queue,
         ps_tx,
     });
@@ -55,7 +54,7 @@ pub fn start(
     };
 
     let callbacks = ndk::CameraCallbacks {
-        user_data: (&mut *state as *mut AndroidStreamState).cast(),
+        state: Arc::clone(&state),
         on_h264,
         on_aac,
         on_raw_i420,
@@ -71,28 +70,18 @@ pub fn start(
     })
 }
 
-extern "C" fn on_h264(
-    user_data: *mut c_void,
-    data: *const c_uchar,
-    len: usize,
-    kind: c_int,
+fn on_h264(
+    state: &AndroidStreamState,
+    data: &[u8],
+    kind: FrameKind,
 ) {
-    if user_data.is_null() || data.is_null() || len == 0 {
+    if data.is_empty() {
         return;
     }
 
-    let state = unsafe { &*(user_data.cast::<AndroidStreamState>()) };
-    let bytes = unsafe { std::slice::from_raw_parts(data, len) }.to_vec();
-    let frame_kind = match kind {
-        7 => FrameKind::Sps,
-        8 => FrameKind::Pps,
-        5 => FrameKind::IFrame,
-        _ => FrameKind::RFrame,
-    };
-
     let frame = Frame {
-        data: bytes,
-        kind: frame_kind,
+        data: data.to_vec(),
+        kind,
         timestamp: SystemTime::now(),
     };
 
@@ -102,15 +91,16 @@ extern "C" fn on_h264(
     add_frame_and_drop_old(Arc::clone(&state.frame_queue), frame);
 }
 
-extern "C" fn on_aac(user_data: *mut c_void, data: *const c_uchar, len: usize) {
-    if user_data.is_null() || data.is_null() || len == 0 {
+fn on_aac(
+    state: &AndroidStreamState,
+    data: &[u8]
+) {
+    if data.is_empty() {
         return;
     }
 
-    let state = unsafe { &*(user_data.cast::<AndroidStreamState>()) };
-    let bytes = unsafe { std::slice::from_raw_parts(data, len) }.to_vec();
     let frame = Frame {
-        data: bytes,
+        data: data.to_vec(),
         kind: FrameKind::Audio,
         timestamp: SystemTime::now(),
     };
@@ -118,40 +108,33 @@ extern "C" fn on_aac(user_data: *mut c_void, data: *const c_uchar, len: usize) {
     add_frame_and_drop_old(Arc::clone(&state.frame_queue), frame);
 }
 
-extern "C" fn on_raw_i420(
-    user_data: *mut c_void,
-    data: *const c_uchar,
-    len: usize,
-    width: c_int,
-    height: c_int,
+fn on_raw_i420(
+    _state: &AndroidStreamState,
+    data: &[u8],
+    width: usize,
+    height: usize,
 ) {
-    if user_data.is_null() || data.is_null() || len == 0 || width <= 0 || height <= 0 {
+    if data.is_empty() || width == 0 || height == 0 {
         return;
     }
 
-    let expected = width as usize * height as usize * 3 / 2;
-    if len < expected {
+    let expected = width * height * 3 / 2;
+    if data.len() < expected {
         return;
     }
 
     //FIXME
     /*
-    let state = unsafe { &*(user_data.cast::<AndroidStreamState>()) };
-    let buffer = unsafe { std::slice::from_raw_parts(data, expected) }.to_vec();
-    let raw_frame = RawFrame::create_from_buffer(buffer, width as usize, height as usize);
+    let buffer = data[..expected].to_vec();
+    let raw_frame = RawFrame::create_from_buffer(buffer, width, height);
     if let Ok(mut lock) = state.pipeline_controller.lock() {
         lock.push_frame(raw_frame);
     }
     */
 }
 
-extern "C" fn on_error(_user_data: *mut c_void, message: *const c_char) {
-    if message.is_null() {
-        eprintln!("[AndroidCamera] unknown native camera error");
-        return;
-    }
-    let msg = unsafe { CStr::from_ptr(message) }.to_string_lossy();
-    error!("[AndroidCamera] {msg}");
+fn on_error(message: &str) {
+    error!("[AndroidCamera] {message}");
 }
 
 //FIXME: copied from rpi_dual_stream.rs
@@ -174,13 +157,12 @@ fn add_frame_and_drop_old(frame_queue: Arc<Mutex<VecDeque<Frame>>>, frame: Frame
     }
 }
 
-// native layer
 mod ndk {
     use std::ffi::CString;
-    use std::os::raw::{c_char, c_int, c_uchar, c_void};
+    use std::os::raw::{c_char, c_int, c_void};
     use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Condvar, Mutex};
     use std::thread::{self, JoinHandle};
     use std::time::{Duration, Instant};
 
@@ -198,6 +180,7 @@ mod ndk {
     const K_AUDIO_BYTES_PER_SAMPLE: usize = std::mem::size_of::<i16>();
     const K_AAC_OBJECT_LC: c_int = 2;
 
+    #[derive(Clone, Copy)]
     pub(super) struct CameraConfig {
         pub facing: c_int,
         pub width: c_int,
@@ -208,26 +191,35 @@ mod ndk {
         pub motion_fps: c_int,
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone)]
     pub(super) struct CameraCallbacks {
-        pub user_data: *mut c_void,
-        pub on_h264: extern "C" fn(*mut c_void, *const c_uchar, usize, c_int),
-        pub on_aac: extern "C" fn(*mut c_void, *const c_uchar, usize),
-        pub on_raw_i420: extern "C" fn(*mut c_void, *const c_uchar, usize, c_int, c_int),
-        pub on_error: extern "C" fn(*mut c_void, *const c_char),
+        pub state: Arc<super::AndroidStreamState>,
+        pub on_h264: fn(&super::AndroidStreamState, &[u8], super::FrameKind),
+        pub on_aac: fn(&super::AndroidStreamState, &[u8]),
+        pub on_raw_i420: fn(&super::AndroidStreamState, &[u8], usize, usize),
+        pub on_error: fn(&str),
     }
 
     pub(super) struct NativeCamera {
         bridge: Box<CameraBridge>,
     }
 
+    // SAFETY
+    // 1. Native callbacks access only the shared callback state through shared references.
+    // 2. The callback state remains live until native callback sources are closed and callbacks finish.
+    // 3. Workers stop before native handles are freed.
     unsafe impl Send for NativeCamera {}
 
     impl NativeCamera {
         pub(super) fn start(config: CameraConfig, callbacks: CameraCallbacks) -> Result<Self, String> {
             let mut bridge = Box::new(CameraBridge::new(config, callbacks));
             unsafe {
+                // SAFETY
+                // 1. bridge.callback_state allocation remains live while callbacks are registered.
                 if let Err(err) = bridge.start() {
+                    // SAFETY
+                    // 1. Native handles, if not null, are live.
+                    // 2. Registered callbacks still point to bridge.callback_state until callbacks finish.
                     bridge.stop();
                     return Err(err);
                 }
@@ -238,6 +230,9 @@ mod ndk {
 
     impl Drop for NativeCamera {
         fn drop(&mut self) {
+            // SAFETY
+            // 1. Native handles, if not null, are live.
+            // 2. Registered callbacks still point to the bridge callback state until callbacks finish.
             unsafe {
                 self.bridge.stop();
             }
@@ -248,13 +243,12 @@ mod ndk {
         config: CameraConfig,
         callbacks: CameraCallbacks,
         running: Arc<AtomicBool>,
+        callback_state: Arc<CameraCallbackState>,
         audio_enabled: bool,
         audio_encoder_started: bool,
         camera_id: Option<CString>,
         encoder_thread: Option<JoinHandle<()>>,
         audio_thread: Option<JoinHandle<()>>,
-        image_mutex: Mutex<()>,
-        last_raw_emit: Mutex<Option<Instant>>,
         manager: *mut sys::ACameraManager,
         device: *mut sys::ACameraDevice,
         session: *mut sys::ACameraCaptureSession,
@@ -272,30 +266,79 @@ mod ndk {
         audio_stream: *mut sys::AAudioStream,
     }
 
-    struct ThreadState {
+    struct CameraCallbackState {
+        config: CameraConfig,
+        callbacks: CameraCallbacks,
+        running: Arc<AtomicBool>,
+        activity: Mutex<CallbackActivity>,
+        activity_changed: Condvar,
+        image_mutex: Mutex<()>,
+        last_raw_emit: Mutex<Option<Instant>>,
+    }
+
+    struct CallbackActivity {
+        stopping: bool,
+        active: usize,
+    }
+
+    struct CallbackGuard<'a> {
+        state: &'a CameraCallbackState,
+        enabled: bool,
+    }
+
+    struct VideoEncoderThreadState {
         running: Arc<AtomicBool>,
         callbacks: CameraCallbacks,
         encoder: *mut sys::AMediaCodec,
+    }
+
+    struct AudioThreadState {
+        running: Arc<AtomicBool>,
+        callbacks: CameraCallbacks,
         audio_encoder: *mut sys::AMediaCodec,
         audio_stream: *mut sys::AAudioStream,
     }
 
-    unsafe impl Send for ThreadState {}
-    unsafe impl Sync for ThreadState {}
+    // SAFETY
+    // 1. This state is moved into exactly one video encoder worker thread.
+    // 2. The raw encoder handle remains live until
+    // CameraBridge::stop sets running = false, joins the worker, and only then
+    // deletes the codec.
+    unsafe impl Send for VideoEncoderThreadState {}
+
+    // SAFETY
+    // 1. This state is moved into exactly one audio worker thread.
+    // 2. The raw audio stream and audio encoder handles remain live until
+    // CameraBridge::stop sets running = false, requests stream stop,
+    // joins the worker, and only then closes/deletes the audio resources.
+    unsafe impl Send for AudioThreadState {}
 
     impl CameraBridge {
         fn new(config: CameraConfig, callbacks: CameraCallbacks) -> Self {
+            let running = Arc::new(AtomicBool::new(false));
+            let callback_state = Arc::new(CameraCallbackState {
+                config,
+                callbacks: callbacks.clone(),
+                running: Arc::clone(&running),
+                activity: Mutex::new(CallbackActivity {
+                    stopping: false,
+                    active: 0,
+                }),
+                activity_changed: Condvar::new(),
+                image_mutex: Mutex::new(()),
+                last_raw_emit: Mutex::new(None),
+            });
+
             Self {
                 config,
                 callbacks,
-                running: Arc::new(AtomicBool::new(false)),
+                running,
+                callback_state,
                 audio_enabled: false,
                 audio_encoder_started: false,
                 camera_id: None,
                 encoder_thread: None,
                 audio_thread: None,
-                image_mutex: Mutex::new(()),
-                last_raw_emit: Mutex::new(None),
                 manager: ptr::null_mut(),
                 device: ptr::null_mut(),
                 session: ptr::null_mut(),
@@ -314,44 +357,75 @@ mod ndk {
             }
         }
 
+        /// # Safety
+        /// 1. self.callback_state allocation must remain live while native callbacks are registered.
         unsafe fn start(&mut self) -> Result<(), String> {
+            if self.running.load(Ordering::SeqCst) || !self.manager.is_null() {
+                return self.fail("Android camera already started");
+            }
+
             self.manager = sys::ACameraManager_create();
             if self.manager.is_null() {
                 return self.fail("ACameraManager_create failed");
             }
 
+            // SAFETY
+            // 1. self.manager is a live ACameraManager.
             self.select_camera()?;
+            // SAFETY
+            // 1. self.callback_state allocation stays live while the listener is installed.
             self.create_reader()?;
+            // SAFETY
+            // None.
             self.create_encoder()?;
+            // SAFETY
+            // create_audio_encoder: None.
+            // create_audio_recorder: None.
             self.audio_enabled = self.create_audio_encoder().is_ok() && self.create_audio_recorder().is_ok();
             if !self.audio_enabled {
                 log::warn!("Android audio disabled; continuing with video-only camera startup");
+                // SAFETY
+                // 1. Audio handles, if not null, are live.
+                // 2. No audio worker has been spawned yet.
                 self.release_audio_resources();
             }
+            // SAFETY
+            // 1. self.manager is live.
+            // 2. self.callback_state allocation stays live while callbacks are registered.
             self.open_camera()?;
+            // SAFETY
+            // 1. device, encoder_window, and raw_window are live.
             self.create_capture_session()?;
 
             self.running.store(true, Ordering::SeqCst);
 
-            let thread_state = Arc::new(ThreadState {
+            let encoder_state = VideoEncoderThreadState {
                 running: Arc::clone(&self.running),
-                callbacks: self.callbacks,
+                callbacks: self.callbacks.clone(),
                 encoder: self.encoder,
-                audio_encoder: self.audio_encoder,
-                audio_stream: self.audio_stream,
-            });
+            };
 
-            let encoder_state = Arc::clone(&thread_state);
             self.encoder_thread = Some(thread::spawn(move || {
                 encoder_state.drain_encoder();
             }));
 
             if self.audio_enabled {
+                // SAFETY
+                // 1. self.audio_stream is live.
                 if sys::AAudioStream_requestStart(self.audio_stream) != sys::AAUDIO_OK {
                     log::warn!("AAudioStream_requestStart failed; continuing without audio");
+                    // SAFETY
+                    // 1. Audio handles, if not null, are live.
+                    // 2. No audio worker has been spawned yet.
                     self.release_audio_resources();
                 } else {
-                    let audio_state = Arc::clone(&thread_state);
+                    let audio_state = AudioThreadState {
+                        running: Arc::clone(&self.running),
+                        callbacks: self.callbacks.clone(),
+                        audio_encoder: self.audio_encoder,
+                        audio_stream: self.audio_stream,
+                    };
+
                     self.audio_thread = Some(thread::spawn(move || {
                         audio_state.drain_audio();
                     }));
@@ -361,17 +435,29 @@ mod ndk {
             Ok(())
         }
 
+        /// # Safety
+        /// 1. Native handles, if not null, must be live.
+        /// 2. Registered callbacks must still point to self.callback_state until callbacks finish.
         unsafe fn stop(&mut self) {
+            self.callback_state.stop_callbacks();
             let was_running = self.running.swap(false, Ordering::SeqCst);
 
             if !self.session.is_null() {
+                // SAFETY
+                // 1. self.session is a live capture session.
                 let _ = sys::ACameraCaptureSession_stopRepeating(self.session);
+                // SAFETY
+                // 1. self.session is a live capture session.
                 let _ = sys::ACameraCaptureSession_abortCaptures(self.session);
+                // SAFETY
+                // 1. self.session is a live capture session.
                 sys::ACameraCaptureSession_close(self.session);
                 self.session = ptr::null_mut();
             }
 
             if !self.audio_stream.is_null() {
+                // SAFETY
+                // 1. self.audio_stream is live.
                 let _ = sys::AAudioStream_requestStop(self.audio_stream);
             }
 
@@ -383,56 +469,91 @@ mod ndk {
             }
 
             if !self.encoder.is_null() {
+                // SAFETY
+                // 1. self.encoder is live and the worker is joined.
                 let _ = sys::AMediaCodec_stop(self.encoder);
+                // SAFETY
+                // 1. self.encoder is live.
                 sys::AMediaCodec_delete(self.encoder);
                 self.encoder = ptr::null_mut();
             }
 
+            // SAFETY
+            // 1. Audio handles, if not null, are live.
+            // 2. Audio worker has been joined.
             self.release_audio_resources();
 
             if !self.capture_request.is_null() {
+                // SAFETY
+                // 1. self.capture_request is live.
                 sys::ACaptureRequest_free(self.capture_request);
                 self.capture_request = ptr::null_mut();
             }
             if !self.encoder_target.is_null() {
+                // SAFETY
+                // 1. self.encoder_target is live.
                 sys::ACameraOutputTarget_free(self.encoder_target);
                 self.encoder_target = ptr::null_mut();
             }
             if !self.raw_target.is_null() {
+                // SAFETY
+                // 1. self.raw_target is live.
                 sys::ACameraOutputTarget_free(self.raw_target);
                 self.raw_target = ptr::null_mut();
             }
             if !self.outputs.is_null() {
+                // SAFETY
+                // 1. self.outputs is live.
                 sys::ACaptureSessionOutputContainer_free(self.outputs);
                 self.outputs = ptr::null_mut();
             }
             if !self.encoder_output.is_null() {
+                // SAFETY
+                // 1. self.encoder_output is live.
                 sys::ACaptureSessionOutput_free(self.encoder_output);
                 self.encoder_output = ptr::null_mut();
             }
             if !self.raw_output.is_null() {
+                // SAFETY
+                // 1. self.raw_output is live.
                 sys::ACaptureSessionOutput_free(self.raw_output);
                 self.raw_output = ptr::null_mut();
             }
             if !self.encoder_window.is_null() {
+                // SAFETY
+                // 1. self.encoder_window is live.
                 sys::ANativeWindow_release(self.encoder_window);
                 self.encoder_window = ptr::null_mut();
             }
+            self.callback_state.wait_for_callbacks();
+
             if !self.reader.is_null() {
-                let _guard = self.image_mutex.lock().unwrap();
+                let _guard = self.callback_state.image_mutex.lock().unwrap();
+                // SAFETY
+                // 1. All enabled image callbacks have finished.
+                // 2. self.reader is live.
                 sys::AImageReader_setImageListener(self.reader, ptr::null_mut());
+                // SAFETY
+                // 1. The listener is cleared and all enabled image callbacks have finished.
+                // 2. self.reader is live.
                 sys::AImageReader_delete(self.reader);
                 self.reader = ptr::null_mut();
                 self.raw_window = ptr::null_mut();
             }
             if !self.device.is_null() {
+                // SAFETY
+                // 1. self.device is live.
                 sys::ACameraDevice_close(self.device);
                 self.device = ptr::null_mut();
             }
             if !self.manager.is_null() {
+                // SAFETY
+                // 1. self.manager is live.
                 sys::ACameraManager_delete(self.manager);
                 self.manager = ptr::null_mut();
             }
+
+            self.callback_state.wait_for_callbacks();
 
             if was_running {
                 log::info!("Android camera stopped");
@@ -441,14 +562,21 @@ mod ndk {
 
         fn fail<T>(&self, message: &str) -> Result<T, String> {
             log::error!("{message}");
-            if let Ok(c_message) = CString::new(message) {
-                (self.callbacks.on_error)(self.callbacks.user_data, c_message.as_ptr());
-            }
+            (self.callbacks.on_error)(message);
             Err(message.to_string())
         }
 
+        /// # Safety
+        /// 1. self.manager must be a live ACameraManager.
         unsafe fn select_camera(&mut self) -> Result<(), String> {
+            if self.manager.is_null() {
+                return self.fail("ACameraManager not created");
+            }
+
             let mut ids: *mut sys::ACameraIdList = ptr::null_mut();
+            // SAFETY
+            // 1. self.manager is live.
+            // 2. ids is writable.
             if sys::ACameraManager_getCameraIdList(self.manager, &mut ids) != CAMERA_OK || ids.is_null() {
                 return self.fail("ACameraManager_getCameraIdList failed");
             }
@@ -459,33 +587,62 @@ mod ndk {
                 sys::acamera_metadata_enum_acamera_lens_facing::ACAMERA_LENS_FACING_BACK.0 as u8
             };
 
+            // SAFETY
+            // 1. The NDK call that returned ids succeeded.
+            // 2. ids is not null.
             let id_list = &*ids;
             for i in 0..id_list.numCameras {
+                // SAFETY
+                // 1. ids is a live camera-id list and i < numCameras.
+                // 2. cameraIds points to numCameras entries.
                 let id_ptr = *id_list.cameraIds.add(i as usize);
                 let mut metadata: *mut sys::ACameraMetadata = ptr::null_mut();
+                // SAFETY
+                // 1. self.manager is live and id_ptr comes from the live id list.
+                // 2. metadata is writable.
                 if sys::ACameraManager_getCameraCharacteristics(self.manager, id_ptr, &mut metadata) != CAMERA_OK {
                     continue;
                 }
 
-                let mut entry = std::mem::zeroed::<sys::ACameraMetadata_const_entry>();
-                let matched = sys::ACameraMetadata_getConstEntry(
+                let mut entry = std::mem::MaybeUninit::<sys::ACameraMetadata_const_entry>::uninit();
+
+                // SAFETY
+                // 1. metadata is live for this camera.
+                // 2. entry is writable.
+                let matched = if sys::ACameraMetadata_getConstEntry(
                     metadata,
                     sys::acamera_metadata_tag::ACAMERA_LENS_FACING.0,
-                    &mut entry,
-                ) == CAMERA_OK
-                    && entry.count > 0
-                    && camera_metadata_u8(&entry)
-                        .map(|facing| facing == wanted)
-                        .unwrap_or(false);
+                    entry.as_mut_ptr(),
+                ) == CAMERA_OK {
+                    // SAFETY
+                    // 1. The NDK call that returned entry succeeded and hence it is initialized.
+                    let entry = entry.assume_init();
 
+                    // SAFETY
+                    // 1. entry.data is the u8 pointer variant.
+                    // 2. entry.count > 0 and entry.data came from a successful metadata lookup.
+                    entry.count > 0
+                        && camera_metadata_u8(&entry)
+                            .map(|facing| facing == wanted)
+                            .unwrap_or(false)
+                } else {
+                    false
+                };
+
+                // SAFETY
+                // 1. metadata was returned by the NDK and not freed yet.
                 sys::ACameraMetadata_free(metadata);
 
                 if matched {
+                    // SAFETY
+                    // 1. id_ptr comes from the live NDK list as a NUL-terminated string.
                     self.camera_id = Some(cstr_ptr_to_cstring(id_ptr)?);
                     break;
                 }
             }
 
+            // SAFETY
+            // 1. ids was returned by the NDK and not freed yet.
             sys::ACameraManager_deleteCameraIdList(ids);
 
             if self.camera_id.is_none() {
@@ -494,12 +651,20 @@ mod ndk {
             Ok(())
         }
 
+        /// # Safety
+        /// 1. self.callback_state allocation must remain live while the listener is installed.
         unsafe fn create_reader(&mut self) -> Result<(), String> {
+            if !self.reader.is_null() || !self.raw_window.is_null() {
+                return self.fail("AImageReader already created");
+            }
+
+            // SAFETY
+            // 1. self.reader is writable.
             let status = sys::AImageReader_new(
                 self.config.width,
                 self.config.height,
                 AIMAGE_FORMAT_YUV_420_888,
-                4,
+                4, // max number of images that we'll want to access simultaneously
                 &mut self.reader,
             );
             if status != MEDIA_OK || self.reader.is_null() {
@@ -507,14 +672,20 @@ mod ndk {
             }
 
             let mut listener = sys::AImageReader_ImageListener {
-                context: self as *mut Self as *mut c_void,
-                onImageAvailable: Some(Self::on_image_available),
+                context: Arc::as_ptr(&self.callback_state) as *mut c_void,
+                onImageAvailable: Some(CameraCallbackState::on_image_available),
             };
+            // SAFETY
+            // 1. self.reader is live.
+            // 2. listener context points to the live self.callback_state allocation.
             let status = sys::AImageReader_setImageListener(self.reader, &mut listener);
             if status != MEDIA_OK {
                 return self.fail("AImageReader_setImageListener failed");
             }
 
+            // SAFETY
+            // 1. self.reader is live.
+            // 2. self.raw_window is writable.
             let status = sys::AImageReader_getWindow(self.reader, &mut self.raw_window);
             if status != MEDIA_OK || self.raw_window.is_null() {
                 return self.fail("AImageReader_getWindow failed");
@@ -522,8 +693,16 @@ mod ndk {
             Ok(())
         }
 
+        /// # Safety
+        /// None.
         unsafe fn create_encoder(&mut self) -> Result<(), String> {
+            if !self.encoder.is_null() || !self.encoder_window.is_null() {
+                return self.fail("video encoder already created");
+            }
+
             let video_avc = CString::new("video/avc").unwrap();
+            // SAFETY
+            // 1. video_avc is a valid C string for this call.
             self.encoder = sys::AMediaCodec_createEncoderByType(video_avc.as_ptr());
             if self.encoder.is_null() {
                 return self.fail("AMediaCodec_createEncoderByType(video/avc) failed");
@@ -534,14 +713,32 @@ mod ndk {
                 return self.fail("AMediaFormat_new video failed");
             }
 
-            set_format_string(format, sys::AMEDIAFORMAT_KEY_MIME, &video_avc);
+            // SAFETY
+            // 1. format is live.
+            // 2. video_avc is a valid C string for this call.
+            sys::AMediaFormat_setString(format, sys::AMEDIAFORMAT_KEY_MIME, video_avc.as_ptr());
+            // SAFETY
+            // 1. format is live.
             sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_WIDTH, self.config.width);
+            // SAFETY
+            // 1. format is live.
             sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_HEIGHT, self.config.height);
+            // SAFETY
+            // 1. format is live.
             sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_BIT_RATE, self.config.bitrate);
+            // SAFETY
+            // 1. format is live.
             sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_FRAME_RATE, self.config.fps);
+            // SAFETY
+            // 1. format is live.
             sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_I_FRAME_INTERVAL, self.config.i_frame_interval);
+            // SAFETY
+            // 1. format is live.
             sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_COLOR_FORMAT, K_COLOR_FORMAT_SURFACE);
 
+            // SAFETY
+            // 1. self.encoder and format are live.
+            // 2. null surface and crypto are allowed here.
             let status = sys::AMediaCodec_configure(
                 self.encoder,
                 format,
@@ -549,24 +746,39 @@ mod ndk {
                 ptr::null_mut(),
                 sys::AMEDIACODEC_CONFIGURE_FLAG_ENCODE as u32,
             );
+            // SAFETY
+            // 1. format was created by the NDK and is no longer used.
             sys::AMediaFormat_delete(format);
             if status != MEDIA_OK {
                 return self.fail("AMediaCodec_configure video encoder failed");
             }
 
+            // SAFETY
+            // 1. self.encoder is configured.
+            // 2. self.encoder_window is writable.
             let status = sys::AMediaCodec_createInputSurface(self.encoder, &mut self.encoder_window);
             if status != MEDIA_OK || self.encoder_window.is_null() {
                 return self.fail("AMediaCodec_createInputSurface failed");
             }
 
+            // SAFETY
+            // 1. self.encoder is configured and not yet started.
             if sys::AMediaCodec_start(self.encoder) != MEDIA_OK {
                 return self.fail("AMediaCodec_start video failed");
             }
             Ok(())
         }
 
+        /// # Safety
+        /// None.
         unsafe fn create_audio_encoder(&mut self) -> Result<(), String> {
+            if !self.audio_encoder.is_null() {
+                return Err("audio encoder already created".to_string());
+            }
+
             let audio_aac = CString::new("audio/mp4a-latm").unwrap();
+            // SAFETY
+            // 1. audio_aac is a valid C string for this call.
             self.audio_encoder = sys::AMediaCodec_createEncoderByType(audio_aac.as_ptr());
             if self.audio_encoder.is_null() {
                 return Err("AMediaCodec_createEncoderByType(audio/mp4a-latm) failed".to_string());
@@ -577,12 +789,26 @@ mod ndk {
                 return Err("AMediaFormat_new audio failed".to_string());
             }
 
-            set_format_string(format, sys::AMEDIAFORMAT_KEY_MIME, &audio_aac);
+            // SAFETY
+            // 1. format is live.
+            // 2. audio_aac is a valid C string for this call.
+            sys::AMediaFormat_setString(format, sys::AMEDIAFORMAT_KEY_MIME, audio_aac.as_ptr());
+            // SAFETY
+            // 1. format is live.
             sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_SAMPLE_RATE, K_AUDIO_SAMPLE_RATE);
+            // SAFETY
+            // 1. format is live.
             sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_CHANNEL_COUNT, K_AUDIO_CHANNEL_COUNT);
+            // SAFETY
+            // 1. format is live.
             sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_BIT_RATE, K_AUDIO_BITRATE);
+            // SAFETY
+            // 1. format is live.
             sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_AAC_PROFILE, K_AAC_OBJECT_LC);
 
+            // SAFETY
+            // 1. self.audio_encoder and format are live.
+            // 2. null surface and crypto are allowed here.
             let status = sys::AMediaCodec_configure(
                 self.audio_encoder,
                 format,
@@ -590,11 +816,15 @@ mod ndk {
                 ptr::null_mut(),
                 sys::AMEDIACODEC_CONFIGURE_FLAG_ENCODE as u32,
             );
+            // SAFETY
+            // 1. format was created by the NDK and is no longer used.
             sys::AMediaFormat_delete(format);
             if status != MEDIA_OK {
                 return Err("AMediaCodec_configure audio encoder failed".to_string());
             }
 
+            // SAFETY
+            // 1. self.audio_encoder is configured and not yet started.
             if sys::AMediaCodec_start(self.audio_encoder) != MEDIA_OK {
                 return Err("AMediaCodec_start audio encoder failed".to_string());
             }
@@ -603,20 +833,45 @@ mod ndk {
             Ok(())
         }
 
+        /// # Safety
+        /// None.
         unsafe fn create_audio_recorder(&mut self) -> Result<(), String> {
+            if !self.audio_stream.is_null() {
+                return Err("audio stream already opened".to_string());
+            }
+
             let mut builder: *mut sys::AAudioStreamBuilder = ptr::null_mut();
+            // SAFETY
+            // 1. builder is writable.
             if sys::AAudio_createStreamBuilder(&mut builder) != sys::AAUDIO_OK || builder.is_null() {
                 return Err("AAudio_createStreamBuilder failed".to_string());
             }
 
+            // SAFETY
+            // 1. builder is live.
             sys::AAudioStreamBuilder_setDirection(builder, sys::AAUDIO_DIRECTION_INPUT as i32);
+            // SAFETY
+            // 1. builder is live.
             sys::AAudioStreamBuilder_setSampleRate(builder, K_AUDIO_SAMPLE_RATE);
+            // SAFETY
+            // 1. builder is live.
             sys::AAudioStreamBuilder_setChannelCount(builder, K_AUDIO_CHANNEL_COUNT);
+            // SAFETY
+            // 1. builder is live.
             sys::AAudioStreamBuilder_setFormat(builder, sys::AAUDIO_FORMAT_PCM_I16);
+            // SAFETY
+            // 1. builder is live.
             sys::AAudioStreamBuilder_setPerformanceMode(builder, sys::AAUDIO_PERFORMANCE_MODE_NONE as i32);
+            // SAFETY
+            // 1. builder is live.
             sys::AAudioStreamBuilder_setSharingMode(builder, sys::AAUDIO_SHARING_MODE_SHARED as i32);
 
+            // SAFETY
+            // 1. builder is live.
+            // 2. self.audio_stream is writable.
             let result = sys::AAudioStreamBuilder_openStream(builder, &mut self.audio_stream);
+            // SAFETY
+            // 1. builder was returned by the NDK and is no longer used.
             sys::AAudioStreamBuilder_delete(builder);
 
             if result != sys::AAUDIO_OK || self.audio_stream.is_null() {
@@ -625,31 +880,57 @@ mod ndk {
             Ok(())
         }
 
+        /// # Safety
+        /// 1. Audio handles, if not null, must be live.
+        /// 2. No audio worker may be using them.
         unsafe fn release_audio_resources(&mut self) {
             self.audio_enabled = false;
             if !self.audio_encoder.is_null() {
                 if self.audio_encoder_started {
+                    // SAFETY
+                    // 1. self.audio_encoder is live and started.
                     let _ = sys::AMediaCodec_stop(self.audio_encoder);
                 }
+                // SAFETY
+                // 1. self.audio_encoder is live.
                 sys::AMediaCodec_delete(self.audio_encoder);
                 self.audio_encoder = ptr::null_mut();
             }
             self.audio_encoder_started = false;
 
             if !self.audio_stream.is_null() {
+                // SAFETY
+                // 1. self.audio_stream is live.
                 sys::AAudioStream_close(self.audio_stream);
                 self.audio_stream = ptr::null_mut();
             }
         }
 
+        /// # Safety
+        /// 1. self.manager must be live.
+        /// 2. self.callback_state allocation must remain live while callbacks are registered.
         unsafe fn open_camera(&mut self) -> Result<(), String> {
+            if self.manager.is_null() {
+                return self.fail("ACameraManager not created");
+            }
+            if !self.device.is_null() {
+                return self.fail("camera device already open");
+            }
+
             let mut callbacks = sys::ACameraDevice_StateCallbacks {
-                context: self as *mut Self as *mut c_void,
-                onDisconnected: Some(Self::on_camera_disconnected),
-                onError: Some(Self::on_camera_error),
+                context: Arc::as_ptr(&self.callback_state) as *mut c_void,
+                onDisconnected: Some(CameraCallbackState::on_camera_disconnected),
+                onError: Some(CameraCallbackState::on_camera_error),
             };
 
-            let camera_id = self.camera_id.as_ref().expect("camera id selected");
+            let Some(camera_id) = self.camera_id.as_ref() else {
+                return self.fail("camera id not selected");
+            };
+            // SAFETY
+            // 1. self.manager is live.
+            // 2. camera_id is a valid C string.
+            // 3. self.device is writable.
+            // 4. callbacks context points to the live self.callback_state allocation.
             let status = sys::ACameraManager_openCamera(
                 self.manager,
                 camera_id.as_ptr(),
@@ -662,21 +943,47 @@ mod ndk {
             Ok(())
         }
 
+        /// # Safety
+        /// 1. device, encoder_window, and raw_window must be live.
         unsafe fn create_capture_session(&mut self) -> Result<(), String> {
+            if self.device.is_null() || self.encoder_window.is_null() || self.raw_window.is_null() {
+                return self.fail("capture session prerequisites missing");
+            }
+            if !self.session.is_null()
+                || !self.capture_request.is_null()
+                || !self.outputs.is_null()
+                || !self.encoder_output.is_null()
+                || !self.raw_output.is_null()
+                || !self.encoder_target.is_null()
+                || !self.raw_target.is_null()
+            {
+                return self.fail("capture session already created");
+            }
+
+            // SAFETY
+            // 1. self.outputs is writable.
             if sys::ACaptureSessionOutputContainer_create(&mut self.outputs) != CAMERA_OK {
                 return self.fail("ACaptureSessionOutputContainer_create failed");
             }
+            // SAFETY
+            // 1. self.encoder_window and self.raw_window are live.
+            // 2. output pointers are writable.
             if sys::ACaptureSessionOutput_create(self.encoder_window, &mut self.encoder_output) != CAMERA_OK
                 || sys::ACaptureSessionOutput_create(self.raw_window, &mut self.raw_output) != CAMERA_OK
             {
                 return self.fail("ACaptureSessionOutput_create failed");
             }
+            // SAFETY
+            // 1. self.outputs and both outputs are live.
             if sys::ACaptureSessionOutputContainer_add(self.outputs, self.encoder_output) != CAMERA_OK
                 || sys::ACaptureSessionOutputContainer_add(self.outputs, self.raw_output) != CAMERA_OK
             {
                 return self.fail("ACaptureSessionOutputContainer_add failed");
             }
 
+            // SAFETY
+            // 1. self.device is live.
+            // 2. self.capture_request is writable.
             if sys::ACameraDevice_createCaptureRequest(
                 self.device,
                 sys::ACameraDevice_request_template(3),
@@ -686,11 +993,16 @@ mod ndk {
                 return self.fail("ACameraDevice_createCaptureRequest failed");
             }
 
+            // SAFETY
+            // 1. self.encoder_window and self.raw_window are live.
+            // 2. target pointers are writable.
             if sys::ACameraOutputTarget_create(self.encoder_window, &mut self.encoder_target) != CAMERA_OK
                 || sys::ACameraOutputTarget_create(self.raw_window, &mut self.raw_target) != CAMERA_OK
             {
                 return self.fail("ACameraOutputTarget_create failed");
             }
+            // SAFETY
+            // 1. self.capture_request and both targets are live.
             if sys::ACaptureRequest_addTarget(self.capture_request, self.encoder_target) != CAMERA_OK
                 || sys::ACaptureRequest_addTarget(self.capture_request, self.raw_target) != CAMERA_OK
             {
@@ -698,6 +1010,9 @@ mod ndk {
             }
 
             let fps_range = [self.config.fps, self.config.fps];
+            // SAFETY
+            // 1. self.capture_request is live.
+            // 2. fps_range.as_ptr() is valid for this call.
             let status = sys::ACaptureRequest_setEntry_i32(
                 self.capture_request,
                 sys::acamera_metadata_tag::ACAMERA_CONTROL_AE_TARGET_FPS_RANGE.0,
@@ -709,12 +1024,16 @@ mod ndk {
             }
 
             let mut session_callbacks = sys::ACameraCaptureSession_stateCallbacks {
-                context: self as *mut Self as *mut c_void,
+                context: ptr::null_mut(),
                 onClosed: None,
                 onReady: None,
                 onActive: None,
             };
 
+            // SAFETY
+            // 1. self.device and self.outputs are live.
+            // 2. callbacks is valid for this call.
+            // 3. self.session is writable.
             if sys::ACameraDevice_createCaptureSession(
                 self.device,
                 self.outputs,
@@ -726,6 +1045,8 @@ mod ndk {
             }
 
             let mut request = self.capture_request;
+            // SAFETY
+            // 1. self.session and request are live.
             if sys::ACameraCaptureSession_setRepeatingRequest(
                 self.session,
                 ptr::null_mut(),
@@ -739,42 +1060,114 @@ mod ndk {
 
             Ok(())
         }
+    }
 
+    impl CameraCallbackState {
+        fn begin_callback(&self) -> CallbackGuard<'_> {
+            let mut activity = self.activity.lock().unwrap();
+            activity.active += 1;
+            let enabled = !activity.stopping;
+            CallbackGuard {
+                state: self,
+                enabled,
+            }
+        }
+
+        fn stop_callbacks(&self) {
+            let mut activity = self.activity.lock().unwrap();
+            activity.stopping = true;
+        }
+
+        fn wait_for_callbacks(&self) {
+            let mut activity = self.activity.lock().unwrap();
+            while activity.active != 0 {
+                activity = self.activity_changed.wait(activity).unwrap();
+            }
+        }
+
+        fn fail<T>(&self, message: &str) -> Result<T, String> {
+            log::error!("{message}");
+            (self.callbacks.on_error)(message);
+            Err(message.to_string())
+        }
+
+        /// # Safety
+        /// 1. If not null, context must point to the live CameraCallbackState registered with the NDK.
         unsafe extern "C" fn on_camera_disconnected(context: *mut c_void, _device: *mut sys::ACameraDevice) {
-            if let Some(this) = (context as *mut Self).as_mut() {
+            // SAFETY
+            // 1. If not null, context points to the live CameraCallbackState registered with the NDK.
+            if let Some(this) = (context as *const Self).as_ref() {
+                let callback = this.begin_callback();
+                if !callback.enabled {
+                    return;
+                }
                 let _ = this.fail::<()>("camera disconnected");
             }
         }
 
+        /// # Safety
+        /// 1. If not null, context must point to the live CameraCallbackState registered with the NDK.
         unsafe extern "C" fn on_camera_error(
             context: *mut c_void,
             _device: *mut sys::ACameraDevice,
             error: c_int,
         ) {
-            if let Some(this) = (context as *mut Self).as_mut() {
+            // SAFETY
+            // 1. If not null, context points to the live CameraCallbackState registered with the NDK.
+            if let Some(this) = (context as *const Self).as_ref() {
+                let callback = this.begin_callback();
+                if !callback.enabled {
+                    return;
+                }
                 let message = format!("camera device error: {error}");
                 let _ = this.fail::<()>(&message);
             }
         }
 
+        /// # Safety
+        /// 1. If not null, context must point to the live CameraCallbackState registered with the NDK.
+        /// 2. If callback processing is enabled, reader must remain live until the callback finishes.
         unsafe extern "C" fn on_image_available(context: *mut c_void, reader: *mut sys::AImageReader) {
-            if let Some(this) = (context as *mut Self).as_mut() {
+            if reader.is_null() {
+                return;
+            }
+
+            // SAFETY
+            // 1. If not null, context points to the live CameraCallbackState registered with the NDK.
+            if let Some(this) = (context as *const Self).as_ref() {
+                let callback = this.begin_callback();
+                if !callback.enabled {
+                    return;
+                }
+                // SAFETY
+                // 1. reader remains live until the enabled callback finishes.
                 this.handle_image_available(reader);
             }
         }
 
-        unsafe fn handle_image_available(&mut self, reader: *mut sys::AImageReader) {
+        /// # Safety
+        /// 1. reader must remain live until the function returns.
+        unsafe fn handle_image_available(&self, reader: *mut sys::AImageReader) {
+            if reader.is_null() {
+                return;
+            }
+
             let _guard = self.image_mutex.lock().unwrap();
             if !self.running.load(Ordering::SeqCst) {
                 return;
             }
 
             let mut image: *mut sys::AImage = ptr::null_mut();
+            // SAFETY
+            // 1. reader remains live until this enabled callback finishes.
+            // 2. image is writable.
             if sys::AImageReader_acquireLatestImage(reader, &mut image) != MEDIA_OK || image.is_null() {
                 return;
             }
 
             if !self.should_emit_raw_frame() {
+                // SAFETY
+                // 1. image was returned by the NDK and not deleted yet.
                 sys::AImage_delete(image);
                 return;
             }
@@ -792,6 +1185,9 @@ mod ndk {
             let mut u_pix = 0;
             let mut v_pix = 0;
 
+            // SAFETY
+            // 1. image is live.
+            // 2. Plane outputs are writable.
             let ok = sys::AImage_getPlaneData(image, 0, &mut y, &mut y_len) == MEDIA_OK
                 && sys::AImage_getPlaneData(image, 1, &mut u, &mut u_len) == MEDIA_OK
                 && sys::AImage_getPlaneData(image, 2, &mut v, &mut v_len) == MEDIA_OK
@@ -805,6 +1201,8 @@ mod ndk {
             if ok && !y.is_null() && !u.is_null() && !v.is_null() {
                 let expected = (self.config.width * self.config.height * 3 / 2) as usize;
                 let mut i420 = vec![0u8; expected];
+                // SAFETY
+                // 1. Plane pointers and lengths come from the live NDK image.
                 copy_yuv420_to_i420(
                     &mut i420,
                     self.config.width,
@@ -814,14 +1212,15 @@ mod ndk {
                     Plane { ptr: v, len: v_len, row_stride: v_row, pixel_stride: v_pix },
                 );
                 (self.callbacks.on_raw_i420)(
-                    self.callbacks.user_data,
-                    i420.as_ptr(),
-                    i420.len(),
-                    self.config.width,
-                    self.config.height,
+                    self.callbacks.state.as_ref(),
+                    &i420,
+                    self.config.width as usize,
+                    self.config.height as usize,
                 );
             }
 
+            // SAFETY
+            // 1. image was returned by the NDK and not deleted yet.
             sys::AImage_delete(image);
         }
 
@@ -842,21 +1241,42 @@ mod ndk {
         }
     }
 
-    impl ThreadState {
+    impl Drop for CallbackGuard<'_> {
+        fn drop(&mut self) {
+            let mut activity = self.state.activity.lock().unwrap();
+            activity.active -= 1;
+            if activity.active == 0 {
+                self.state.activity_changed.notify_all();
+            }
+        }
+    }
+
+    impl VideoEncoderThreadState {
         fn drain_encoder(&self) {
+            // SAFETY
+            // 1. self.encoder remains live while running is true.
+            // 2. This worker has exclusive access to encoder output buffers.
             unsafe {
                 self.drain_encoder_unsafe();
             }
         }
 
+        /// # Safety
+        /// 1. self.encoder must remain live while running is true.
+        /// 2. This worker must have exclusive access to encoder output buffers.
         unsafe fn drain_encoder_unsafe(&self) {
             while self.running.load(Ordering::SeqCst) {
-                let mut info = std::mem::zeroed::<sys::AMediaCodecBufferInfo>();
-                let index = sys::AMediaCodec_dequeueOutputBuffer(self.encoder, &mut info, 10_000);
+                let mut info = std::mem::MaybeUninit::<sys::AMediaCodecBufferInfo>::uninit();
+                // SAFETY
+                // 1. self.encoder is live.
+                // 2. info is writable.
+                let index = sys::AMediaCodec_dequeueOutputBuffer(self.encoder, info.as_mut_ptr(), 10_000);
                 if index == sys::AMEDIACODEC_INFO_TRY_AGAIN_LATER as isize {
                     continue;
                 }
                 if index == sys::AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED as isize {
+                    // SAFETY
+                    // 1. self.encoder is live.
                     self.emit_codec_config_from_output_format();
                     continue;
                 }
@@ -864,138 +1284,28 @@ mod ndk {
                     continue;
                 }
 
-                let mut out_size = 0usize;
-                let out = sys::AMediaCodec_getOutputBuffer(self.encoder, index as usize, &mut out_size);
+                // SAFETY
+                // 1. The FFI call that returned info succeeded and hence info is initialized.
+                let info = info.assume_init();
+
+                let mut _out_size = 0usize;
+                // SAFETY
+                // 1. self.encoder is live and index came from dequeue.
+                // 2. _out_size is writable.
+                let out = sys::AMediaCodec_getOutputBuffer(self.encoder, index as usize, &mut _out_size);
                 if !out.is_null() && info.size > 0 {
-                    let offset = info.offset.max(0) as usize;
                     let size = info.size as usize;
-                    if offset + size <= out_size {
-                        let bytes = std::slice::from_raw_parts(out.add(offset), size);
-                        self.emit_annexb(bytes);
-                    }
+                    // SAFETY
+                    // 1. out is not null and index remains dequeued.
+                    // 2. info.size is valid; info.offset and _out_size are invalid through Android API 35 and ignored:
+                    //    https://developer.android.com/ndk/reference/group/media#amediacodec_dequeueoutputbuffer
+                    //    https://developer.android.com/ndk/reference/group/media#amediacodec_getoutputbuffer
+                    let bytes = std::slice::from_raw_parts(out, size);
+                    self.emit_annexb(bytes);
                 }
+                // SAFETY
+                // 1. index came from dequeue.
                 sys::AMediaCodec_releaseOutputBuffer(self.encoder, index as usize, false);
-            }
-        }
-
-        fn drain_audio(&self) {
-            unsafe {
-                self.drain_audio_unsafe();
-            }
-        }
-
-        unsafe fn drain_audio_unsafe(&self) {
-            let mut samples = vec![0i16; K_AUDIO_SAMPLES_PER_ACCESS_UNIT * K_AUDIO_CHANNEL_COUNT as usize];
-            let mut filled_frames = 0usize;
-            let mut submitted_frames = 0i64;
-
-            while self.running.load(Ordering::SeqCst) {
-                let frames_needed = K_AUDIO_SAMPLES_PER_ACCESS_UNIT - filled_frames;
-                let dst = samples.as_mut_ptr().add(filled_frames * K_AUDIO_CHANNEL_COUNT as usize);
-                let frames_read = sys::AAudioStream_read(
-                    self.audio_stream,
-                    dst.cast(),
-                    frames_needed as i32,
-                    100_000_000,
-                );
-
-                if frames_read == sys::AAUDIO_ERROR_DISCONNECTED {
-                    log::warn!("AAudioStream_read disconnected; stopping audio capture");
-                    break;
-                }
-                if frames_read < 0 {
-                    continue;
-                }
-                if frames_read == 0 {
-                    self.drain_audio_encoder(false);
-                    continue;
-                }
-
-                filled_frames += frames_read as usize;
-                if filled_frames < K_AUDIO_SAMPLES_PER_ACCESS_UNIT {
-                    continue;
-                }
-
-                let byte_count = K_AUDIO_SAMPLES_PER_ACCESS_UNIT
-                    * K_AUDIO_CHANNEL_COUNT as usize
-                    * K_AUDIO_BYTES_PER_SAMPLE;
-                let pts_us = submitted_frames * 1_000_000 / K_AUDIO_SAMPLE_RATE as i64;
-                if !self.queue_audio_input(samples.as_ptr().cast(), byte_count, pts_us) {
-                    break;
-                }
-                submitted_frames += K_AUDIO_SAMPLES_PER_ACCESS_UNIT as i64;
-                filled_frames = 0;
-
-                self.drain_audio_encoder(false);
-            }
-
-            self.drain_audio_encoder(true);
-        }
-
-        unsafe fn queue_audio_input(&self, data: *const u8, len: usize, pts_us: i64) -> bool {
-            for _ in 0..5 {
-                if !self.running.load(Ordering::SeqCst) {
-                    return false;
-                }
-
-                let index = sys::AMediaCodec_dequeueInputBuffer(self.audio_encoder, 10_000);
-                if index == sys::AMEDIACODEC_INFO_TRY_AGAIN_LATER as isize {
-                    self.drain_audio_encoder(false);
-                    continue;
-                }
-                if index < 0 {
-                    continue;
-                }
-
-                let mut capacity = 0usize;
-                let input = sys::AMediaCodec_getInputBuffer(self.audio_encoder, index as usize, &mut capacity);
-                if input.is_null() || capacity < len {
-                    let _ = sys::AMediaCodec_queueInputBuffer(self.audio_encoder, index as usize, 0, 0, pts_us as u64, 0);
-                    return false;
-                }
-
-                ptr::copy_nonoverlapping(data, input, len);
-                return sys::AMediaCodec_queueInputBuffer(self.audio_encoder, index as usize, 0, len, pts_us as u64, 0)
-                    == MEDIA_OK;
-            }
-
-            false
-        }
-
-        unsafe fn drain_audio_encoder(&self, wait: bool) {
-            if self.audio_encoder.is_null() {
-                return;
-            }
-
-            while self.running.load(Ordering::SeqCst) || wait {
-                let mut info = std::mem::zeroed::<sys::AMediaCodecBufferInfo>();
-                let index = sys::AMediaCodec_dequeueOutputBuffer(
-                    self.audio_encoder,
-                    &mut info,
-                    if wait { 10_000 } else { 0 },
-                );
-                if index == sys::AMEDIACODEC_INFO_TRY_AGAIN_LATER as isize {
-                    break;
-                }
-                if index == sys::AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED as isize || index < 0 {
-                    continue;
-                }
-
-                let mut out_size = 0usize;
-                let out = sys::AMediaCodec_getOutputBuffer(self.audio_encoder, index as usize, &mut out_size);
-                let codec_config = (info.flags & sys::AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG) != 0;
-                if !codec_config && !out.is_null() && info.size > 0 {
-                    let offset = info.offset.max(0) as usize;
-                    let size = info.size as usize;
-                    if offset + size <= out_size {
-                        (self.callbacks.on_aac)(self.callbacks.user_data, out.add(offset), size);
-                    }
-                }
-                sys::AMediaCodec_releaseOutputBuffer(self.audio_encoder, index as usize, false);
-
-                if (info.flags & sys::AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) != 0 {
-                    break;
-                }
             }
         }
 
@@ -1063,32 +1373,56 @@ mod ndk {
                 return;
             }
 
-            let kind = (data[offset] & 0x1F) as c_int;
-            (self.callbacks.on_h264)(self.callbacks.user_data, data.as_ptr(), data.len(), kind);
+            let kind = match data[offset] & 0x1F {
+                7 => super::FrameKind::Sps,
+                8 => super::FrameKind::Pps,
+                5 => super::FrameKind::IFrame,
+                _ => super::FrameKind::RFrame,
+            };
+
+            (self.callbacks.on_h264)(self.callbacks.state.as_ref(), data, kind);
         }
 
+        /// # Safety
+        /// 1. self.encoder must be live.
         unsafe fn emit_codec_config_from_output_format(&self) {
+            // SAFETY
+            // 1. self.encoder is live.
             let format = sys::AMediaCodec_getOutputFormat(self.encoder);
             if format.is_null() {
                 log::error!("AMediaCodec_getOutputFormat returned null");
                 return;
             }
 
+            // SAFETY
+            // 1. format is live for this lookup.
             self.emit_codec_config_buffer_from_format(format, "csd-0");
+            // SAFETY
+            // 1. format is live for this lookup.
             self.emit_codec_config_buffer_from_format(format, "csd-1");
 
+            // SAFETY
+            // 1. format was returned by the NDK and is no longer used.
             sys::AMediaFormat_delete(format);
         }
 
+        /// # Safety
+        /// 1. format must be live for the duration of the call.
         unsafe fn emit_codec_config_buffer_from_format(&self, format: *mut sys::AMediaFormat, key: &str) {
             let key = CString::new(key).unwrap();
             let mut buffer: *mut c_void = ptr::null_mut();
             let mut buffer_size = 0usize;
 
+            // SAFETY
+            // 1. format is live and key is a valid C string.
+            // 2. buffer outputs are writable.
             if sys::AMediaFormat_getBuffer(format, key.as_ptr(), &mut buffer, &mut buffer_size)
                 && !buffer.is_null()
                 && buffer_size > 0
             {
+                // SAFETY
+                // 1. buffer is not null.
+                // 2. buffer_size came from the NDK.
                 let data = std::slice::from_raw_parts(buffer.cast::<u8>(), buffer_size);
                 self.emit_codec_config_buffer(data);
             } else {
@@ -1119,6 +1453,202 @@ mod ndk {
         }
     }
 
+    impl AudioThreadState {
+        fn drain_audio(&self) {
+            // SAFETY
+            // 1. audio_stream and audio_encoder remain live while running.
+            // 2. This worker has exclusive access to audio codec buffers.
+            unsafe {
+                self.drain_audio_unsafe();
+            }
+        }
+
+        /// # Safety
+        /// 1. audio_stream and audio_encoder must remain live while running.
+        /// 2. This worker must have exclusive access to audio codec buffers.
+        unsafe fn drain_audio_unsafe(&self) {
+            let mut samples = vec![0i16; K_AUDIO_SAMPLES_PER_ACCESS_UNIT * K_AUDIO_CHANNEL_COUNT as usize];
+            let mut filled_frames = 0usize;
+            let mut submitted_frames = 0i64;
+
+            while self.running.load(Ordering::SeqCst) {
+                let frames_needed = K_AUDIO_SAMPLES_PER_ACCESS_UNIT - filled_frames;
+                let offset = filled_frames
+                    .checked_mul(K_AUDIO_CHANNEL_COUNT as usize)
+                    .expect("audio sample offset overflow");
+
+                let dst = samples[offset..].as_mut_ptr();
+
+                // SAFETY
+                // 1. self.audio_stream is live.
+                // 2. dst has space for frames_needed audio frames.
+                let frames_read = sys::AAudioStream_read(
+                    self.audio_stream,
+                    dst.cast(),
+                    frames_needed as i32,
+                    100_000_000,
+                );
+
+                if frames_read == sys::AAUDIO_ERROR_DISCONNECTED {
+                    log::warn!("AAudioStream_read disconnected; stopping audio capture");
+                    break;
+                }
+                if frames_read < 0 {
+                    continue;
+                }
+                if frames_read == 0 {
+                    // SAFETY
+                    // 1. self.audio_encoder is live.
+                    // 2. This worker has exclusive access to audio output buffers.
+                    self.drain_audio_encoder(false);
+                    continue;
+                }
+
+                filled_frames += frames_read as usize;
+                if filled_frames < K_AUDIO_SAMPLES_PER_ACCESS_UNIT {
+                    continue;
+                }
+
+                let byte_count = K_AUDIO_SAMPLES_PER_ACCESS_UNIT
+                    * K_AUDIO_CHANNEL_COUNT as usize
+                    * K_AUDIO_BYTES_PER_SAMPLE;
+                let pts_us = submitted_frames * 1_000_000 / K_AUDIO_SAMPLE_RATE as i64;
+                // SAFETY
+                // 1. samples.as_ptr() is valid for byte_count bytes during this call.
+                let audio_bytes = std::slice::from_raw_parts(samples.as_ptr().cast::<u8>(), byte_count);
+
+                // SAFETY
+                // 1. self.audio_encoder is live.
+                // 2. This worker has exclusive access to audio input buffers.
+                if !self.queue_audio_input(audio_bytes, pts_us) {
+                    break;
+                }
+
+                submitted_frames += K_AUDIO_SAMPLES_PER_ACCESS_UNIT as i64;
+                filled_frames = 0;
+
+                // SAFETY
+                // 1. self.audio_encoder is live.
+                // 2. This worker has exclusive access to audio output buffers.
+                self.drain_audio_encoder(false);
+            }
+
+            // SAFETY
+            // 1. self.audio_encoder is live for final drain.
+            // 2. This worker has exclusive access to audio output buffers.
+            self.drain_audio_encoder(true);
+        }
+
+        /// # Safety
+        /// 1. audio_encoder must be live.
+        /// 2. This worker must have exclusive access to audio input buffers.
+        unsafe fn queue_audio_input(&self, data: &[u8], pts_us: i64) -> bool {
+            let len = data.len();
+
+            for _ in 0..5 {
+                if !self.running.load(Ordering::SeqCst) {
+                    return false;
+                }
+
+                // SAFETY
+                // 1. self.audio_encoder is live.
+                let index = sys::AMediaCodec_dequeueInputBuffer(self.audio_encoder, 10_000);
+                if index == sys::AMEDIACODEC_INFO_TRY_AGAIN_LATER as isize {
+                    // SAFETY
+                    // 1. self.audio_encoder is live.
+                    // 2. This worker has exclusive access to audio output buffers.
+                    self.drain_audio_encoder(false);
+                    continue;
+                }
+                if index < 0 {
+                    continue;
+                }
+
+                let mut capacity = 0usize;
+                // SAFETY
+                // 1. index came from dequeue.
+                // 2. capacity is writable.
+                let input = sys::AMediaCodec_getInputBuffer(self.audio_encoder, index as usize, &mut capacity);
+                if input.is_null() || capacity < len {
+                    // SAFETY
+                    // 1. index came from dequeue.
+                    let _ = sys::AMediaCodec_queueInputBuffer(self.audio_encoder, index as usize, 0, 0, pts_us as u64, 0);
+                    return false;
+                }
+
+                // SAFETY
+                // 1. input is not null.
+                // 2. capacity came from the codec.
+                let input = std::slice::from_raw_parts_mut(input, capacity);
+
+                input[..len].copy_from_slice(data);
+                
+                // SAFETY
+                // 1. index came from dequeue.
+                // 2. len was checked against capacity.
+                return sys::AMediaCodec_queueInputBuffer(self.audio_encoder, index as usize, 0, len, pts_us as u64, 0)
+                    == MEDIA_OK;
+            }
+
+            false
+        }
+
+        /// # Safety
+        /// 1. audio_encoder, if not null, must be live.
+        /// 2. This worker must have exclusive access to audio output buffers.
+        unsafe fn drain_audio_encoder(&self, wait: bool) {
+            if self.audio_encoder.is_null() {
+                return;
+            }
+
+            while self.running.load(Ordering::SeqCst) || wait {
+                let mut info = std::mem::MaybeUninit::<sys::AMediaCodecBufferInfo>::uninit();
+                // SAFETY
+                // 1. self.audio_encoder is live.
+                // 2. info is writable.
+                let index = sys::AMediaCodec_dequeueOutputBuffer(
+                    self.audio_encoder,
+                    info.as_mut_ptr(),
+                    if wait { 10_000 } else { 0 },
+                );
+                if index == sys::AMEDIACODEC_INFO_TRY_AGAIN_LATER as isize {
+                    break;
+                }
+                if index == sys::AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED as isize || index < 0 {
+                    continue;
+                }
+
+                // SAFETY
+                // 1. The FFI call that returned info succeeded and hence it is initialized.
+                let info = info.assume_init();
+
+                let mut _out_size = 0usize;
+                // SAFETY
+                // 1. index came from dequeue.
+                // 2. _out_size is writable.
+                let out = sys::AMediaCodec_getOutputBuffer(self.audio_encoder, index as usize, &mut _out_size);
+                let codec_config = (info.flags & sys::AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG) != 0;
+                if !codec_config && !out.is_null() && info.size > 0 {
+                    let size = info.size as usize;
+                    // SAFETY
+                    // 1. out is not null and index remains dequeued.
+                    // 2. info.size is valid; info.offset and _out_size are invalid through Android API 35 and ignored:
+                    //    https://developer.android.com/ndk/reference/group/media#amediacodec_dequeueoutputbuffer
+                    //    https://developer.android.com/ndk/reference/group/media#amediacodec_getoutputbuffer
+                    let data = std::slice::from_raw_parts(out, size);
+                    (self.callbacks.on_aac)(self.callbacks.state.as_ref(), data);
+                }
+                // SAFETY
+                // 1. index came from dequeue.
+                sys::AMediaCodec_releaseOutputBuffer(self.audio_encoder, index as usize, false);
+
+                if (info.flags & sys::AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) != 0 {
+                    break;
+                }
+            }
+        }
+    }
+
     struct Plane {
         ptr: *const u8,
         len: c_int,
@@ -1144,6 +1674,8 @@ mod ndk {
         None
     }
 
+    /// # Safety
+    /// 1. Plane pointers must be valid for their lengths.
     unsafe fn copy_yuv420_to_i420(
         dst: &mut [u8],
         width: c_int,
@@ -1152,14 +1684,76 @@ mod ndk {
         u: Plane,
         v: Plane,
     ) {
-        let width = width as usize;
-        let height = height as usize;
-        let y_size = width * height;
+        let Ok(width) = usize::try_from(width) else {
+            return;
+        };
+        let Ok(height) = usize::try_from(height) else {
+            return;
+        };
+
+        let Ok(y_len) = usize::try_from(y.len) else {
+            return;
+        };
+        let Ok(u_len) = usize::try_from(u.len) else {
+            return;
+        };
+        let Ok(v_len) = usize::try_from(v.len) else {
+            return;
+        };
+
+        let Ok(y_row_stride) = usize::try_from(y.row_stride) else {
+            return;
+        };
+        let Ok(u_row_stride) = usize::try_from(u.row_stride) else {
+            return;
+        };
+        let Ok(v_row_stride) = usize::try_from(v.row_stride) else {
+            return;
+        };
+
+        let Ok(u_pixel_stride) = usize::try_from(u.pixel_stride) else {
+            return;
+        };
+        let Ok(v_pixel_stride) = usize::try_from(v.pixel_stride) else {
+            return;
+        };
+
+        if y.ptr.is_null() || u.ptr.is_null() || v.ptr.is_null() {
+            return;
+        }
+
+        if u_pixel_stride == 0 || v_pixel_stride == 0 {
+            return;
+        }
+
+        // SAFETY
+        // 1. y.ptr is not null and valid for y_len bytes.
+        let y_src = std::slice::from_raw_parts(y.ptr, y_len);
+
+        // SAFETY
+        // 1. u.ptr is not null and valid for u_len bytes.
+        let u_src = std::slice::from_raw_parts(u.ptr, u_len);
+
+        // SAFETY
+        // 1. v.ptr is not null and valid for v_len bytes.
+        let v_src = std::slice::from_raw_parts(v.ptr, v_len);
+
+        let Some(y_size) = width.checked_mul(height) else {
+            return;
+        };
+
         let uv_width = width / 2;
         let uv_height = height / 2;
-        let uv_size = uv_width * uv_height;
 
-        if dst.len() < y_size + uv_size * 2 {
+        let Some(uv_size) = uv_width.checked_mul(uv_height) else {
+            return;
+        };
+
+        let Some(required_len) = y_size.checked_add(uv_size.saturating_mul(2)) else {
+            return;
+        };
+
+        if dst.len() < required_len {
             return;
         }
 
@@ -1167,44 +1761,91 @@ mod ndk {
         let (dst_u, dst_v) = rest.split_at_mut(uv_size);
 
         for row in 0..height {
-            let src_offset = row * y.row_stride as usize;
-            if src_offset + width <= y.len as usize {
-                ptr::copy_nonoverlapping(y.ptr.add(src_offset), dst_y.as_mut_ptr().add(row * width), width);
-            }
+            let Some(src_offset) = row.checked_mul(y_row_stride) else {
+                continue;
+            };
+            let Some(src_end) = src_offset.checked_add(width) else {
+                continue;
+            };
+            let Some(dst_offset) = row.checked_mul(width) else {
+                continue;
+            };
+            let Some(dst_end) = dst_offset.checked_add(width) else {
+                continue;
+            };
+
+            let Some(src_row) = y_src.get(src_offset..src_end) else {
+                continue;
+            };
+            let Some(dst_row) = dst_y.get_mut(dst_offset..dst_end) else {
+                continue;
+            };
+
+            dst_row.copy_from_slice(src_row);
         }
 
         for row in 0..uv_height {
             for col in 0..uv_width {
-                let u_offset = row * u.row_stride as usize + col * u.pixel_stride as usize;
-                let v_offset = row * v.row_stride as usize + col * v.pixel_stride as usize;
-                let dst_offset = row * uv_width + col;
-                if u_offset < u.len as usize {
-                    dst_u[dst_offset] = *u.ptr.add(u_offset);
+                let Some(dst_offset) = row
+                    .checked_mul(uv_width)
+                    .and_then(|offset| offset.checked_add(col))
+                else {
+                    continue;
+                };
+
+                let Some(u_offset) = row
+                    .checked_mul(u_row_stride)
+                    .and_then(|offset| col.checked_mul(u_pixel_stride).and_then(|col_offset| offset.checked_add(col_offset)))
+                else {
+                    continue;
+                };
+
+                let Some(v_offset) = row
+                    .checked_mul(v_row_stride)
+                    .and_then(|offset| col.checked_mul(v_pixel_stride).and_then(|col_offset| offset.checked_add(col_offset)))
+                else {
+                    continue;
+                };
+
+                if let Some(&sample) = u_src.get(u_offset) {
+                    dst_u[dst_offset] = sample;
                 }
-                if v_offset < v.len as usize {
-                    dst_v[dst_offset] = *v.ptr.add(v_offset);
+
+                if let Some(&sample) = v_src.get(v_offset) {
+                    dst_v[dst_offset] = sample;
                 }
             }
         }
     }
 
+    /// # Safety
+    /// 1. entry.data must contain u8 data.
+    /// 2. If entry.count > 0, entry.data must be valid.
     unsafe fn camera_metadata_u8(entry: &sys::ACameraMetadata_const_entry) -> Option<u8> {
+        if entry.count == 0 {
+            return None;
+        }
+
+        // SAFETY
+        // 1. entry.data is a u8 pointer.
         let data = *(&entry.data as *const _ as *const *const u8);
         if data.is_null() {
             None
         } else {
+            // SAFETY
+            // 1. data points to at least one valid u8.
             Some(*data)
         }
     }
 
+    /// # Safety
+    /// 1. If not null, ptr must point to a valid NUL-terminated C string.
     unsafe fn cstr_ptr_to_cstring(ptr: *const c_char) -> Result<CString, String> {
         if ptr.is_null() {
             return Err("camera id pointer was null".to_string());
         }
+        // SAFETY
+        // 1. ptr is not null and points to a valid C string.
         Ok(std::ffi::CStr::from_ptr(ptr).to_owned())
-    }
-
-    unsafe fn set_format_string(format: *mut sys::AMediaFormat, key: *const c_char, value: &CString) {
-        sys::AMediaFormat_setString(format, key, value.as_ptr());
     }
 }
