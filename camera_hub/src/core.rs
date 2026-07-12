@@ -47,7 +47,9 @@ cfg_if! {
         use crate::ip::ip_camera::IpCamera;
     } else if #[cfg(feature = "android")] {
         use crate::android::android_camera::AndroidCamera;
-        use crate::android::android_dual_stream::ANDROID_CAMERA_FACING_BACK;
+        use crate::android::android_dual_stream::{
+            AndroidCameraSettings, ANDROID_CAMERA_FACING_BACK, ANDROID_CAMERA_FACING_FRONT,
+        };
         use std::io::ErrorKind;
     } else if #[cfg(feature = "test")] {
         use crate::test_camera::TestCamera;
@@ -100,6 +102,11 @@ static ANDROID_SERVER_CREDENTIALS: std::sync::OnceLock<
 > = std::sync::OnceLock::new();
 
 #[cfg(feature = "android")]
+static ANDROID_CAMERA_SETTINGS: std::sync::OnceLock<
+    std::sync::Mutex<AndroidCameraSettings>,
+> = std::sync::OnceLock::new();
+
+#[cfg(feature = "android")]
 pub fn set_android_server_credentials(
     server_username: String,
     server_password: String,
@@ -134,6 +141,59 @@ pub fn set_android_server_credentials(
     });
 
     Ok(())
+}
+
+#[cfg(feature = "android")]
+pub fn set_android_camera_settings_core(settings: AndroidCameraSettings) -> io::Result<()> {
+    if settings.facing != ANDROID_CAMERA_FACING_BACK
+        && settings.facing != ANDROID_CAMERA_FACING_FRONT
+    {
+        return Err(io::Error::new(
+            ErrorKind::InvalidData,
+            "Error: Android camera facing must be front or back",
+        ));
+    }
+    
+    if settings.width == 0 || settings.height == 0 {
+        return Err(io::Error::new(
+            ErrorKind::InvalidData,
+            "Error: Android camera resolution must be non-zero",
+        ));
+    }
+
+    if settings.width > i32::MAX as usize
+        || settings.height > i32::MAX as usize
+    {
+        return Err(io::Error::new(
+            ErrorKind::InvalidData,
+            "Error: Invalid Android camera resolution",
+        ));
+    }
+
+    if settings.frame_rate_range.min <= 0
+        || settings.frame_rate_range.max <= 0
+        || settings.frame_rate_range.min > settings.frame_rate_range.max
+    {
+        return Err(io::Error::new(
+            ErrorKind::InvalidData,
+            "Error: Android camera frame rate range must be positive and ordered",
+        ));
+    }
+
+    let lock = ANDROID_CAMERA_SETTINGS
+        .get_or_init(|| std::sync::Mutex::new(AndroidCameraSettings::default()));
+    *lock.lock().unwrap() = settings;
+
+    Ok(())
+}
+
+#[cfg(feature = "android")]
+fn get_android_camera_settings() -> AndroidCameraSettings {
+    ANDROID_CAMERA_SETTINGS
+        .get_or_init(|| std::sync::Mutex::new(AndroidCameraSettings::default()))
+        .lock()
+        .unwrap()
+        .clone()
 }
 
 pub(crate) fn get_server_credentials() -> (String, String, String) {
@@ -212,6 +272,7 @@ pub(crate) fn run(args: Args) -> io::Result<()> {
             let input_camera_secret: Option<Vec<u8>> = None;
         } else if #[cfg(feature = "android")] {
             log::info!("About to call AndroidCamera::new()");
+            let android_camera_settings = get_android_camera_settings();
             let camera = AndroidCamera::new(
                 "Android".to_string(),
                 STATE_DIR_GENERAL.to_string(),
@@ -219,7 +280,7 @@ pub(crate) fn run(args: Args) -> io::Result<()> {
                 THUMBNAIL_DIR_GENERAL.to_string(),
                 1,
                 args.flag_save_all,
-                ANDROID_CAMERA_FACING_BACK,
+                android_camera_settings,
             );
             log::info!("Finished calling AndroidCamera::new()");
 

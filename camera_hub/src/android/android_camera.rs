@@ -2,7 +2,7 @@
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{
     collections::VecDeque,
     io,
@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::motion::MotionResult;
-use crate::android::android_dual_stream;
+use crate::android::android_dual_stream::{self, AndroidCameraSettings};
 use crate::traits::Mp4;
 use crate::{
     delivery_monitor::VideoInfo,
@@ -34,9 +34,30 @@ use tokio::runtime::Runtime;
 
 //FIXME: this file has A LOT in common with rpi_camera.rs. Consolidate.
 
-const TOTAL_FRAME_RATE: usize = 10;
-const I_FRAME_INTERVAL: usize = TOTAL_FRAME_RATE; // 1-second fragments
 const DEFAULT_BITRATE: usize = 2_000_000;
+const MIN_BITRATE: usize = 1_000_000;
+const MAX_BITRATE: usize = 8_000_000;
+const I_FRAME_INTERVAL_SECONDS: usize = 1;
+
+fn bitrate_for_settings(width: usize, height: usize, frame_rate: usize) -> usize {
+    const BASE_WIDTH: usize = 1280;
+    const BASE_HEIGHT: usize = 720;
+    const BASE_FRAME_RATE: usize = 10;
+
+    let numerator = (DEFAULT_BITRATE as u64)
+        .saturating_mul(width as u64)
+        .saturating_mul(height as u64)
+        .saturating_mul(frame_rate.max(1) as u64);
+    let denominator = (BASE_WIDTH as u64)
+        .saturating_mul(BASE_HEIGHT as u64)
+        .saturating_mul(BASE_FRAME_RATE as u64);
+    let scaled = numerator
+        .saturating_add(denominator.saturating_sub(1))
+        / denominator;
+
+    usize::try_from(scaled.clamp(MIN_BITRATE as u64, MAX_BITRATE as u64))
+        .unwrap_or(MAX_BITRATE)
+}
 
 //These are for our local SPS/PPS channel
 #[derive(PartialEq, Debug, Clone)]
@@ -84,7 +105,7 @@ impl AndroidCamera {
         motion_fps: u64,
         //FIXME
         _save_all: bool,
-        facing: i32,
+        settings: AndroidCameraSettings,
     ) -> Self {
         println!("Initializing Android Camera...");
 
@@ -139,28 +160,32 @@ impl AndroidCamera {
         });
         */
 
-        // FIXME: hard-coded.
         let resolution = CameraResolution {
-            width: 1280,
-            height: 720,
+            width: settings.width,
+            height: settings.height,
         };
+        let frame_rate_range = settings.frame_rate_range;
+        let frame_rate_max = usize::try_from(frame_rate_range.max).unwrap_or(1);
+        let bitrate = bitrate_for_settings(resolution.width, resolution.height, frame_rate_max);
 
         log::info!(
-            "AndroidCamera: starting dual stream facing={} resolution={}x{} fps={}",
-            facing,
+            "AndroidCamera: starting dual stream facing={} resolution={}x{} fps={}-{} bitrate={}",
+            settings.facing,
             resolution.width,
             resolution.height,
-            TOTAL_FRAME_RATE
+            frame_rate_range.min,
+            frame_rate_range.max,
+            bitrate
         );
 
         // Start the new shared stream.
         let stream_handle = android_dual_stream::start(
-            facing,
+            settings.facing,
             resolution.width,
             resolution.height,
-            TOTAL_FRAME_RATE,
-            I_FRAME_INTERVAL,
-            DEFAULT_BITRATE,
+            frame_rate_range,
+            I_FRAME_INTERVAL_SECONDS,
+            bitrate,
             //FIXME
             //Arc::clone(&motion_detection),
             Arc::clone(&frame_queue),
@@ -228,12 +253,11 @@ impl AndroidCamera {
         frame_queue: Arc<Mutex<VecDeque<Frame>>>,
     ) -> Result<(), Error> {
         let recording_window = duration.map(|secs| Duration::new(secs, 0));
-        let recording_start_time = Instant::now();
 
         let mut started = false; // started first fragment after first IDR
         let mut samples_in_fragment = 0u32; // count samples in the current fragment
-        let mut video_frame_count: u64 = 0;
-        let ticks_per_video_frame: u64 = 90_000 / TOTAL_FRAME_RATE as u64;
+        let mut first_video_timestamp = None;
+        let mut last_video_timestamp: Option<u64> = None;
 
         let mut audio_sample_count: u64 = 0;
 
@@ -250,10 +274,12 @@ impl AndroidCamera {
                 }
             };
 
-            // Open the very first fragment on the first IDR
+            // Open the very first fragment on the first IDR. The recording window
+            // starts here, rather than while waiting for a usable keyframe.
             if !started && frame.kind == FrameKind::IFrame {
                 started = true;
                 samples_in_fragment = 0;
+                first_video_timestamp = Some(frame.timestamp);
             }
             // On later IDR, close the previous fragment if it has samples.
             else if started && frame.kind == FrameKind::IFrame && samples_in_fragment > 0 {
@@ -266,9 +292,26 @@ impl AndroidCamera {
                     let ts_audio = audio_sample_count; // 48k timescale
                     mp4.audio(&frame.data, ts_audio).await?;
                     audio_sample_count += 1024; // AAC-LC fixed
-                    continue;
                 } else {
-                    let ts = video_frame_count * ticks_per_video_frame;
+                    let first_timestamp = first_video_timestamp.unwrap_or(frame.timestamp);
+                    let elapsed = frame
+                        .timestamp
+                        .duration_since(first_timestamp)
+                        .unwrap_or_default();
+                    let capture_timestamp = elapsed
+                        .as_secs()
+                        .saturating_mul(90_000)
+                        .saturating_add(
+                            u64::from(elapsed.subsec_nanos())
+                                .saturating_mul(90_000)
+                                / 1_000_000_000,
+                        );
+                    let ts = match last_video_timestamp {
+                        Some(previous) => capture_timestamp.max(previous.saturating_add(1)),
+                        None => capture_timestamp,
+                    };
+                    last_video_timestamp = Some(ts);
+
                     let avcc = Self::annexb_to_avcc_frame(
                         &frame.data,
                         /*strip_aud*/ true,
@@ -290,14 +333,20 @@ impl AndroidCamera {
                     mp4.video(&sample, ts, frame.kind == FrameKind::IFrame)
                         .await?;
 
-                    video_frame_count += 1;
                     samples_in_fragment += 1;
                 }
-            }
 
-            if let Some(window) = recording_window {
-                if Instant::now().duration_since(recording_start_time) > window {
-                    break;
+                if let (Some(window), Some(first_timestamp)) =
+                    (recording_window, first_video_timestamp)
+                {
+                    if frame
+                        .timestamp
+                        .duration_since(first_timestamp)
+                        .unwrap_or_default()
+                        >= window
+                    {
+                        break;
+                    }
                 }
             }
         }

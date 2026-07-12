@@ -12,7 +12,50 @@ use crossbeam_channel::Sender;
 use crate::android::android_camera::{Frame, FrameKind};
 
 pub const ANDROID_CAMERA_FACING_BACK: i32 = 0;
-//pub const ANDROID_CAMERA_FACING_FRONT: i32 = 1;
+pub const ANDROID_CAMERA_FACING_FRONT: i32 = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AndroidCameraResolution {
+    pub width: usize,
+    pub height: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AndroidCameraFrameRateRange {
+    pub min: i32,
+    pub max: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AndroidCameraSpec {
+    pub facing: i32,
+    pub resolutions: Vec<AndroidCameraResolution>,
+    pub frame_rate_ranges: Vec<AndroidCameraFrameRateRange>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AndroidCameraSettings {
+    pub facing: i32,
+    pub width: usize,
+    pub height: usize,
+    pub frame_rate_range: AndroidCameraFrameRateRange,
+}
+
+impl Default for AndroidCameraSettings {
+    fn default() -> Self {
+        Self {
+            facing: ANDROID_CAMERA_FACING_BACK,
+            width: 1280,
+            height: 720,
+            frame_rate_range: AndroidCameraFrameRateRange { min: 10, max: 10 },
+        }
+    }
+}
+
+pub fn get_available_specs() -> anyhow::Result<Vec<AndroidCameraSpec>> {
+    ndk::available_camera_specs()
+        .map_err(|e| anyhow::anyhow!("failed to get Android camera specs: {e}"))
+}
 
 struct AndroidStreamState {
     frame_queue: Arc<Mutex<VecDeque<Frame>>>,
@@ -29,7 +72,7 @@ pub fn start(
     facing: i32,
     width: usize,
     height: usize,
-    total_frame_rate: usize,
+    frame_rate_range: AndroidCameraFrameRateRange,
     i_frame_interval: usize,
     bitrate: usize,
     //FIXME
@@ -43,14 +86,34 @@ pub fn start(
         ps_tx,
     });
 
+    if facing != ANDROID_CAMERA_FACING_BACK && facing != ANDROID_CAMERA_FACING_FRONT {
+        return Err(anyhow::anyhow!("unsupported Android camera facing: {facing}"));
+    }
+
+    let width = c_int::try_from(width)
+        .map_err(|_| anyhow::anyhow!("Invalid width"))?;
+    let height = c_int::try_from(height)
+        .map_err(|_| anyhow::anyhow!("Invalid height"))?;
+    if frame_rate_range.min <= 0
+        || frame_rate_range.max <= 0
+        || frame_rate_range.min > frame_rate_range.max
+    {
+        return Err(anyhow::anyhow!("Invalid frame rate range"));
+    }
+    let bitrate = c_int::try_from(bitrate)
+        .map_err(|_| anyhow::anyhow!("Invalid bitrate"))?;
+    let i_frame_interval = c_int::try_from(i_frame_interval)
+        .map_err(|_| anyhow::anyhow!("In valid keyframe interval"))?;
+
     let config = ndk::CameraConfig {
         facing,
-        width: width as c_int,
-        height: height as c_int,
-        fps: total_frame_rate as c_int,
-        bitrate: bitrate as c_int,
-        i_frame_interval: i_frame_interval as c_int,
-        motion_fps: motion_fps as c_int,
+        width,
+        height,
+        fps_min: frame_rate_range.min,
+        fps_max: frame_rate_range.max,
+        bitrate,
+        i_frame_interval,
+        motion_fps: c_int::from(motion_fps),
     };
 
     let callbacks = ndk::CameraCallbacks {
@@ -158,6 +221,7 @@ fn add_frame_and_drop_old(frame_queue: Arc<Mutex<VecDeque<Frame>>>, frame: Frame
 }
 
 mod ndk {
+    use std::collections::BTreeSet;
     use std::ffi::CString;
     use std::os::raw::{c_char, c_int, c_void};
     use std::ptr;
@@ -168,8 +232,14 @@ mod ndk {
 
     use ndk_sys as sys;
 
+    use super::{
+        AndroidCameraFrameRateRange, AndroidCameraResolution, AndroidCameraSpec,
+        ANDROID_CAMERA_FACING_BACK, ANDROID_CAMERA_FACING_FRONT,
+    };
+
     const CAMERA_OK: sys::camera_status_t = sys::camera_status_t(0);
     const MEDIA_OK: sys::media_status_t = sys::media_status_t(0);
+    const AIMAGE_FORMAT_IMPLEMENTATION_DEFINED: c_int = 0x22;
     const AIMAGE_FORMAT_YUV_420_888: c_int = 0x23;
     const K_FACING_FRONT: c_int = 1;
     const K_COLOR_FORMAT_SURFACE: c_int = 0x7F000789;
@@ -185,7 +255,8 @@ mod ndk {
         pub facing: c_int,
         pub width: c_int,
         pub height: c_int,
-        pub fps: c_int,
+        pub fps_min: c_int,
+        pub fps_max: c_int,
         pub bitrate: c_int,
         pub i_frame_interval: c_int,
         pub motion_fps: c_int,
@@ -202,6 +273,349 @@ mod ndk {
 
     pub(super) struct NativeCamera {
         bridge: Box<CameraBridge>,
+    }
+
+    pub(super) fn available_camera_specs() -> Result<Vec<AndroidCameraSpec>, String> {
+        let manager = unsafe {
+            // SAFETY
+            // None.
+            sys::ACameraManager_create()
+        };
+        if manager.is_null() {
+            return Err("ACameraManager_create failed".to_string());
+        }
+
+        let result = unsafe {
+            // SAFETY
+            // 1. manager is a live ACameraManager.
+            read_camera_specs(manager)
+        };
+
+        unsafe {
+            // SAFETY
+            // 1. manager is live and no longer used after this call.
+            sys::ACameraManager_delete(manager);
+        }
+
+        result
+    }
+
+    /// # Safety
+    /// 1. manager must be a live ACameraManager.
+    unsafe fn read_camera_specs(
+        manager: *mut sys::ACameraManager,
+    ) -> Result<Vec<AndroidCameraSpec>, String> {
+        if manager.is_null() {
+            return Err("ACameraManager was null".to_string());
+        }
+
+        let mut ids: *mut sys::ACameraIdList = ptr::null_mut();
+
+        // SAFETY
+        // 1. manager is live.
+        // 2. ids is writable.
+        if sys::ACameraManager_getCameraIdList(manager, &mut ids) != CAMERA_OK || ids.is_null() {
+            return Err("ACameraManager_getCameraIdList failed".to_string());
+        }
+
+        // SAFETY
+        // 1. ids is not null and points to the live camera-id list returned by the NDK.
+        let id_list = &*ids;
+        let Ok(num_cameras) = usize::try_from(id_list.numCameras) else {
+            // SAFETY
+            // 1. ids is a live camera-id list returned by the NDK.
+            sys::ACameraManager_deleteCameraIdList(ids);
+            return Err("camera-id list reported a negative camera count".to_string());
+        };
+
+        if num_cameras > 0 && id_list.cameraIds.is_null() {
+            // SAFETY
+            // 1. ids is a live camera-id list returned by the NDK.
+            sys::ACameraManager_deleteCameraIdList(ids);
+            return Err("camera-id list contained a null cameraIds pointer".to_string());
+        }
+
+        let mut specs = Vec::new();
+        for i in 0..num_cameras {
+            // SAFETY
+            // 1. cameraIds points to num_cameras entries.
+            // 2. i < num_cameras.
+            let id_ptr = *id_list.cameraIds.add(i);
+            if id_ptr.is_null() {
+                continue;
+            }
+
+            let mut metadata: *mut sys::ACameraMetadata = ptr::null_mut();
+
+            // SAFETY
+            // 1. manager is live.
+            // 2. id_ptr comes from the live camera-id list.
+            // 3. metadata is writable.
+            let status =
+                sys::ACameraManager_getCameraCharacteristics(manager, id_ptr, &mut metadata);
+            if status != CAMERA_OK || metadata.is_null() {
+                if !metadata.is_null() {
+                    // SAFETY
+                    // 1. metadata was returned by the NDK and not freed yet.
+                    sys::ACameraMetadata_free(metadata);
+                }
+                continue;
+            }
+
+            // SAFETY
+            // 1. metadata is live until it is freed below.
+            let spec = read_camera_spec(metadata);
+
+            // SAFETY
+            // 1. metadata was returned by the NDK and not freed yet.
+            sys::ACameraMetadata_free(metadata);
+
+            if let Some(spec) = spec {
+                // Avoid duplicate cameras.
+                if !specs
+                    .iter()
+                    .any(|existing: &AndroidCameraSpec| existing.facing == spec.facing)
+                {
+                    specs.push(spec);
+                }
+            }
+        }
+
+        // SAFETY
+        // 1. ids is a live camera-id list returned by the NDK.
+        sys::ACameraManager_deleteCameraIdList(ids);
+
+        Ok(specs)
+    }
+
+    /// # Safety
+    /// 1. metadata must be a live ACameraMetadata.
+    unsafe fn read_camera_spec(metadata: *mut sys::ACameraMetadata) -> Option<AndroidCameraSpec> {
+        if metadata.is_null() {
+            return None;
+        }
+
+        // SAFETY
+        // 1. metadata is live.
+        let facing = read_camera_facing(metadata)?;
+
+        // SAFETY
+        // 1. metadata is live.
+        let resolutions = read_camera_resolutions(metadata);
+
+        // SAFETY
+        // 1. metadata is live.
+        let frame_rate_ranges = read_frame_rate_ranges(metadata);
+
+        Some(AndroidCameraSpec {
+            facing,
+            resolutions,
+            frame_rate_ranges,
+        })
+    }
+
+    /// # Safety
+    /// 1. metadata must be a live ACameraMetadata.
+    unsafe fn read_camera_facing(metadata: *mut sys::ACameraMetadata) -> Option<i32> {
+        if metadata.is_null() {
+            return None;
+        }
+
+        let mut entry = std::mem::MaybeUninit::<sys::ACameraMetadata_const_entry>::uninit();
+
+        // SAFETY
+        // 1. metadata is live.
+        // 2. entry is writable.
+        if sys::ACameraMetadata_getConstEntry(
+            metadata,
+            sys::acamera_metadata_tag::ACAMERA_LENS_FACING.0,
+            entry.as_mut_ptr(),
+        ) != CAMERA_OK
+        {
+            return None;
+        }
+
+        // SAFETY
+        // 1. The successful NDK call initialized entry.
+        let entry = entry.assume_init();
+        if entry.count == 0 {
+            return None;
+        }
+
+        // SAFETY
+        // 1. ACAMERA_LENS_FACING metadata contains u8 data.
+        // 2. entry came from a successful metadata lookup and count is non-zero.
+        let facing = camera_metadata_u8(&entry)?;
+
+        if facing
+            == sys::acamera_metadata_enum_acamera_lens_facing::ACAMERA_LENS_FACING_FRONT.0 as u8
+        {
+            Some(ANDROID_CAMERA_FACING_FRONT)
+        } else if facing
+            == sys::acamera_metadata_enum_acamera_lens_facing::ACAMERA_LENS_FACING_BACK.0 as u8
+        {
+            Some(ANDROID_CAMERA_FACING_BACK)
+        } else {
+            None
+        }
+    }
+
+    /// # Safety
+    /// 1. metadata must be a live ACameraMetadata.
+    unsafe fn read_camera_resolutions(
+        metadata: *mut sys::ACameraMetadata,
+    ) -> Vec<AndroidCameraResolution> {
+        if metadata.is_null() {
+            return default_resolutions();
+        }
+
+        let mut entry = std::mem::MaybeUninit::<sys::ACameraMetadata_const_entry>::uninit();
+
+        // SAFETY
+        // 1. metadata is live.
+        // 2. entry is writable.
+        if sys::ACameraMetadata_getConstEntry(
+            metadata,
+            sys::acamera_metadata_tag::ACAMERA_SCALER_AVAILABLE_STREAM_CONFIGURATIONS.0,
+            entry.as_mut_ptr(),
+        ) != CAMERA_OK
+        {
+            return default_resolutions();
+        }
+
+        // SAFETY
+        // 1. The successful NDK call initialized entry.
+        let entry = entry.assume_init();
+        if entry.count < 4 {
+            return default_resolutions();
+        }
+
+        // SAFETY
+        // 1. ACAMERA_SCALER_AVAILABLE_STREAM_CONFIGURATIONS contains i32 data.
+        // 2. entry came from a successful metadata lookup.
+        let Some(values) = camera_metadata_i32_vec(&entry) else {
+            return default_resolutions();
+        };
+
+        let mut yuv_resolutions = BTreeSet::new();
+        let mut encoder_surface_resolutions = BTreeSet::new();
+        for chunk in values.chunks_exact(4) {
+            let format = chunk[0];
+            let Ok(width) = usize::try_from(chunk[1]) else {
+                continue;
+            };
+            let Ok(height) = usize::try_from(chunk[2]) else {
+                continue;
+            };
+
+            // input/output flag
+            let input = chunk[3] != 0;
+
+            if input {
+                continue;
+            }
+
+            match format {
+                AIMAGE_FORMAT_YUV_420_888 => {
+                    yuv_resolutions.insert((width, height));
+                }
+                AIMAGE_FORMAT_IMPLEMENTATION_DEFINED => {
+                    encoder_surface_resolutions.insert((width, height));
+                }
+                _ => {}
+            }
+        }
+
+        // The capture session sends the same camera stream to a YUV reader and
+        // the MediaCodec input surface. Only advertise dimensions supported by
+        // both output types.
+        let mut resolutions: Vec<_> = yuv_resolutions
+            .intersection(&encoder_surface_resolutions)
+            .map(|&(width, height)| AndroidCameraResolution { width, height })
+            .collect();
+
+        resolutions.sort_by(|a, b| {
+            let area_a = a.width.saturating_mul(a.height);
+            let area_b = b.width.saturating_mul(b.height);
+            area_b
+                .cmp(&area_a)
+                .then_with(|| b.width.cmp(&a.width))
+                .then_with(|| b.height.cmp(&a.height))
+        });
+
+        if resolutions.is_empty() {
+            default_resolutions()
+        } else {
+            resolutions
+        }
+    }
+
+    /// # Safety
+    /// 1. metadata must be a live ACameraMetadata.
+    unsafe fn read_frame_rate_ranges(
+        metadata: *mut sys::ACameraMetadata,
+    ) -> Vec<AndroidCameraFrameRateRange> {
+        if metadata.is_null() {
+            return default_frame_rate_ranges();
+        }
+
+        let mut entry = std::mem::MaybeUninit::<sys::ACameraMetadata_const_entry>::uninit();
+
+        // SAFETY
+        // 1. metadata is live.
+        // 2. entry is writable.
+        if sys::ACameraMetadata_getConstEntry(
+            metadata,
+            sys::acamera_metadata_tag::ACAMERA_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES.0,
+            entry.as_mut_ptr(),
+        ) != CAMERA_OK
+        {
+            return default_frame_rate_ranges();
+        }
+
+        // SAFETY
+        // 1. The successful NDK call initialized entry.
+        let entry = entry.assume_init();
+        if entry.count < 2 {
+            return default_frame_rate_ranges();
+        }
+
+        // SAFETY
+        // 1. ACAMERA_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES contains i32 data.
+        // 2. entry came from a successful metadata lookup.
+        let Some(values) = camera_metadata_i32_vec(&entry) else {
+            return default_frame_rate_ranges();
+        };
+
+        let mut ranges = Vec::new();
+        for chunk in values.chunks_exact(2) {
+            let min = chunk[0];
+            let max = chunk[1];
+            if min <= 0 {
+                continue;
+            }
+            ranges.push(AndroidCameraFrameRateRange { min, max });
+        }
+
+        ranges.sort_by(|a, b| a.max.cmp(&b.max).then_with(|| a.min.cmp(&b.min)));
+        ranges.dedup();
+
+        if ranges.is_empty() {
+            default_frame_rate_ranges()
+        } else {
+            ranges
+        }
+    }
+
+    fn default_resolutions() -> Vec<AndroidCameraResolution> {
+        vec![AndroidCameraResolution {
+            width: 1280,
+            height: 720,
+        }]
+    }
+
+    fn default_frame_rate_ranges() -> Vec<AndroidCameraFrameRateRange> {
+        vec![AndroidCameraFrameRateRange { min: 10, max: 10 }]
     }
 
     // SAFETY
@@ -728,7 +1142,7 @@ mod ndk {
             sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_BIT_RATE, self.config.bitrate);
             // SAFETY
             // 1. format is live.
-            sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_FRAME_RATE, self.config.fps);
+            sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_FRAME_RATE, self.config.fps_max);
             // SAFETY
             // 1. format is live.
             sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_I_FRAME_INTERVAL, self.config.i_frame_interval);
@@ -1009,7 +1423,7 @@ mod ndk {
                 return self.fail("ACaptureRequest_addTarget failed");
             }
 
-            let fps_range = [self.config.fps, self.config.fps];
+            let fps_range = [self.config.fps_min, self.config.fps_max];
             // SAFETY
             // 1. self.capture_request is live.
             // 2. fps_range.as_ptr() is valid for this call.
@@ -1819,8 +2233,31 @@ mod ndk {
     }
 
     /// # Safety
+    /// 1. entry.data must contain i32 data.
+    /// 2. If entry.count > 0, entry.data must be valid for entry.count i32 values and must be live.
+    unsafe fn camera_metadata_i32_vec(
+        entry: &sys::ACameraMetadata_const_entry,
+    ) -> Option<Vec<i32>> {
+        let len = usize::try_from(entry.count).ok()?;
+        if len == 0 {
+            return Some(Vec::new());
+        }
+
+        // SAFETY
+        // 1. entry.data is an i32 pointer.
+        let data = *(&entry.data as *const _ as *const *const i32);
+        if data.is_null() {
+            return None;
+        }
+
+        // SAFETY
+        // 1. data is not null and is valid for len i32 values.
+        Some(std::slice::from_raw_parts(data, len).to_vec())
+    }
+
+    /// # Safety
     /// 1. entry.data must contain u8 data.
-    /// 2. If entry.count > 0, entry.data must be valid.
+    /// 2. If entry.count > 0, entry.data must be valid and live.
     unsafe fn camera_metadata_u8(entry: &sys::ACameraMetadata_const_entry) -> Option<u8> {
         if entry.count == 0 {
             return None;
