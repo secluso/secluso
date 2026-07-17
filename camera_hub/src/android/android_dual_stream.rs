@@ -314,24 +314,24 @@ mod ndk {
         // SAFETY
         // 1. manager is live.
         // 2. ids is writable.
-        if sys::ACameraManager_getCameraIdList(manager, &mut ids) != CAMERA_OK || ids.is_null() {
+        if unsafe { sys::ACameraManager_getCameraIdList(manager, &mut ids) } != CAMERA_OK || ids.is_null() {
             return Err("ACameraManager_getCameraIdList failed".to_string());
         }
 
         // SAFETY
         // 1. ids is not null and points to the live camera-id list returned by the NDK.
-        let id_list = &*ids;
+        let id_list = unsafe { &*ids };
         let Ok(num_cameras) = usize::try_from(id_list.numCameras) else {
             // SAFETY
             // 1. ids is a live camera-id list returned by the NDK.
-            sys::ACameraManager_deleteCameraIdList(ids);
+            unsafe { sys::ACameraManager_deleteCameraIdList(ids) };
             return Err("camera-id list reported a negative camera count".to_string());
         };
 
         if num_cameras > 0 && id_list.cameraIds.is_null() {
             // SAFETY
             // 1. ids is a live camera-id list returned by the NDK.
-            sys::ACameraManager_deleteCameraIdList(ids);
+            unsafe { sys::ACameraManager_deleteCameraIdList(ids) };
             return Err("camera-id list contained a null cameraIds pointer".to_string());
         }
 
@@ -340,7 +340,7 @@ mod ndk {
             // SAFETY
             // 1. cameraIds points to num_cameras entries.
             // 2. i < num_cameras.
-            let id_ptr = *id_list.cameraIds.add(i);
+            let id_ptr = unsafe { *id_list.cameraIds.add(i) };
             if id_ptr.is_null() {
                 continue;
             }
@@ -352,23 +352,23 @@ mod ndk {
             // 2. id_ptr comes from the live camera-id list.
             // 3. metadata is writable.
             let status =
-                sys::ACameraManager_getCameraCharacteristics(manager, id_ptr, &mut metadata);
+                unsafe { sys::ACameraManager_getCameraCharacteristics(manager, id_ptr, &mut metadata) };
             if status != CAMERA_OK || metadata.is_null() {
                 if !metadata.is_null() {
                     // SAFETY
                     // 1. metadata was returned by the NDK and not freed yet.
-                    sys::ACameraMetadata_free(metadata);
+                    unsafe { sys::ACameraMetadata_free(metadata) };
                 }
                 continue;
             }
 
             // SAFETY
             // 1. metadata is live until it is freed below.
-            let spec = read_camera_spec(metadata);
+            let spec = unsafe { read_camera_spec(metadata) };
 
             // SAFETY
             // 1. metadata was returned by the NDK and not freed yet.
-            sys::ACameraMetadata_free(metadata);
+            unsafe { sys::ACameraMetadata_free(metadata) };
 
             if let Some(spec) = spec {
                 // Avoid duplicate cameras.
@@ -383,7 +383,7 @@ mod ndk {
 
         // SAFETY
         // 1. ids is a live camera-id list returned by the NDK.
-        sys::ACameraManager_deleteCameraIdList(ids);
+        unsafe { sys::ACameraManager_deleteCameraIdList(ids) };
 
         Ok(specs)
     }
@@ -397,15 +397,15 @@ mod ndk {
 
         // SAFETY
         // 1. metadata is live.
-        let facing = read_camera_facing(metadata)?;
+        let facing = unsafe { read_camera_facing(metadata) }?;
 
         // SAFETY
         // 1. metadata is live.
-        let resolutions = read_camera_resolutions(metadata);
+        let resolutions = unsafe { read_camera_resolutions(metadata) };
 
         // SAFETY
         // 1. metadata is live.
-        let frame_rate_ranges = read_frame_rate_ranges(metadata);
+        let frame_rate_ranges = unsafe { read_frame_rate_ranges(metadata) };
 
         Some(AndroidCameraSpec {
             facing,
@@ -426,18 +426,18 @@ mod ndk {
         // SAFETY
         // 1. metadata is live.
         // 2. entry is writable.
-        if sys::ACameraMetadata_getConstEntry(
+        if unsafe { sys::ACameraMetadata_getConstEntry(
             metadata,
             sys::acamera_metadata_tag::ACAMERA_LENS_FACING.0,
             entry.as_mut_ptr(),
-        ) != CAMERA_OK
+        ) } != CAMERA_OK
         {
             return None;
         }
 
         // SAFETY
         // 1. The successful NDK call initialized entry.
-        let entry = entry.assume_init();
+        let entry = unsafe { entry.assume_init() };
         if entry.count == 0 {
             return None;
         }
@@ -445,7 +445,7 @@ mod ndk {
         // SAFETY
         // 1. ACAMERA_LENS_FACING metadata contains u8 data.
         // 2. entry came from a successful metadata lookup and count is non-zero.
-        let facing = camera_metadata_u8(&entry)?;
+        let facing = unsafe { camera_metadata_u8(&entry) }?;
 
         if facing
             == sys::acamera_metadata_enum_acamera_lens_facing::ACAMERA_LENS_FACING_FRONT.0 as u8
@@ -474,18 +474,18 @@ mod ndk {
         // SAFETY
         // 1. metadata is live.
         // 2. entry is writable.
-        if sys::ACameraMetadata_getConstEntry(
+        if unsafe { sys::ACameraMetadata_getConstEntry(
             metadata,
             sys::acamera_metadata_tag::ACAMERA_SCALER_AVAILABLE_STREAM_CONFIGURATIONS.0,
             entry.as_mut_ptr(),
-        ) != CAMERA_OK
+        ) } != CAMERA_OK
         {
             return default_resolutions();
         }
 
         // SAFETY
         // 1. The successful NDK call initialized entry.
-        let entry = entry.assume_init();
+        let entry = unsafe { entry.assume_init() };
         if entry.count < 4 {
             return default_resolutions();
         }
@@ -493,7 +493,7 @@ mod ndk {
         // SAFETY
         // 1. ACAMERA_SCALER_AVAILABLE_STREAM_CONFIGURATIONS contains i32 data.
         // 2. entry came from a successful metadata lookup.
-        let Some(values) = camera_metadata_i32_vec(&entry) else {
+        let Some(values) = unsafe { camera_metadata_i32_vec(&entry) } else {
             return default_resolutions();
         };
 
@@ -564,18 +564,18 @@ mod ndk {
         // SAFETY
         // 1. metadata is live.
         // 2. entry is writable.
-        if sys::ACameraMetadata_getConstEntry(
+        if unsafe { sys::ACameraMetadata_getConstEntry(
             metadata,
             sys::acamera_metadata_tag::ACAMERA_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES.0,
             entry.as_mut_ptr(),
-        ) != CAMERA_OK
+        ) } != CAMERA_OK
         {
             return default_frame_rate_ranges();
         }
 
         // SAFETY
         // 1. The successful NDK call initialized entry.
-        let entry = entry.assume_init();
+        let entry = unsafe { entry.assume_init() };
         if entry.count < 2 {
             return default_frame_rate_ranges();
         }
@@ -583,7 +583,7 @@ mod ndk {
         // SAFETY
         // 1. ACAMERA_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES contains i32 data.
         // 2. entry came from a successful metadata lookup.
-        let Some(values) = camera_metadata_i32_vec(&entry) else {
+        let Some(values) = unsafe { camera_metadata_i32_vec(&entry) } else {
             return default_frame_rate_ranges();
         };
 
@@ -782,38 +782,40 @@ mod ndk {
                 return self.fail("Android camera already started");
             }
 
-            self.manager = sys::ACameraManager_create();
+            // SAFETY
+            // None.
+            self.manager = unsafe { sys::ACameraManager_create() };
             if self.manager.is_null() {
                 return self.fail("ACameraManager_create failed");
             }
 
             // SAFETY
             // 1. self.manager is a live ACameraManager.
-            self.select_camera()?;
+            unsafe { self.select_camera() }?;
             // SAFETY
             // 1. self.callback_state allocation stays live while the listener is installed.
-            self.create_reader()?;
+            unsafe { self.create_reader() }?;
             // SAFETY
             // None.
-            self.create_encoder()?;
+            unsafe { self.create_encoder() }?;
             // SAFETY
             // create_audio_encoder: None.
             // create_audio_recorder: None.
-            self.audio_enabled = self.create_audio_encoder().is_ok() && self.create_audio_recorder().is_ok();
+            self.audio_enabled = unsafe { self.create_audio_encoder() }.is_ok() && unsafe { self.create_audio_recorder() }.is_ok();
             if !self.audio_enabled {
                 log::warn!("Android audio disabled; continuing with video-only camera startup");
                 // SAFETY
                 // 1. Audio handles, if not null, are live.
                 // 2. No audio worker has been spawned yet.
-                self.release_audio_resources();
+                unsafe { self.release_audio_resources() };
             }
             // SAFETY
             // 1. self.manager is live.
             // 2. self.callback_state allocation stays live while callbacks are registered.
-            self.open_camera()?;
+            unsafe { self.open_camera() }?;
             // SAFETY
             // 1. device, encoder_window, and raw_window are live.
-            self.create_capture_session()?;
+            unsafe { self.create_capture_session() }?;
 
             self.running.store(true, Ordering::SeqCst);
 
@@ -830,12 +832,12 @@ mod ndk {
             if self.audio_enabled {
                 // SAFETY
                 // 1. self.audio_stream is live.
-                if sys::AAudioStream_requestStart(self.audio_stream) != sys::AAUDIO_OK {
+                if unsafe { sys::AAudioStream_requestStart(self.audio_stream) } != sys::AAUDIO_OK {
                     log::warn!("AAudioStream_requestStart failed; continuing without audio");
                     // SAFETY
                     // 1. Audio handles, if not null, are live.
                     // 2. No audio worker has been spawned yet.
-                    self.release_audio_resources();
+                    unsafe { self.release_audio_resources() };
                 } else {
                     let audio_state = AudioThreadState {
                         running: Arc::clone(&self.running),
@@ -864,19 +866,19 @@ mod ndk {
             if !self.session.is_null() {
                 // SAFETY
                 // 1. self.session is a live capture session.
-                let _ = sys::ACameraCaptureSession_stopRepeating(self.session);
+                let _ = unsafe { sys::ACameraCaptureSession_stopRepeating(self.session) };
                 // SAFETY
                 // 1. self.session is a live capture session.
-                let _ = sys::ACameraCaptureSession_abortCaptures(self.session);
+                let _ = unsafe { sys::ACameraCaptureSession_abortCaptures(self.session) };
                 // SAFETY
                 // 1. self.session is a live capture session.
-                sys::ACameraCaptureSession_close(self.session);
+                unsafe { sys::ACameraCaptureSession_close(self.session) };
             }
 
             if !self.audio_stream.is_null() {
                 // SAFETY
                 // 1. self.audio_stream is live.
-                let _ = sys::AAudioStream_requestStop(self.audio_stream);
+                let _ = unsafe { sys::AAudioStream_requestStop(self.audio_stream) };
             }
 
             if let Some(handle) = self.encoder_thread.take() {
@@ -895,58 +897,58 @@ mod ndk {
             if !self.encoder.is_null() {
                 // SAFETY
                 // 1. self.encoder is live and the worker is joined.
-                let _ = sys::AMediaCodec_stop(self.encoder);
+                let _ = unsafe { sys::AMediaCodec_stop(self.encoder) };
                 // SAFETY
                 // 1. self.encoder is live.
-                sys::AMediaCodec_delete(self.encoder);
+                unsafe { sys::AMediaCodec_delete(self.encoder) };
                 self.encoder = ptr::null_mut();
             }
 
             // SAFETY
             // 1. Audio handles, if not null, are live.
             // 2. Audio worker has been joined.
-            self.release_audio_resources();
+            unsafe { self.release_audio_resources() };
 
             if !self.capture_request.is_null() {
                 // SAFETY
                 // 1. self.capture_request is live.
-                sys::ACaptureRequest_free(self.capture_request);
+                unsafe { sys::ACaptureRequest_free(self.capture_request) };
                 self.capture_request = ptr::null_mut();
             }
             if !self.encoder_target.is_null() {
                 // SAFETY
                 // 1. self.encoder_target is live.
-                sys::ACameraOutputTarget_free(self.encoder_target);
+                unsafe { sys::ACameraOutputTarget_free(self.encoder_target) };
                 self.encoder_target = ptr::null_mut();
             }
             if !self.raw_target.is_null() {
                 // SAFETY
                 // 1. self.raw_target is live.
-                sys::ACameraOutputTarget_free(self.raw_target);
+                unsafe { sys::ACameraOutputTarget_free(self.raw_target) };
                 self.raw_target = ptr::null_mut();
             }
             if !self.outputs.is_null() {
                 // SAFETY
                 // 1. self.outputs is live.
-                sys::ACaptureSessionOutputContainer_free(self.outputs);
+                unsafe { sys::ACaptureSessionOutputContainer_free(self.outputs) };
                 self.outputs = ptr::null_mut();
             }
             if !self.encoder_output.is_null() {
                 // SAFETY
                 // 1. self.encoder_output is live.
-                sys::ACaptureSessionOutput_free(self.encoder_output);
+                unsafe { sys::ACaptureSessionOutput_free(self.encoder_output) };
                 self.encoder_output = ptr::null_mut();
             }
             if !self.raw_output.is_null() {
                 // SAFETY
                 // 1. self.raw_output is live.
-                sys::ACaptureSessionOutput_free(self.raw_output);
+                unsafe { sys::ACaptureSessionOutput_free(self.raw_output) };
                 self.raw_output = ptr::null_mut();
             }
             if !self.encoder_window.is_null() {
                 // SAFETY
                 // 1. self.encoder_window is live.
-                sys::ANativeWindow_release(self.encoder_window);
+                unsafe { sys::ANativeWindow_release(self.encoder_window) };
                 self.encoder_window = ptr::null_mut();
             }
             self.callback_state.wait_for_callbacks();
@@ -956,24 +958,24 @@ mod ndk {
                 // SAFETY
                 // 1. All enabled image callbacks have finished.
                 // 2. self.reader is live.
-                sys::AImageReader_setImageListener(self.reader, ptr::null_mut());
+                unsafe { sys::AImageReader_setImageListener(self.reader, ptr::null_mut()) };
                 // SAFETY
                 // 1. The listener is cleared and all enabled image callbacks have finished.
                 // 2. self.reader is live.
-                sys::AImageReader_delete(self.reader);
+                unsafe { sys::AImageReader_delete(self.reader) };
                 self.reader = ptr::null_mut();
                 self.raw_window = ptr::null_mut();
             }
             if !self.device.is_null() {
                 // SAFETY
                 // 1. self.device is live.
-                sys::ACameraDevice_close(self.device);
+                unsafe { sys::ACameraDevice_close(self.device) };
                 self.device = ptr::null_mut();
             }
             if !self.manager.is_null() {
                 // SAFETY
                 // 1. self.manager is live.
-                sys::ACameraManager_delete(self.manager);
+                unsafe { sys::ACameraManager_delete(self.manager) };
                 self.manager = ptr::null_mut();
             }
 
@@ -1001,7 +1003,7 @@ mod ndk {
             // SAFETY
             // 1. self.manager is live.
             // 2. ids is writable.
-            if sys::ACameraManager_getCameraIdList(self.manager, &mut ids) != CAMERA_OK || ids.is_null() {
+            if unsafe { sys::ACameraManager_getCameraIdList(self.manager, &mut ids) } != CAMERA_OK || ids.is_null() {
                 return self.fail("ACameraManager_getCameraIdList failed");
             }
 
@@ -1014,17 +1016,17 @@ mod ndk {
             // SAFETY
             // 1. The NDK call that returned ids succeeded.
             // 2. ids is not null.
-            let id_list = &*ids;
+            let id_list = unsafe { &*ids };
             for i in 0..id_list.numCameras {
                 // SAFETY
                 // 1. ids is a live camera-id list and i < numCameras.
                 // 2. cameraIds points to numCameras entries.
-                let id_ptr = *id_list.cameraIds.add(i as usize);
+                let id_ptr = unsafe { *id_list.cameraIds.add(i as usize) };
                 let mut metadata: *mut sys::ACameraMetadata = ptr::null_mut();
                 // SAFETY
                 // 1. self.manager is live and id_ptr comes from the live id list.
                 // 2. metadata is writable.
-                if sys::ACameraManager_getCameraCharacteristics(self.manager, id_ptr, &mut metadata) != CAMERA_OK {
+                if unsafe { sys::ACameraManager_getCameraCharacteristics(self.manager, id_ptr, &mut metadata) } != CAMERA_OK {
                     continue;
                 }
 
@@ -1033,20 +1035,20 @@ mod ndk {
                 // SAFETY
                 // 1. metadata is live for this camera.
                 // 2. entry is writable.
-                let matched = if sys::ACameraMetadata_getConstEntry(
+                let matched = if unsafe { sys::ACameraMetadata_getConstEntry(
                     metadata,
                     sys::acamera_metadata_tag::ACAMERA_LENS_FACING.0,
                     entry.as_mut_ptr(),
-                ) == CAMERA_OK {
+                ) } == CAMERA_OK {
                     // SAFETY
                     // 1. The NDK call that returned entry succeeded and hence it is initialized.
-                    let entry = entry.assume_init();
+                    let entry = unsafe { entry.assume_init() };
 
                     // SAFETY
                     // 1. entry.data is the u8 pointer variant.
                     // 2. entry.count > 0 and entry.data came from a successful metadata lookup.
                     entry.count > 0
-                        && camera_metadata_u8(&entry)
+                        && unsafe { camera_metadata_u8(&entry) }
                             .map(|facing| facing == wanted)
                             .unwrap_or(false)
                 } else {
@@ -1055,19 +1057,19 @@ mod ndk {
 
                 // SAFETY
                 // 1. metadata was returned by the NDK and not freed yet.
-                sys::ACameraMetadata_free(metadata);
+                unsafe { sys::ACameraMetadata_free(metadata) };
 
                 if matched {
                     // SAFETY
                     // 1. id_ptr comes from the live NDK list as a NUL-terminated string.
-                    self.camera_id = Some(cstr_ptr_to_cstring(id_ptr)?);
+                    self.camera_id = Some(unsafe { cstr_ptr_to_cstring(id_ptr) }?);
                     break;
                 }
             }
 
             // SAFETY
             // 1. ids was returned by the NDK and not freed yet.
-            sys::ACameraManager_deleteCameraIdList(ids);
+            unsafe { sys::ACameraManager_deleteCameraIdList(ids) };
 
             if self.camera_id.is_none() {
                 return self.fail("no matching Android camera found");
@@ -1084,13 +1086,13 @@ mod ndk {
 
             // SAFETY
             // 1. self.reader is writable.
-            let status = sys::AImageReader_new(
+            let status = unsafe { sys::AImageReader_new(
                 self.config.width,
                 self.config.height,
                 AIMAGE_FORMAT_YUV_420_888,
                 4, // max number of images that we'll want to access simultaneously
                 &mut self.reader,
-            );
+            ) };
             if status != MEDIA_OK || self.reader.is_null() {
                 return self.fail("AImageReader_new(YUV_420_888) failed");
             }
@@ -1102,7 +1104,7 @@ mod ndk {
             // SAFETY
             // 1. self.reader is live.
             // 2. listener context points to the live self.callback_state allocation.
-            let status = sys::AImageReader_setImageListener(self.reader, &mut listener);
+            let status = unsafe { sys::AImageReader_setImageListener(self.reader, &mut listener) };
             if status != MEDIA_OK {
                 return self.fail("AImageReader_setImageListener failed");
             }
@@ -1110,7 +1112,7 @@ mod ndk {
             // SAFETY
             // 1. self.reader is live.
             // 2. self.raw_window is writable.
-            let status = sys::AImageReader_getWindow(self.reader, &mut self.raw_window);
+            let status = unsafe { sys::AImageReader_getWindow(self.reader, &mut self.raw_window) };
             if status != MEDIA_OK || self.raw_window.is_null() {
                 return self.fail("AImageReader_getWindow failed");
             }
@@ -1127,12 +1129,14 @@ mod ndk {
             let video_avc = CString::new("video/avc").unwrap();
             // SAFETY
             // 1. video_avc is a valid C string for this call.
-            self.encoder = sys::AMediaCodec_createEncoderByType(video_avc.as_ptr());
+            self.encoder = unsafe { sys::AMediaCodec_createEncoderByType(video_avc.as_ptr()) };
             if self.encoder.is_null() {
                 return self.fail("AMediaCodec_createEncoderByType(video/avc) failed");
             }
 
-            let format = sys::AMediaFormat_new();
+            // SAFETY
+            // None.
+            let format = unsafe { sys::AMediaFormat_new() };
             if format.is_null() {
                 return self.fail("AMediaFormat_new video failed");
             }
@@ -1140,39 +1144,39 @@ mod ndk {
             // SAFETY
             // 1. format is live.
             // 2. video_avc is a valid C string for this call.
-            sys::AMediaFormat_setString(format, sys::AMEDIAFORMAT_KEY_MIME, video_avc.as_ptr());
+            unsafe { sys::AMediaFormat_setString(format, sys::AMEDIAFORMAT_KEY_MIME, video_avc.as_ptr()) };
             // SAFETY
             // 1. format is live.
-            sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_WIDTH, self.config.width);
+            unsafe { sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_WIDTH, self.config.width) };
             // SAFETY
             // 1. format is live.
-            sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_HEIGHT, self.config.height);
+            unsafe { sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_HEIGHT, self.config.height) };
             // SAFETY
             // 1. format is live.
-            sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_BIT_RATE, self.config.bitrate);
+            unsafe { sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_BIT_RATE, self.config.bitrate) };
             // SAFETY
             // 1. format is live.
-            sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_FRAME_RATE, self.config.fps_max);
+            unsafe { sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_FRAME_RATE, self.config.fps_max) };
             // SAFETY
             // 1. format is live.
-            sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_I_FRAME_INTERVAL, self.config.i_frame_interval);
+            unsafe { sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_I_FRAME_INTERVAL, self.config.i_frame_interval) };
             // SAFETY
             // 1. format is live.
-            sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_COLOR_FORMAT, K_COLOR_FORMAT_SURFACE);
+            unsafe { sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_COLOR_FORMAT, K_COLOR_FORMAT_SURFACE) };
 
             // SAFETY
             // 1. self.encoder and format are live.
             // 2. null surface and crypto are allowed here.
-            let status = sys::AMediaCodec_configure(
+            let status = unsafe { sys::AMediaCodec_configure(
                 self.encoder,
                 format,
                 ptr::null_mut(),
                 ptr::null_mut(),
                 sys::AMEDIACODEC_CONFIGURE_FLAG_ENCODE as u32,
-            );
+            ) };
             // SAFETY
             // 1. format was created by the NDK and is no longer used.
-            sys::AMediaFormat_delete(format);
+            unsafe { sys::AMediaFormat_delete(format) };
             if status != MEDIA_OK {
                 return self.fail("AMediaCodec_configure video encoder failed");
             }
@@ -1180,14 +1184,14 @@ mod ndk {
             // SAFETY
             // 1. self.encoder is configured.
             // 2. self.encoder_window is writable.
-            let status = sys::AMediaCodec_createInputSurface(self.encoder, &mut self.encoder_window);
+            let status = unsafe { sys::AMediaCodec_createInputSurface(self.encoder, &mut self.encoder_window) };
             if status != MEDIA_OK || self.encoder_window.is_null() {
                 return self.fail("AMediaCodec_createInputSurface failed");
             }
 
             // SAFETY
             // 1. self.encoder is configured and not yet started.
-            if sys::AMediaCodec_start(self.encoder) != MEDIA_OK {
+            if unsafe { sys::AMediaCodec_start(self.encoder) } != MEDIA_OK {
                 return self.fail("AMediaCodec_start video failed");
             }
             Ok(())
@@ -1203,12 +1207,14 @@ mod ndk {
             let audio_aac = CString::new("audio/mp4a-latm").unwrap();
             // SAFETY
             // 1. audio_aac is a valid C string for this call.
-            self.audio_encoder = sys::AMediaCodec_createEncoderByType(audio_aac.as_ptr());
+            self.audio_encoder = unsafe { sys::AMediaCodec_createEncoderByType(audio_aac.as_ptr()) };
             if self.audio_encoder.is_null() {
                 return Err("AMediaCodec_createEncoderByType(audio/mp4a-latm) failed".to_string());
             }
 
-            let format = sys::AMediaFormat_new();
+            // SAFETY
+            // None.
+            let format = unsafe { sys::AMediaFormat_new() };
             if format.is_null() {
                 return Err("AMediaFormat_new audio failed".to_string());
             }
@@ -1216,40 +1222,40 @@ mod ndk {
             // SAFETY
             // 1. format is live.
             // 2. audio_aac is a valid C string for this call.
-            sys::AMediaFormat_setString(format, sys::AMEDIAFORMAT_KEY_MIME, audio_aac.as_ptr());
+            unsafe { sys::AMediaFormat_setString(format, sys::AMEDIAFORMAT_KEY_MIME, audio_aac.as_ptr()) };
             // SAFETY
             // 1. format is live.
-            sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_SAMPLE_RATE, K_AUDIO_SAMPLE_RATE);
+            unsafe { sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_SAMPLE_RATE, K_AUDIO_SAMPLE_RATE) };
             // SAFETY
             // 1. format is live.
-            sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_CHANNEL_COUNT, K_AUDIO_CHANNEL_COUNT);
+            unsafe { sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_CHANNEL_COUNT, K_AUDIO_CHANNEL_COUNT) };
             // SAFETY
             // 1. format is live.
-            sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_BIT_RATE, K_AUDIO_BITRATE);
+            unsafe { sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_BIT_RATE, K_AUDIO_BITRATE) };
             // SAFETY
             // 1. format is live.
-            sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_AAC_PROFILE, K_AAC_OBJECT_LC);
+            unsafe { sys::AMediaFormat_setInt32(format, sys::AMEDIAFORMAT_KEY_AAC_PROFILE, K_AAC_OBJECT_LC) };
 
             // SAFETY
             // 1. self.audio_encoder and format are live.
             // 2. null surface and crypto are allowed here.
-            let status = sys::AMediaCodec_configure(
+            let status = unsafe { sys::AMediaCodec_configure(
                 self.audio_encoder,
                 format,
                 ptr::null_mut(),
                 ptr::null_mut(),
                 sys::AMEDIACODEC_CONFIGURE_FLAG_ENCODE as u32,
-            );
+            ) };
             // SAFETY
             // 1. format was created by the NDK and is no longer used.
-            sys::AMediaFormat_delete(format);
+            unsafe { sys::AMediaFormat_delete(format) };
             if status != MEDIA_OK {
                 return Err("AMediaCodec_configure audio encoder failed".to_string());
             }
 
             // SAFETY
             // 1. self.audio_encoder is configured and not yet started.
-            if sys::AMediaCodec_start(self.audio_encoder) != MEDIA_OK {
+            if unsafe { sys::AMediaCodec_start(self.audio_encoder) } != MEDIA_OK {
                 return Err("AMediaCodec_start audio encoder failed".to_string());
             }
 
@@ -1267,36 +1273,36 @@ mod ndk {
             let mut builder: *mut sys::AAudioStreamBuilder = ptr::null_mut();
             // SAFETY
             // 1. builder is writable.
-            if sys::AAudio_createStreamBuilder(&mut builder) != sys::AAUDIO_OK || builder.is_null() {
+            if unsafe { sys::AAudio_createStreamBuilder(&mut builder) } != sys::AAUDIO_OK || builder.is_null() {
                 return Err("AAudio_createStreamBuilder failed".to_string());
             }
 
             // SAFETY
             // 1. builder is live.
-            sys::AAudioStreamBuilder_setDirection(builder, sys::AAUDIO_DIRECTION_INPUT as i32);
+            unsafe { sys::AAudioStreamBuilder_setDirection(builder, sys::AAUDIO_DIRECTION_INPUT as i32) };
             // SAFETY
             // 1. builder is live.
-            sys::AAudioStreamBuilder_setSampleRate(builder, K_AUDIO_SAMPLE_RATE);
+            unsafe { sys::AAudioStreamBuilder_setSampleRate(builder, K_AUDIO_SAMPLE_RATE) };
             // SAFETY
             // 1. builder is live.
-            sys::AAudioStreamBuilder_setChannelCount(builder, K_AUDIO_CHANNEL_COUNT);
+            unsafe { sys::AAudioStreamBuilder_setChannelCount(builder, K_AUDIO_CHANNEL_COUNT) };
             // SAFETY
             // 1. builder is live.
-            sys::AAudioStreamBuilder_setFormat(builder, sys::AAUDIO_FORMAT_PCM_I16);
+            unsafe { sys::AAudioStreamBuilder_setFormat(builder, sys::AAUDIO_FORMAT_PCM_I16) };
             // SAFETY
             // 1. builder is live.
-            sys::AAudioStreamBuilder_setPerformanceMode(builder, sys::AAUDIO_PERFORMANCE_MODE_NONE as i32);
+            unsafe { sys::AAudioStreamBuilder_setPerformanceMode(builder, sys::AAUDIO_PERFORMANCE_MODE_NONE as i32) };
             // SAFETY
             // 1. builder is live.
-            sys::AAudioStreamBuilder_setSharingMode(builder, sys::AAUDIO_SHARING_MODE_SHARED as i32);
+            unsafe { sys::AAudioStreamBuilder_setSharingMode(builder, sys::AAUDIO_SHARING_MODE_SHARED as i32) };
 
             // SAFETY
             // 1. builder is live.
             // 2. self.audio_stream is writable.
-            let result = sys::AAudioStreamBuilder_openStream(builder, &mut self.audio_stream);
+            let result = unsafe { sys::AAudioStreamBuilder_openStream(builder, &mut self.audio_stream) };
             // SAFETY
             // 1. builder was returned by the NDK and is no longer used.
-            sys::AAudioStreamBuilder_delete(builder);
+            unsafe { sys::AAudioStreamBuilder_delete(builder) };
 
             if result != sys::AAUDIO_OK || self.audio_stream.is_null() {
                 return Err("AAudioStreamBuilder_openStream failed; check RECORD_AUDIO permission".to_string());
@@ -1313,11 +1319,11 @@ mod ndk {
                 if self.audio_encoder_started {
                     // SAFETY
                     // 1. self.audio_encoder is live and started.
-                    let _ = sys::AMediaCodec_stop(self.audio_encoder);
+                    let _ = unsafe { sys::AMediaCodec_stop(self.audio_encoder) };
                 }
                 // SAFETY
                 // 1. self.audio_encoder is live.
-                sys::AMediaCodec_delete(self.audio_encoder);
+                unsafe { sys::AMediaCodec_delete(self.audio_encoder) };
                 self.audio_encoder = ptr::null_mut();
             }
             self.audio_encoder_started = false;
@@ -1325,7 +1331,7 @@ mod ndk {
             if !self.audio_stream.is_null() {
                 // SAFETY
                 // 1. self.audio_stream is live.
-                sys::AAudioStream_close(self.audio_stream);
+                unsafe { sys::AAudioStream_close(self.audio_stream) };
                 self.audio_stream = ptr::null_mut();
             }
         }
@@ -1355,12 +1361,12 @@ mod ndk {
             // 2. camera_id is a valid C string.
             // 3. self.device is writable.
             // 4. callbacks context points to the live self.callback_state allocation.
-            let status = sys::ACameraManager_openCamera(
+            let status = unsafe { sys::ACameraManager_openCamera(
                 self.manager,
                 camera_id.as_ptr(),
                 &mut callbacks,
                 &mut self.device,
-            );
+            ) };
             if status != CAMERA_OK || self.device.is_null() {
                 return self.fail("ACameraManager_openCamera failed");
             }
@@ -1386,21 +1392,21 @@ mod ndk {
 
             // SAFETY
             // 1. self.outputs is writable.
-            if sys::ACaptureSessionOutputContainer_create(&mut self.outputs) != CAMERA_OK {
+            if unsafe { sys::ACaptureSessionOutputContainer_create(&mut self.outputs) } != CAMERA_OK {
                 return self.fail("ACaptureSessionOutputContainer_create failed");
             }
             // SAFETY
             // 1. self.encoder_window and self.raw_window are live.
             // 2. output pointers are writable.
-            if sys::ACaptureSessionOutput_create(self.encoder_window, &mut self.encoder_output) != CAMERA_OK
-                || sys::ACaptureSessionOutput_create(self.raw_window, &mut self.raw_output) != CAMERA_OK
+            if unsafe { sys::ACaptureSessionOutput_create(self.encoder_window, &mut self.encoder_output) } != CAMERA_OK
+                || unsafe { sys::ACaptureSessionOutput_create(self.raw_window, &mut self.raw_output) } != CAMERA_OK
             {
                 return self.fail("ACaptureSessionOutput_create failed");
             }
             // SAFETY
             // 1. self.outputs and both outputs are live.
-            if sys::ACaptureSessionOutputContainer_add(self.outputs, self.encoder_output) != CAMERA_OK
-                || sys::ACaptureSessionOutputContainer_add(self.outputs, self.raw_output) != CAMERA_OK
+            if unsafe { sys::ACaptureSessionOutputContainer_add(self.outputs, self.encoder_output) } != CAMERA_OK
+                || unsafe { sys::ACaptureSessionOutputContainer_add(self.outputs, self.raw_output) } != CAMERA_OK
             {
                 return self.fail("ACaptureSessionOutputContainer_add failed");
             }
@@ -1408,11 +1414,11 @@ mod ndk {
             // SAFETY
             // 1. self.device is live.
             // 2. self.capture_request is writable.
-            if sys::ACameraDevice_createCaptureRequest(
+            if unsafe { sys::ACameraDevice_createCaptureRequest(
                 self.device,
                 sys::ACameraDevice_request_template(3),
                 &mut self.capture_request,
-            ) != CAMERA_OK
+            ) } != CAMERA_OK
             {
                 return self.fail("ACameraDevice_createCaptureRequest failed");
             }
@@ -1420,15 +1426,15 @@ mod ndk {
             // SAFETY
             // 1. self.encoder_window and self.raw_window are live.
             // 2. target pointers are writable.
-            if sys::ACameraOutputTarget_create(self.encoder_window, &mut self.encoder_target) != CAMERA_OK
-                || sys::ACameraOutputTarget_create(self.raw_window, &mut self.raw_target) != CAMERA_OK
+            if unsafe { sys::ACameraOutputTarget_create(self.encoder_window, &mut self.encoder_target) } != CAMERA_OK
+                || unsafe { sys::ACameraOutputTarget_create(self.raw_window, &mut self.raw_target) } != CAMERA_OK
             {
                 return self.fail("ACameraOutputTarget_create failed");
             }
             // SAFETY
             // 1. self.capture_request and both targets are live.
-            if sys::ACaptureRequest_addTarget(self.capture_request, self.encoder_target) != CAMERA_OK
-                || sys::ACaptureRequest_addTarget(self.capture_request, self.raw_target) != CAMERA_OK
+            if unsafe { sys::ACaptureRequest_addTarget(self.capture_request, self.encoder_target) } != CAMERA_OK
+                || unsafe { sys::ACaptureRequest_addTarget(self.capture_request, self.raw_target) } != CAMERA_OK
             {
                 return self.fail("ACaptureRequest_addTarget failed");
             }
@@ -1437,12 +1443,12 @@ mod ndk {
             // SAFETY
             // 1. self.capture_request is live.
             // 2. fps_range.as_ptr() is valid for this call.
-            let status = sys::ACaptureRequest_setEntry_i32(
+            let status = unsafe { sys::ACaptureRequest_setEntry_i32(
                 self.capture_request,
                 sys::acamera_metadata_tag::ACAMERA_CONTROL_AE_TARGET_FPS_RANGE.0,
                 fps_range.len() as u32,
                 fps_range.as_ptr(),
-            );
+            ) };
             if status != CAMERA_OK {
                 return self.fail("ACaptureRequest_setEntry_i32 fps range failed");
             }
@@ -1460,12 +1466,12 @@ mod ndk {
             // 1. self.device and self.outputs are live.
             // 2. callbacks is valid for this call.
             // 3. self.session is writable.
-            if sys::ACameraDevice_createCaptureSession(
+            if unsafe { sys::ACameraDevice_createCaptureSession(
                 self.device,
                 self.outputs,
                 &mut session_callbacks,
                 &mut self.session,
-            ) != CAMERA_OK
+            ) } != CAMERA_OK
             {
                 return self.fail("ACameraDevice_createCaptureSession failed");
             }
@@ -1473,13 +1479,13 @@ mod ndk {
             let mut request = self.capture_request;
             // SAFETY
             // 1. self.session and request are live.
-            if sys::ACameraCaptureSession_setRepeatingRequest(
+            if unsafe { sys::ACameraCaptureSession_setRepeatingRequest(
                 self.session,
                 ptr::null_mut(),
                 1,
                 &mut request,
                 ptr::null_mut(),
-            ) != CAMERA_OK
+            ) } != CAMERA_OK
             {
                 return self.fail("ACameraCaptureSession_setRepeatingRequest failed");
             }
@@ -1535,7 +1541,7 @@ mod ndk {
         ) {
             // SAFETY
             // 1. If not null, context points to the live CameraCallbackState registered with the NDK.
-            if let Some(this) = (context as *const Self).as_ref() {
+            if let Some(this) = unsafe { (context as *const Self).as_ref() } {
                 let _callback = this.begin_callback();
                 *this.session_closed.lock().unwrap() = true;
                 this.session_state_changed.notify_all();
@@ -1547,7 +1553,7 @@ mod ndk {
         unsafe extern "C" fn on_camera_disconnected(context: *mut c_void, _device: *mut sys::ACameraDevice) {
             // SAFETY
             // 1. If not null, context points to the live CameraCallbackState registered with the NDK.
-            if let Some(this) = (context as *const Self).as_ref() {
+            if let Some(this) = unsafe { (context as *const Self).as_ref() } {
                 let callback = this.begin_callback();
                 if !callback.enabled {
                     return;
@@ -1565,7 +1571,7 @@ mod ndk {
         ) {
             // SAFETY
             // 1. If not null, context points to the live CameraCallbackState registered with the NDK.
-            if let Some(this) = (context as *const Self).as_ref() {
+            if let Some(this) = unsafe { (context as *const Self).as_ref() } {
                 let callback = this.begin_callback();
                 if !callback.enabled {
                     return;
@@ -1585,14 +1591,14 @@ mod ndk {
 
             // SAFETY
             // 1. If not null, context points to the live CameraCallbackState registered with the NDK.
-            if let Some(this) = (context as *const Self).as_ref() {
+            if let Some(this) = unsafe { (context as *const Self).as_ref() } {
                 let callback = this.begin_callback();
                 if !callback.enabled {
                     return;
                 }
                 // SAFETY
                 // 1. reader remains live until the enabled callback finishes.
-                this.handle_image_available(reader);
+                unsafe { this.handle_image_available(reader) };
             }
         }
 
@@ -1612,14 +1618,14 @@ mod ndk {
             // SAFETY
             // 1. reader remains live until this enabled callback finishes.
             // 2. image is writable.
-            if sys::AImageReader_acquireLatestImage(reader, &mut image) != MEDIA_OK || image.is_null() {
+            if unsafe { sys::AImageReader_acquireLatestImage(reader, &mut image) } != MEDIA_OK || image.is_null() {
                 return;
             }
 
             if !self.should_emit_raw_frame() {
                 // SAFETY
                 // 1. image was returned by the NDK and not deleted yet.
-                sys::AImage_delete(image);
+                unsafe { sys::AImage_delete(image) };
                 return;
             }
 
@@ -1639,29 +1645,29 @@ mod ndk {
             // SAFETY
             // 1. image is live.
             // 2. Plane outputs are writable.
-            let ok = sys::AImage_getPlaneData(image, 0, &mut y, &mut y_len) == MEDIA_OK
-                && sys::AImage_getPlaneData(image, 1, &mut u, &mut u_len) == MEDIA_OK
-                && sys::AImage_getPlaneData(image, 2, &mut v, &mut v_len) == MEDIA_OK
-                && sys::AImage_getPlaneRowStride(image, 0, &mut y_row) == MEDIA_OK
-                && sys::AImage_getPlaneRowStride(image, 1, &mut u_row) == MEDIA_OK
-                && sys::AImage_getPlaneRowStride(image, 2, &mut v_row) == MEDIA_OK
-                && sys::AImage_getPlanePixelStride(image, 0, &mut y_pix) == MEDIA_OK
-                && sys::AImage_getPlanePixelStride(image, 1, &mut u_pix) == MEDIA_OK
-                && sys::AImage_getPlanePixelStride(image, 2, &mut v_pix) == MEDIA_OK;
+            let ok = unsafe { sys::AImage_getPlaneData(image, 0, &mut y, &mut y_len) } == MEDIA_OK
+                && unsafe { sys::AImage_getPlaneData(image, 1, &mut u, &mut u_len) } == MEDIA_OK
+                && unsafe { sys::AImage_getPlaneData(image, 2, &mut v, &mut v_len) } == MEDIA_OK
+                && unsafe { sys::AImage_getPlaneRowStride(image, 0, &mut y_row) } == MEDIA_OK
+                && unsafe { sys::AImage_getPlaneRowStride(image, 1, &mut u_row) } == MEDIA_OK
+                && unsafe { sys::AImage_getPlaneRowStride(image, 2, &mut v_row) } == MEDIA_OK
+                && unsafe { sys::AImage_getPlanePixelStride(image, 0, &mut y_pix) } == MEDIA_OK
+                && unsafe { sys::AImage_getPlanePixelStride(image, 1, &mut u_pix) } == MEDIA_OK
+                && unsafe { sys::AImage_getPlanePixelStride(image, 2, &mut v_pix) } == MEDIA_OK;
 
             if ok && !y.is_null() && !u.is_null() && !v.is_null() {
                 let expected = (self.config.width * self.config.height * 3 / 2) as usize;
                 let mut i420 = vec![0u8; expected];
                 // SAFETY
                 // 1. Plane pointers and lengths come from the live NDK image.
-                copy_yuv420_to_i420(
+                unsafe { copy_yuv420_to_i420(
                     &mut i420,
                     self.config.width,
                     self.config.height,
                     Plane { ptr: y, len: y_len, row_stride: y_row, pixel_stride: y_pix },
                     Plane { ptr: u, len: u_len, row_stride: u_row, pixel_stride: u_pix },
                     Plane { ptr: v, len: v_len, row_stride: v_row, pixel_stride: v_pix },
-                );
+                ) };
                 (self.callbacks.on_raw_i420)(
                     self.callbacks.state.as_ref(),
                     &i420,
@@ -1672,7 +1678,7 @@ mod ndk {
 
             // SAFETY
             // 1. image was returned by the NDK and not deleted yet.
-            sys::AImage_delete(image);
+            unsafe { sys::AImage_delete(image) };
         }
 
         fn should_emit_raw_frame(&self) -> bool {
@@ -1721,14 +1727,14 @@ mod ndk {
                 // SAFETY
                 // 1. self.encoder is live.
                 // 2. info is writable.
-                let index = sys::AMediaCodec_dequeueOutputBuffer(self.encoder, info.as_mut_ptr(), 10_000);
+                let index = unsafe { sys::AMediaCodec_dequeueOutputBuffer(self.encoder, info.as_mut_ptr(), 10_000) };
                 if index == sys::AMEDIACODEC_INFO_TRY_AGAIN_LATER as isize {
                     continue;
                 }
                 if index == sys::AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED as isize {
                     // SAFETY
                     // 1. self.encoder is live.
-                    self.emit_codec_config_from_output_format();
+                    unsafe { self.emit_codec_config_from_output_format() };
                     continue;
                 }
                 if index < 0 {
@@ -1737,13 +1743,13 @@ mod ndk {
 
                 // SAFETY
                 // 1. The FFI call that returned info succeeded and hence info is initialized.
-                let info = info.assume_init();
+                let info = unsafe { info.assume_init() };
 
                 let mut _out_size = 0usize;
                 // SAFETY
                 // 1. self.encoder is live and index came from dequeue.
                 // 2. _out_size is writable.
-                let out = sys::AMediaCodec_getOutputBuffer(self.encoder, index as usize, &mut _out_size);
+                let out = unsafe { sys::AMediaCodec_getOutputBuffer(self.encoder, index as usize, &mut _out_size) };
                 if !out.is_null() && info.size > 0 {
                     let size = info.size as usize;
                     // SAFETY
@@ -1751,12 +1757,12 @@ mod ndk {
                     // 2. info.size is valid; info.offset and _out_size are invalid through Android API 35 and ignored:
                     //    https://developer.android.com/ndk/reference/group/media#amediacodec_dequeueoutputbuffer
                     //    https://developer.android.com/ndk/reference/group/media#amediacodec_getoutputbuffer
-                    let bytes = std::slice::from_raw_parts(out, size);
+                    let bytes = unsafe { std::slice::from_raw_parts(out, size) };
                     self.emit_annexb(bytes);
                 }
                 // SAFETY
                 // 1. index came from dequeue.
-                sys::AMediaCodec_releaseOutputBuffer(self.encoder, index as usize, false);
+                unsafe { sys::AMediaCodec_releaseOutputBuffer(self.encoder, index as usize, false) };
             }
         }
 
@@ -1839,7 +1845,7 @@ mod ndk {
         unsafe fn emit_codec_config_from_output_format(&self) {
             // SAFETY
             // 1. self.encoder is live.
-            let format = sys::AMediaCodec_getOutputFormat(self.encoder);
+            let format = unsafe { sys::AMediaCodec_getOutputFormat(self.encoder) };
             if format.is_null() {
                 log::error!("AMediaCodec_getOutputFormat returned null");
                 return;
@@ -1847,14 +1853,14 @@ mod ndk {
 
             // SAFETY
             // 1. format is live for this lookup.
-            self.emit_codec_config_buffer_from_format(format, "csd-0");
+            unsafe { self.emit_codec_config_buffer_from_format(format, "csd-0") };
             // SAFETY
             // 1. format is live for this lookup.
-            self.emit_codec_config_buffer_from_format(format, "csd-1");
+            unsafe { self.emit_codec_config_buffer_from_format(format, "csd-1") };
 
             // SAFETY
             // 1. format was returned by the NDK and is no longer used.
-            sys::AMediaFormat_delete(format);
+            unsafe { sys::AMediaFormat_delete(format) };
         }
 
         /// # Safety
@@ -1867,14 +1873,14 @@ mod ndk {
             // SAFETY
             // 1. format is live and key is a valid C string.
             // 2. buffer outputs are writable.
-            if sys::AMediaFormat_getBuffer(format, key.as_ptr(), &mut buffer, &mut buffer_size)
+            if unsafe { sys::AMediaFormat_getBuffer(format, key.as_ptr(), &mut buffer, &mut buffer_size) }
                 && !buffer.is_null()
                 && buffer_size > 0
             {
                 // SAFETY
                 // 1. buffer is not null.
                 // 2. buffer_size came from the NDK.
-                let data = std::slice::from_raw_parts(buffer.cast::<u8>(), buffer_size);
+                let data = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), buffer_size) };
                 self.emit_codec_config_buffer(data);
             } else {
                 log::error!("Encoder output format missing {}", key.to_string_lossy());
@@ -1933,12 +1939,12 @@ mod ndk {
                 // SAFETY
                 // 1. self.audio_stream is live.
                 // 2. dst has space for frames_needed audio frames.
-                let frames_read = sys::AAudioStream_read(
+                let frames_read = unsafe { sys::AAudioStream_read(
                     self.audio_stream,
                     dst.cast(),
                     frames_needed as i32,
                     100_000_000,
-                );
+                ) };
 
                 if frames_read == sys::AAUDIO_ERROR_DISCONNECTED {
                     log::warn!("AAudioStream_read disconnected; stopping audio capture");
@@ -1951,7 +1957,7 @@ mod ndk {
                     // SAFETY
                     // 1. self.audio_encoder is live.
                     // 2. This worker has exclusive access to audio output buffers.
-                    self.drain_audio_encoder(false);
+                    unsafe { self.drain_audio_encoder(false) };
                     continue;
                 }
 
@@ -1966,12 +1972,12 @@ mod ndk {
                 let pts_us = submitted_frames * 1_000_000 / K_AUDIO_SAMPLE_RATE as i64;
                 // SAFETY
                 // 1. samples.as_ptr() is valid for byte_count bytes during this call.
-                let audio_bytes = std::slice::from_raw_parts(samples.as_ptr().cast::<u8>(), byte_count);
+                let audio_bytes = unsafe { std::slice::from_raw_parts(samples.as_ptr().cast::<u8>(), byte_count) };
 
                 // SAFETY
                 // 1. self.audio_encoder is live.
                 // 2. This worker has exclusive access to audio input buffers.
-                if !self.queue_audio_input(audio_bytes, pts_us) {
+                if !unsafe { self.queue_audio_input(audio_bytes, pts_us) } {
                     break;
                 }
 
@@ -1981,13 +1987,13 @@ mod ndk {
                 // SAFETY
                 // 1. self.audio_encoder is live.
                 // 2. This worker has exclusive access to audio output buffers.
-                self.drain_audio_encoder(false);
+                unsafe { self.drain_audio_encoder(false) };
             }
 
             // SAFETY
             // 1. self.audio_encoder is live for final drain.
             // 2. This worker has exclusive access to audio output buffers.
-            self.drain_audio_encoder(true);
+            unsafe { self.drain_audio_encoder(true) };
         }
 
         /// # Safety
@@ -2003,12 +2009,12 @@ mod ndk {
 
                 // SAFETY
                 // 1. self.audio_encoder is live.
-                let index = sys::AMediaCodec_dequeueInputBuffer(self.audio_encoder, 10_000);
+                let index = unsafe { sys::AMediaCodec_dequeueInputBuffer(self.audio_encoder, 10_000) };
                 if index == sys::AMEDIACODEC_INFO_TRY_AGAIN_LATER as isize {
                     // SAFETY
                     // 1. self.audio_encoder is live.
                     // 2. This worker has exclusive access to audio output buffers.
-                    self.drain_audio_encoder(false);
+                    unsafe { self.drain_audio_encoder(false) };
                     continue;
                 }
                 if index < 0 {
@@ -2019,25 +2025,25 @@ mod ndk {
                 // SAFETY
                 // 1. index came from dequeue.
                 // 2. capacity is writable.
-                let input = sys::AMediaCodec_getInputBuffer(self.audio_encoder, index as usize, &mut capacity);
+                let input = unsafe { sys::AMediaCodec_getInputBuffer(self.audio_encoder, index as usize, &mut capacity) };
                 if input.is_null() || capacity < len {
                     // SAFETY
                     // 1. index came from dequeue.
-                    let _ = sys::AMediaCodec_queueInputBuffer(self.audio_encoder, index as usize, 0, 0, pts_us as u64, 0);
+                    let _ = unsafe { sys::AMediaCodec_queueInputBuffer(self.audio_encoder, index as usize, 0, 0, pts_us as u64, 0) };
                     return false;
                 }
 
                 // SAFETY
                 // 1. input is not null.
                 // 2. capacity came from the codec.
-                let input = std::slice::from_raw_parts_mut(input, capacity);
+                let input = unsafe { std::slice::from_raw_parts_mut(input, capacity) };
 
                 input[..len].copy_from_slice(data);
                 
                 // SAFETY
                 // 1. index came from dequeue.
                 // 2. len was checked against capacity.
-                return sys::AMediaCodec_queueInputBuffer(self.audio_encoder, index as usize, 0, len, pts_us as u64, 0)
+                return unsafe { sys::AMediaCodec_queueInputBuffer(self.audio_encoder, index as usize, 0, len, pts_us as u64, 0) }
                     == MEDIA_OK;
             }
 
@@ -2057,11 +2063,11 @@ mod ndk {
                 // SAFETY
                 // 1. self.audio_encoder is live.
                 // 2. info is writable.
-                let index = sys::AMediaCodec_dequeueOutputBuffer(
+                let index = unsafe { sys::AMediaCodec_dequeueOutputBuffer(
                     self.audio_encoder,
                     info.as_mut_ptr(),
                     if wait { 10_000 } else { 0 },
-                );
+                ) };
                 if index == sys::AMEDIACODEC_INFO_TRY_AGAIN_LATER as isize {
                     break;
                 }
@@ -2071,13 +2077,13 @@ mod ndk {
 
                 // SAFETY
                 // 1. The FFI call that returned info succeeded and hence it is initialized.
-                let info = info.assume_init();
+                let info = unsafe { info.assume_init() };
 
                 let mut _out_size = 0usize;
                 // SAFETY
                 // 1. index came from dequeue.
                 // 2. _out_size is writable.
-                let out = sys::AMediaCodec_getOutputBuffer(self.audio_encoder, index as usize, &mut _out_size);
+                let out = unsafe { sys::AMediaCodec_getOutputBuffer(self.audio_encoder, index as usize, &mut _out_size) };
                 let codec_config = (info.flags & sys::AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG) != 0;
                 if !codec_config && !out.is_null() && info.size > 0 {
                     let size = info.size as usize;
@@ -2086,12 +2092,12 @@ mod ndk {
                     // 2. info.size is valid; info.offset and _out_size are invalid through Android API 35 and ignored:
                     //    https://developer.android.com/ndk/reference/group/media#amediacodec_dequeueoutputbuffer
                     //    https://developer.android.com/ndk/reference/group/media#amediacodec_getoutputbuffer
-                    let data = std::slice::from_raw_parts(out, size);
+                    let data = unsafe { std::slice::from_raw_parts(out, size) };
                     (self.callbacks.on_aac)(self.callbacks.state.as_ref(), data);
                 }
                 // SAFETY
                 // 1. index came from dequeue.
-                sys::AMediaCodec_releaseOutputBuffer(self.audio_encoder, index as usize, false);
+                unsafe { sys::AMediaCodec_releaseOutputBuffer(self.audio_encoder, index as usize, false) };
 
                 if (info.flags & sys::AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) != 0 {
                     break;
@@ -2179,15 +2185,15 @@ mod ndk {
 
         // SAFETY
         // 1. y.ptr is not null and valid for y_len bytes.
-        let y_src = std::slice::from_raw_parts(y.ptr, y_len);
+        let y_src = unsafe { std::slice::from_raw_parts(y.ptr, y_len) };
 
         // SAFETY
         // 1. u.ptr is not null and valid for u_len bytes.
-        let u_src = std::slice::from_raw_parts(u.ptr, u_len);
+        let u_src = unsafe { std::slice::from_raw_parts(u.ptr, u_len) };
 
         // SAFETY
         // 1. v.ptr is not null and valid for v_len bytes.
-        let v_src = std::slice::from_raw_parts(v.ptr, v_len);
+        let v_src = unsafe { std::slice::from_raw_parts(v.ptr, v_len) };
 
         let Some(y_size) = width.checked_mul(height) else {
             return;
@@ -2282,14 +2288,14 @@ mod ndk {
 
         // SAFETY
         // 1. entry.data is an i32 pointer.
-        let data = *(&entry.data as *const _ as *const *const i32);
+        let data = unsafe { *(&entry.data as *const _ as *const *const i32) };
         if data.is_null() {
             return None;
         }
 
         // SAFETY
         // 1. data is not null and is valid for len i32 values.
-        Some(std::slice::from_raw_parts(data, len).to_vec())
+        Some(unsafe { std::slice::from_raw_parts(data, len) }.to_vec())
     }
 
     /// # Safety
@@ -2302,13 +2308,13 @@ mod ndk {
 
         // SAFETY
         // 1. entry.data is a u8 pointer.
-        let data = *(&entry.data as *const _ as *const *const u8);
+        let data = unsafe { *(&entry.data as *const _ as *const *const u8) };
         if data.is_null() {
             None
         } else {
             // SAFETY
             // 1. data points to at least one valid u8.
-            Some(*data)
+            Some(unsafe { *data })
         }
     }
 
@@ -2320,6 +2326,6 @@ mod ndk {
         }
         // SAFETY
         // 1. ptr is not null and points to a valid C string.
-        Ok(std::ffi::CStr::from_ptr(ptr).to_owned())
+        Ok(unsafe { std::ffi::CStr::from_ptr(ptr) }.to_owned())
     }
 }
