@@ -17,7 +17,7 @@ use std::io;
 use std::ops::Add;
 use std::panic;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Instant;
@@ -79,6 +79,8 @@ const VERSION_FILE: &str = "current_version/android_camera_hub";
 
 // A counter representing the amount of active camera threads
 static GLOBAL_THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(any(feature = "android", feature = "test"))]
+pub(crate) static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct Args {
@@ -105,6 +107,89 @@ static ANDROID_SERVER_CREDENTIALS: std::sync::OnceLock<
 static ANDROID_CAMERA_SETTINGS: std::sync::OnceLock<
     std::sync::Mutex<AndroidCameraSettings>,
 > = std::sync::OnceLock::new();
+
+#[cfg(any(feature = "android", feature = "test"))]
+#[derive(Clone)]
+enum StopWaiter {
+    Livestream {
+        http_client: HttpClient,
+        group_name: String,
+    },
+    Config {
+        http_client: HttpClient,
+        group_name: String,
+    },
+}
+
+#[cfg(any(feature = "android", feature = "test"))]
+impl StopWaiter {
+    fn stop(&self) {
+        // We use long-standing http requests to check for livestream
+        // and config requests. In order to gracefully stop the camera hub,
+        // we issue dummy livestream and config requests here causing those
+        // threads to come back, at which point they exit since they notice
+        // the stop request.
+        let result = match self {
+            Self::Livestream {
+                http_client,
+                group_name,
+            } => http_client.livestream_start(group_name),
+            Self::Config {
+                http_client,
+                group_name,
+            } => http_client.config_command(group_name, vec![0]),
+        };
+
+        if let Err(e) = result {
+            error!("Failed to stop Android camera worker: {e}");
+        }
+    }
+}
+
+#[cfg(any(feature = "android", feature = "test"))]
+static STOP_WAITERS: std::sync::OnceLock<
+    std::sync::Mutex<Vec<StopWaiter>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(any(feature = "android", feature = "test"))]
+fn register_stop_waiter(waiter: StopWaiter) {
+    let mut waiters = STOP_WAITERS
+        .get_or_init(|| std::sync::Mutex::new(vec![]))
+        .lock()
+        .unwrap();
+
+    if STOP_REQUESTED.load(Ordering::SeqCst) {
+        drop(waiters);
+        waiter.stop();
+    } else {
+        waiters.push(waiter);
+    }
+}
+
+#[cfg(any(feature = "android", feature = "test"))]
+pub fn request_stop() {
+    STOP_REQUESTED.store(true, Ordering::SeqCst);
+
+    let waiters = STOP_WAITERS
+        .get_or_init(|| std::sync::Mutex::new(vec![]))
+        .lock()
+        .unwrap()
+        .clone();
+
+    for waiter in waiters {
+        waiter.stop();
+    }
+}
+
+#[cfg(any(feature = "android", feature = "test"))]
+fn clear_stop_signal() {
+    STOP_REQUESTED.store(false, Ordering::SeqCst);
+    STOP_WAITERS
+        .get_or_init(|| std::sync::Mutex::new(vec![]))
+        .lock()
+        .unwrap()
+        .clear();
+}
 
 #[cfg(feature = "android")]
 pub fn set_android_server_credentials(
@@ -232,6 +317,9 @@ pub(crate) fn run(args: Args) -> io::Result<()> {
     fs::create_dir_all(VERSION_DIR)?;
     fs::write(VERSION_FILE, format!("v{}\n", env!("CARGO_PKG_VERSION")))?;
 
+    #[cfg(any(feature = "android", feature = "test"))]
+    clear_stop_signal();
+
     cfg_if! {
         if #[cfg(feature = "manual")] {
             let camera = ManualCamera::new(
@@ -320,26 +408,25 @@ pub(crate) fn run(args: Args) -> io::Result<()> {
 
         GLOBAL_THREAD_COUNT.fetch_add(1, Ordering::SeqCst);
         thread::spawn(move || {
-            if args.flag_reset || args.flag_reset_full {
-                match reset(camera.as_ref(), args.flag_reset_full) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        panic!("reset() returned with: {e}");
-                    }
-                };
-
-                // Deduct one from our thread count for main thread to know when to exit (when all are finished)
-                GLOBAL_THREAD_COUNT.fetch_sub(1, Ordering::SeqCst);
+            let result = if args.flag_reset || args.flag_reset_full {
+                reset(camera.as_ref(), args.flag_reset_full)
             } else {
-                match core(
+                core(
                     camera.as_mut(),
                     input_camera_secret.clone(),
-                ) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        panic!("core() returned with: {e}");
-                    }
-                }
+                )
+            };
+
+            // We need to close the native camera in Android.
+            #[cfg(feature = "android")]
+            drop(camera);
+
+            // Deduct one from our thread count for main thread to know when to exit
+            // (when all are finished).
+            GLOBAL_THREAD_COUNT.fetch_sub(1, Ordering::SeqCst);
+
+            if let Err(e) = result {
+                panic!("camera thread returned with: {e}");
             }
         });
     }
@@ -524,31 +611,72 @@ fn core(
     let config_enc_commands_clone = Arc::clone(&config_enc_commands);
     let clients_ded_secondary: Arc<Mutex<Option<MlsClientsDedicated>>> = Arc::new(Mutex::new(None));
 
-    thread::spawn(move || loop {
+    #[cfg(any(feature = "android", feature = "test"))]
+    {
+        register_stop_waiter(StopWaiter::Livestream {
+            http_client: http_client_clone.clone(),
+            group_name: group_livestream_name_clone.clone(),
+        });
+        register_stop_waiter(StopWaiter::Config {
+            http_client: http_client_clone_2.clone(),
+            group_name: group_config_name_clone.clone(),
+        });
+    }
+
+    let mut worker_handles = vec![];
+
+    worker_handles.push(thread::spawn(move || loop {
         if http_client_clone
             .livestream_check(&group_livestream_name_clone)
             .is_ok()
         {
+            #[cfg(any(feature = "android", feature = "test"))]
+            if STOP_REQUESTED.load(Ordering::SeqCst) {
+                break;
+            }
+
             println!("Livestream1 detected");
             let mut check = livestream_request_clone.lock().unwrap();
             *check = (true, true);  // second true -> livestream command from the primary app
         } else {
+            #[cfg(any(feature = "android", feature = "test"))]
+            if STOP_REQUESTED.load(Ordering::SeqCst) {
+                break;
+            }
             sleep(Duration::from_secs(1));
         }
-    });
+    }));
 
-    thread::spawn(move || loop {
+    worker_handles.push(thread::spawn(move || loop {
         if let Ok(enc_command) = http_client_clone_2.config_check(&group_config_name_clone) {
+            #[cfg(any(feature = "android", feature = "test"))]
+            if STOP_REQUESTED.load(Ordering::SeqCst) {
+                break;
+            }
+
             let mut config_enc_commands = config_enc_commands_clone.lock().unwrap();
             config_enc_commands.push((enc_command, true)); // true -> config command from the primary app
         } else {
+            #[cfg(any(feature = "android", feature = "test"))]
+            if STOP_REQUESTED.load(Ordering::SeqCst) {
+                break;
+            }
             error!("Error in receiving config command");
             sleep(Duration::from_secs(1));
         }
-    });
+    }));
+
+    // Uncomment to test graceful stop with the test camera
+    //#[cfg(feature = "test")]
+    //let mut num_iters = 0usize;
 
     // Used for anti-dither for motion detection
     loop {
+        #[cfg(any(feature = "android", feature = "test"))]
+        if STOP_REQUESTED.load(Ordering::SeqCst) {
+            break;
+        }
+
         // Check motion events from the camera every second
         let motion_event = match camera.is_there_motion() {
             Ok(event) => event,
@@ -765,28 +893,58 @@ fn core(
                             let http_client_clone_4 = http_client.clone();
                             let config_enc_commands_clone_2 = Arc::clone(&config_enc_commands);
 
-                            thread::spawn(move || loop {
+                            #[cfg(any(feature = "android", feature = "test"))]
+                            {
+                                register_stop_waiter(StopWaiter::Livestream {
+                                    http_client: http_client_clone_3.clone(),
+                                    group_name: group_livestream2_name_clone.clone(),
+                                });
+                                register_stop_waiter(StopWaiter::Config {
+                                    http_client: http_client_clone_4.clone(),
+                                    group_name: group_config2_name_clone.clone(),
+                                });
+                            }
+
+                            worker_handles.push(thread::spawn(move || loop {
                                 if http_client_clone_3
                                     .livestream_check(&group_livestream2_name_clone)
                                     .is_ok()
                                 {
+                                    #[cfg(any(feature = "android", feature = "test"))]
+                                    if STOP_REQUESTED.load(Ordering::SeqCst) {
+                                        break;
+                                    }
+
                                     println!("Livestream2 detected");
                                     let mut check = livestream_request_clone_2.lock().unwrap();
                                     *check = (true, false); // false -> livestream command from the secondary app
                                 } else {
+                                    #[cfg(any(feature = "android", feature = "test"))]
+                                    if STOP_REQUESTED.load(Ordering::SeqCst) {
+                                        break;
+                                    }
                                     sleep(Duration::from_secs(1));
                                 }
-                            });
+                            }));
 
-                            thread::spawn(move || loop {
+                            worker_handles.push(thread::spawn(move || loop {
                                 if let Ok(enc_command) = http_client_clone_4.config_check(&group_config2_name_clone) {
+                                    #[cfg(any(feature = "android", feature = "test"))]
+                                    if STOP_REQUESTED.load(Ordering::SeqCst) {
+                                        break;
+                                    }
+
                                     let mut config_enc_commands = config_enc_commands_clone_2.lock().unwrap();
                                     config_enc_commands.push((enc_command, false)); // false -> config command from the secondary app
                                 } else {
+                                    #[cfg(any(feature = "android", feature = "test"))]
+                                    if STOP_REQUESTED.load(Ordering::SeqCst) {
+                                        break;
+                                    }
                                     error!("Error in receiving config command");
                                     sleep(Duration::from_secs(1));
                                 }
-                            });
+                            }));
                         }
                     }
                 } else {
@@ -811,5 +969,24 @@ fn core(
 
         // Introduce a small delay since we don't need this constantly checked
         sleep(Duration::from_millis(100));
+
+        // Uncomment to test graceful stop with the test camera
+        /*
+        #[cfg(feature = "test")]
+        {
+            num_iters += 1;
+            if num_iters > 100 {
+                println!("Terminating...");
+                request_stop();
+            }
+        }
+        */
     }
+
+    log::info!("Stop requested; waiting for camera hub workers");
+    for handle in worker_handles {
+        let _ = handle.join();
+    }
+
+    Ok(())
 }

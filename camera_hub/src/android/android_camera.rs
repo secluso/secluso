@@ -14,13 +14,12 @@ use std::{
 use crate::motion::MotionResult;
 use crate::android::android_dual_stream::{self, AndroidCameraSettings};
 use crate::traits::Mp4;
-use crate::{
-    delivery_monitor::VideoInfo,
-    fmp4::Fmp4Writer,
-    livestream::LivestreamWriter,
-    mp4::Mp4Writer,
-    traits::{Camera, CodecParameters},
-};
+use crate::delivery_monitor::VideoInfo;
+use crate::fmp4::Fmp4Writer;
+use crate::livestream::LivestreamWriter;
+use crate::mp4::Mp4Writer;
+use crate::traits::{Camera, CodecParameters};
+use crate::core::STOP_REQUESTED;
 use crate::mp4::write_box;
 use anyhow::Error;
 use bytes::{BufMut, BytesMut};
@@ -31,6 +30,7 @@ use crossbeam_channel::unbounded;
 //use secluso_motion_ai::ml::models::DetectionType;
 //use secluso_motion_ai::pipeline;
 use tokio::runtime::Runtime;
+use std::sync::atomic::Ordering;
 
 //FIXME: this file has A LOT in common with rpi_camera.rs. Consolidate.
 
@@ -253,12 +253,18 @@ impl AndroidCamera {
         frame_queue: Arc<Mutex<VecDeque<Frame>>>,
     ) -> Result<(), Error> {
         let recording_window = duration.map(|secs| Duration::new(secs, 0));
+        // In case the user stops the camera, we want to be able to wind down the camera fast
+        // and not wait for a full motion video to be recorded of livestream to finish.
+        // At the same time, we don't want to end up with an empty motion video either,
+        // so we use a minimum of 1 second (and enforce a minimum number of frames).
+        let minimum_recording_window = Duration::new(1, 0);
 
         let mut started = false; // started first fragment after first IDR
         let mut samples_in_fragment = 0u32; // count samples in the current fragment
         let mut first_video_timestamp = None;
         let mut last_video_timestamp: Option<u64> = None;
 
+        let mut video_sample_count: u64 = 0;
         let mut audio_sample_count: u64 = 0;
 
         loop {
@@ -334,6 +340,7 @@ impl AndroidCamera {
                         .await?;
 
                     samples_in_fragment += 1;
+                    video_sample_count += 1;
                 }
 
                 if let (Some(window), Some(first_timestamp)) =
@@ -346,6 +353,19 @@ impl AndroidCamera {
                         >= window
                     {
                         break;
+                    }
+                }
+
+                if STOP_REQUESTED.load(Ordering::SeqCst) {
+                    if let Some(first_timestamp) = first_video_timestamp {
+                        let elapsed = frame
+                            .timestamp
+                            .duration_since(first_timestamp)
+                            .unwrap_or_default();
+
+                        if elapsed >= minimum_recording_window && video_sample_count >= 2 {
+                            break;
+                        }
                     }
                 }
             }

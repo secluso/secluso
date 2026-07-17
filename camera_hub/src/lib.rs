@@ -1,4 +1,3 @@
-use std::io;
 use cfg_if::cfg_if;
 cfg_if! {
     if #[cfg(feature = "android")] {
@@ -22,9 +21,11 @@ cfg_if! {
         mod android;
         use crate::android::android_dual_stream::get_available_specs;
         use crate::core::{
-            run, set_android_camera_settings_core,
+            request_stop, run, set_android_camera_settings_core,
             set_android_server_credentials, Args,
         };
+
+        use std::io;
     }
 }
 
@@ -60,6 +61,12 @@ pub fn run_android(
     };
 
     run(args)
+}
+
+#[cfg(feature = "android")]
+pub fn stop_android() {
+    log::info!("Reached stop_android()");
+    request_stop();
 }
 
 #[cfg(feature = "android")]

@@ -686,6 +686,8 @@ mod ndk {
         running: Arc<AtomicBool>,
         activity: Mutex<CallbackActivity>,
         activity_changed: Condvar,
+        session_closed: Mutex<bool>,
+        session_state_changed: Condvar,
         image_mutex: Mutex<()>,
         last_raw_emit: Mutex<Option<Instant>>,
     }
@@ -739,6 +741,8 @@ mod ndk {
                     active: 0,
                 }),
                 activity_changed: Condvar::new(),
+                session_closed: Mutex::new(false),
+                session_state_changed: Condvar::new(),
                 image_mutex: Mutex::new(()),
                 last_raw_emit: Mutex::new(None),
             });
@@ -855,6 +859,7 @@ mod ndk {
         unsafe fn stop(&mut self) {
             self.callback_state.stop_callbacks();
             let was_running = self.running.swap(false, Ordering::SeqCst);
+            let had_session = !self.session.is_null();
 
             if !self.session.is_null() {
                 // SAFETY
@@ -866,7 +871,6 @@ mod ndk {
                 // SAFETY
                 // 1. self.session is a live capture session.
                 sys::ACameraCaptureSession_close(self.session);
-                self.session = ptr::null_mut();
             }
 
             if !self.audio_stream.is_null() {
@@ -880,6 +884,12 @@ mod ndk {
             }
             if let Some(handle) = self.audio_thread.take() {
                 let _ = handle.join();
+            }
+
+            if had_session {
+                self.callback_state.wait_for_session_closed();
+                self.callback_state.wait_for_callbacks();
+                self.session = ptr::null_mut();
             }
 
             if !self.encoder.is_null() {
@@ -1437,9 +1447,11 @@ mod ndk {
                 return self.fail("ACaptureRequest_setEntry_i32 fps range failed");
             }
 
+            *self.callback_state.session_closed.lock().unwrap() = false;
+
             let mut session_callbacks = sys::ACameraCaptureSession_stateCallbacks {
-                context: ptr::null_mut(),
-                onClosed: None,
+                context: Arc::as_ptr(&self.callback_state) as *mut c_void,
+                onClosed: Some(CameraCallbackState::on_session_closed),
                 onReady: None,
                 onActive: None,
             };
@@ -1499,10 +1511,35 @@ mod ndk {
             }
         }
 
+        fn wait_for_session_closed(&self) {
+            let mut session_closed = self.session_closed.lock().unwrap();
+            while !*session_closed {
+                session_closed = self
+                    .session_state_changed
+                    .wait(session_closed)
+                    .unwrap();
+            }
+        }
+
         fn fail<T>(&self, message: &str) -> Result<T, String> {
             log::error!("{message}");
             (self.callbacks.on_error)(message);
             Err(message.to_string())
+        }
+
+        /// # Safety
+        /// 1. If not null, context must point to the live CameraCallbackState registered with the NDK.
+        unsafe extern "C" fn on_session_closed(
+            context: *mut c_void,
+            _session: *mut sys::ACameraCaptureSession,
+        ) {
+            // SAFETY
+            // 1. If not null, context points to the live CameraCallbackState registered with the NDK.
+            if let Some(this) = (context as *const Self).as_ref() {
+                let _callback = this.begin_callback();
+                *this.session_closed.lock().unwrap() = true;
+                this.session_state_changed.notify_all();
+            }
         }
 
         /// # Safety
