@@ -20,11 +20,9 @@ cfg_if! {
         mod manual;
     } else if #[cfg(feature = "raspberry")] {
         mod mp4;
-        mod fmp4;
         mod raspberry_pi;
     } else if #[cfg(feature = "ip")] {
         mod mp4;
-        mod fmp4;
         mod ip;
     } else if #[cfg(feature = "test")] {
         mod test_camera;

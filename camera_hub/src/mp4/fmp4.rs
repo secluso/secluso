@@ -24,9 +24,9 @@
 //! https://github.com/scottlamb/moonfire-nvr/wiki/Standards-and-specifications
 //! https://standards.iso.org/ittf/PubliclyAvailableStandards/c068960_ISO_IEC_14496-12_2015.zip
 
-use crate::mp4::{Mp4WriterCore, TrakTrackerCore};
+use crate::mp4::mp4::{Mp4WriterCore, TrakTrackerCore};
 use crate::traits::{CodecParameters, Mp4};
-use crate::mp4::write_box;
+use crate::mp4::mp4::write_box;
 use anyhow::{anyhow, Error};
 use bytes::{BufMut, BytesMut};
 

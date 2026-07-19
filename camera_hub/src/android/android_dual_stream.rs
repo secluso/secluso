@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 
 use crossbeam_channel::Sender;
 
-use crate::android::android_camera::{Frame, FrameKind};
+use crate::mp4::mp4_camera::{Frame, FrameKind};
 
 pub const ANDROID_CAMERA_FACING_BACK: i32 = 0;
 pub const ANDROID_CAMERA_FACING_FRONT: i32 = 1;
@@ -493,7 +493,7 @@ mod ndk {
         // SAFETY
         // 1. ACAMERA_SCALER_AVAILABLE_STREAM_CONFIGURATIONS contains i32 data.
         // 2. entry came from a successful metadata lookup.
-        let Some(values) = unsafe { camera_metadata_i32_vec(&entry) } else {
+        let Some(values) = (unsafe { camera_metadata_i32_vec(&entry) }) else {
             return default_resolutions();
         };
 
@@ -583,7 +583,7 @@ mod ndk {
         // SAFETY
         // 1. ACAMERA_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES contains i32 data.
         // 2. entry came from a successful metadata lookup.
-        let Some(values) = unsafe { camera_metadata_i32_vec(&entry) } else {
+        let Some(values) = (unsafe { camera_metadata_i32_vec(&entry) }) else {
             return default_frame_rate_ranges();
         };
 

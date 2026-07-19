@@ -17,7 +17,7 @@ use std::io;
 use std::ops::Add;
 use std::panic;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Instant;
@@ -34,15 +34,15 @@ use crate::config::process_config_command;
 use crate::notification_target::{send_notification, refresh_notification_target};
 use crate::pairing::flow::pair_all;
 use crate::pairing::io::{get_names, read_parse_full_credentials};
-#[cfg(any(feature = "raspberry", feature = "test", feature = "manual"))]
-use crate::pairing::io::get_input_camera_secret;
 
 cfg_if! {
     if #[cfg(feature = "manual")] {
         use crate::manual::ManualCamera;
+        use crate::pairing::io::get_input_camera_secret;
     } else if #[cfg(feature = "raspberry")] {
         use crate::raspberry_pi::rpi_camera::RaspberryPiCamera;
         use crate::pairing::wifi::create_wifi_hotspot;
+        use crate::pairing::io::get_input_camera_secret;
     } else if #[cfg(feature = "ip")] {
         use crate::ip::ip_camera::IpCamera;
     } else if #[cfg(feature = "android")] {
@@ -51,8 +51,11 @@ cfg_if! {
             AndroidCameraSettings, ANDROID_CAMERA_FACING_BACK, ANDROID_CAMERA_FACING_FRONT,
         };
         use std::io::ErrorKind;
+        use std::sync::atomic::AtomicBool;
     } else if #[cfg(feature = "test")] {
         use crate::test_camera::TestCamera;
+        use std::sync::atomic::AtomicBool;
+        use crate::pairing::io::get_input_camera_secret;
     } else {
         compile_error!("One of the features 'manual', 'raspberry', 'ip', 'android', or 'test' must be enabled.");
     }
@@ -666,9 +669,8 @@ fn core(
         }
     }));
 
-    // Uncomment to test graceful stop with the test camera
-    //#[cfg(feature = "test")]
-    //let mut num_iters = 0usize;
+    #[cfg(feature = "test")]
+    let mut num_iters = 0usize;
 
     // Used for anti-dither for motion detection
     loop {
@@ -970,23 +972,23 @@ fn core(
         // Introduce a small delay since we don't need this constantly checked
         sleep(Duration::from_millis(100));
 
-        // Uncomment to test graceful stop with the test camera
-        /*
         #[cfg(feature = "test")]
         {
             num_iters += 1;
-            if num_iters > 100 {
+            if num_iters > 5000 {
                 println!("Terminating...");
                 request_stop();
             }
         }
-        */
     }
 
-    log::info!("Stop requested; waiting for camera hub workers");
-    for handle in worker_handles {
-        let _ = handle.join();
-    }
+    #[cfg(any(feature = "android", feature = "test"))]
+    {
+        log::info!("Stop requested; waiting for camera hub workers");
+        for handle in worker_handles {
+            let _ = handle.join();
+        }
 
-    Ok(())
+        Ok(())
+    }
 }
