@@ -362,7 +362,7 @@ impl HttpClient {
     }
 
     /// Uploads an (encrypted) file.
-    pub fn upload_enc_file(&self, group_name: &str, enc_file_path: &Path, num_apps: u32) -> io::Result<()> {
+    pub fn upload_enc_file(&self, group_name: &str, enc_file_path: &Path, num_apps: usize) -> io::Result<()> {
         let enc_file_name = enc_file_path
             .file_name()
             .and_then(|name| name.to_str())

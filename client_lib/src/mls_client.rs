@@ -258,14 +258,6 @@ impl MlsClient {
 
         let group = self.group.as_mut().unwrap();
 
-        #[cfg(not(test))] {
-            // For now, we allow two apps only.
-            // We allow more apps for tests.
-            if group.contacts.len() >= 2 {
-                return Err(io::Error::other("Cannot invite more than two apps".to_string()));
-            }
-        }
-
         // first is true if we're inviting the first app, i.e., the admin_app
         let first = group.contacts.len() == 0;
 

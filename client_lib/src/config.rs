@@ -14,6 +14,7 @@ pub const OPCODE_HEARTBEAT_REQUEST: u8 = 0;
 pub const OPCODE_HEARTBEAT_RESPONSE: u8 = 1;
 pub const OPCODE_ADD_APP_REQUEST: u8 = 2;
 pub const OPCODE_ADD_APP_RESPONSE: u8 = 3;
+pub const OPCODE_ADD_APP_INFO: u8 = 4;
 
 pub enum HeartbeatResult {
     InvalidTimestamp,
@@ -219,11 +220,10 @@ impl Heartbeat {
 
 #[derive(Serialize, Deserialize)]
 pub struct AddAppRequest {
-    pub secret: Vec<u8>,
     pub new_app_key_package: KeyPackage,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct AddAppResponseCommon {
     pub camera_key_package: KeyPackage,
     pub welcome_msg_vec: Vec<u8>,

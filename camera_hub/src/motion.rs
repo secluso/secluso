@@ -22,7 +22,7 @@ pub fn upload_pending_enc_thumbnails(
     group_name: &str,
     delivery_monitor: &mut DeliveryMonitor,
     http_client: &HttpClient,
-    num_apps: u32,
+    num_apps: usize,
 ) -> io::Result<()> {
     // Send pending thumbnails
     let send_list_thumbnails: Vec<ThumbnailMetaInfo> = delivery_monitor.thumbnails_to_send();
@@ -54,7 +54,7 @@ pub fn upload_pending_enc_videos(
     group_name: &str,
     delivery_monitor: &mut DeliveryMonitor,
     http_client: &HttpClient,
-    num_apps: u32,
+    num_apps: usize,
 ) -> io::Result<()> {
     // Send pending videos
     let send_list_videos = delivery_monitor.videos_to_send();
@@ -142,6 +142,7 @@ pub fn prepare_motion_video(
 
     // encrypt_video_file() performs an update, which increases the epoch by 1.
     video_info.epoch = mls_client.get_epoch()? + 1;
+    println!("epoch for new motion video = {:?}", video_info.epoch);
     let video_file_path = delivery_monitor.get_video_file_path(&video_info);
     let enc_video_file_path = delivery_monitor.get_enc_video_file_path(&video_info);
 
