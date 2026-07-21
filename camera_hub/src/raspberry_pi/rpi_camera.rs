@@ -516,9 +516,11 @@ impl RaspberryPiCamera {
         // Hard coded width x height based on the Camera Module connected to the Raspberry Pi.
         // Camera Module V1 (OV5647): 1296 x 972 (60% of 1080p)
         // Camera Module V2 (IMX219): 1640 x 1232 (97% of 1080p)
+        // Camera Module V3 (IMX708): 2304x1296 (140% of 1080p)
         // Even though these support 1080p directly, if we were to use that, the sides would be cropped out due to the aspect ratio of the sensor.
         const CAMERA_RESOLUTION_V1: (usize, usize) = (1296, 972);
         const CAMERA_RESOLUTION_V2: (usize, usize) = (1640, 1232);
+        const CAMERA_RESOLUTION_V3: (usize, usize) = (1920, 1080);
 
         // Detection logic to determine if the attached camera module is a V1, V2 or other (which likely won't reach this point as they aren't supported in the Secluso OS image regardless)
         // Sample Output of "rpicam-hello --list-cameras" that we must parse:
@@ -534,6 +536,16 @@ impl RaspberryPiCamera {
         //                       1640x1232 [41.85 fps - (0, 0)/3280x2464 crop]
         //                       1920x1080 [47.57 fps - (680, 692)/1920x1080 crop]
         //                       3280x2464 [21.19 fps - (0, 0)/3280x2464 crop]
+
+        /**
+            For IMX708, source: https://forums.raspberrypi.com/viewtopic.php?t=381114
+            Available cameras
+            -----------------
+            0 : imx708_wide_noir [4608x2592 10-bit RGGB] (/base/soc/i2c0mux/i2c@1/imx708@1a)
+                Modes: 'SRGGB10_CSI2P' : 1536x864 [120.13 fps - (768, 432)/3072x1728 crop]
+                                         2304x1296 [56.03 fps - (0, 0)/4608x2592 crop]
+                                         4608x2592 [14.35 fps - (0, 0)/4608x2592 crop]
+        */
 
         let output = Command::new("rpicam-hello")
             .args(["--list-cameras"])
@@ -553,6 +565,11 @@ impl RaspberryPiCamera {
             Some(CameraResolution {
                 width: CAMERA_RESOLUTION_V1.0,
                 height: CAMERA_RESOLUTION_V1.1,
+            })
+        } else if stdout.contains("imx708") {
+            Some(CameraResolution {
+                width: CAMERA_RESOLUTION_V3.0,
+                height: CAMERA_RESOLUTION_V3.1,
             })
         } else {
             None
