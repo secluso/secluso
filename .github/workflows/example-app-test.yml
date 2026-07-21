@@ -30,10 +30,11 @@ jobs:
           CAMERA_PID=""
           APP1_PID=""
           APP2_PID=""
+          APP3_PID=""
 
           cleanup() {
             echo "Cleaning up background processes..."
-            for pid in "$APP2_PID" "$APP1_PID" "$CAMERA_PID" "$SERVER_PID"; do
+            for pid in "$APP3_PID" "$APP2_PID" "$APP1_PID" "$CAMERA_PID" "$SERVER_PID"; do
               if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
                 kill "${pid}" 2>/dev/null || true
               fi
@@ -41,7 +42,7 @@ jobs:
 
             sleep 2
 
-            for pid in "$APP2_PID" "$APP1_PID" "$CAMERA_PID" "$SERVER_PID"; do
+            for pid in "$APP3_PID" "$APP2_PID" "$APP1_PID" "$CAMERA_PID" "$SERVER_PID"; do
               if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
                 kill -9 "${pid}" 2>/dev/null || true
               fi
@@ -154,9 +155,40 @@ jobs:
 
           echo "App 2 PID: ${APP2_PID}"
 
-          echo "=== Monitoring both apps ==="
+          echo "Waiting 10 seconds before launching third app..."
+          sleep 10
+
+          if ! kill -0 "${APP1_PID}" 2>/dev/null; then
+            echo "First app exited before second app launch."
+            wait "${APP1_PID}" || true
+            echo "Server log:"
+            cat server/server.log || true
+            echo "Camera log:"
+            cat camera_hub/camera.log || true
+            echo "App1 log:"
+            cat app_native/app1.log || true
+            exit 1
+          fi
+
+          echo "=== Step 6: Launch third app ==="
+          rm -rf app_native_3
+          mkdir -p app_native_3
+          cp app_native/target/release/examples/app app_native_3/app
+          cp app_native/user_credentials app_native_3/
+
+          pushd app_native_3
+          rm -rf example_app_data
+          chmod +x ./app
+          RUST_LOG=error ./app --secondary-app > app3.log 2>&1 &
+          APP3_PID=$!
+          popd
+
+          echo "App 3 PID: ${APP3_PID}"
+
+          echo "=== Monitoring all three apps ==="
           APP1_STATUS=""
           APP2_STATUS=""
+          APP3_STATUS=""
 
           while true; do
             if [[ -z "${APP1_STATUS}" ]] && ! kill -0 "${APP1_PID}" 2>/dev/null; then
@@ -175,12 +207,22 @@ jobs:
               echo "App 2 exited with status ${APP2_STATUS}"
             fi
 
+            if [[ -z "${APP3_STATUS}" ]] && ! kill -0 "${APP3_PID}" 2>/dev/null; then
+              set +e
+              wait "${APP3_PID}"
+              APP3_STATUS=$?
+              set -e
+              echo "App 3 exited with status ${APP3_STATUS}"
+            fi
+
             if [[ -n "${APP1_STATUS}" && "${APP1_STATUS}" != "0" ]]; then
               echo "App 1 failed."
               echo "--- app1.log ---"
               cat app_native/app1.log || true
               echo "--- app2.log ---"
               cat app_native_2/app2.log || true
+              echo "--- app3.log ---"
+              cat app_native_3/app3.log || true
               echo "--- server.log ---"
               cat server/server.log || true
               echo "--- camera.log ---"
@@ -194,6 +236,8 @@ jobs:
               cat app_native/app1.log || true
               echo "--- app2.log ---"
               cat app_native_2/app2.log || true
+              echo "--- app3.log ---"
+              cat app_native_3/app3.log || true
               echo "--- server.log ---"
               cat server/server.log || true
               echo "--- camera.log ---"
@@ -201,8 +245,23 @@ jobs:
               exit 1
             fi
 
-            if [[ -n "${APP1_STATUS}" && -n "${APP2_STATUS}" ]]; then
-              echo "Both apps exited successfully."
+            if [[ -n "${APP3_STATUS}" && "${APP3_STATUS}" != "0" ]]; then
+              echo "App 3 failed."
+              echo "--- app1.log ---"
+              cat app_native/app1.log || true
+              echo "--- app2.log ---"
+              cat app_native_2/app2.log || true
+              echo "--- app3.log ---"
+              cat app_native_3/app3.log || true
+              echo "--- server.log ---"
+              cat server/server.log || true
+              echo "--- camera.log ---"
+              cat camera_hub/camera.log || true
+              exit 1
+            fi
+
+            if [[ -n "${APP1_STATUS}" && -n "${APP2_STATUS}" && -n "${APP3_STATUS}" ]]; then
+              echo "All three apps exited successfully."
               break
             fi
 
