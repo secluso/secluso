@@ -22,6 +22,7 @@ use secluso_client_server_lib::auth::parse_user_credentials_full;
 
 const MULTI_PRESS_WINDOW: Duration = Duration::from_millis(5000);
 const DEBUG_LOGS_FILENAME: &str = "/data/debug_logs.txt";
+const CAMERA_HUB_SERVICE: &str = "secluso_camera_hub.service";
 
 fn run_command_to_completion(program: &str, args: &[&str]) {
     let output = Command::new(program)
@@ -41,7 +42,7 @@ fn reset_action() {
     // First, stop the secluso service
     run_command_to_completion(
         "systemctl",
-        &["stop", "secluso_camera_hub.service"],
+        &["stop", CAMERA_HUB_SERVICE],
     );
 
     // Second, reset secluso camera hub
@@ -80,7 +81,7 @@ fn reset_action() {
     // Finally, start the secluso service
     run_command_to_completion(
         "systemctl",
-        &["start", "secluso_camera_hub.service"],
+        &["start", CAMERA_HUB_SERVICE],
     );
 }
 
@@ -89,7 +90,7 @@ fn save_logs_to_file() -> io::Result<()> {
     cmd.arg("--no-pager")
         .arg("--output=short-iso")
         .arg("-u")
-        .arg("secluso_camera_hub.service")
+        .arg(CAMERA_HUB_SERVICE)
         .arg("-n")
         .arg("10000"); // number of lines
 
