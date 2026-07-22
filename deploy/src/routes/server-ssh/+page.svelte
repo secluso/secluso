@@ -36,6 +36,7 @@
   let useSameForSudo = true;
   let sudoPassword = "";
 
+  let showTerminalAlternative = false;
   let overwriteInstall = false;
   let serviceAccountKeyPath = "";
   let showFcmSection = false;
@@ -887,6 +888,25 @@
       </div>
       <img class="hero-art" src="/deploy-assets/server-hero-exact.svg" alt="" />
     </div>
+
+    <button
+      class="ghost"
+      type="button"
+      on:click={() => (showTerminalAlternative = !showTerminalAlternative)}
+    >
+      Would you prefer to use the terminal?
+    </button>
+
+    {#if showTerminalAlternative}
+      <div class="hint-card">
+        <img src="/deploy-assets/server-info.svg" alt="" />
+        <span>
+          This tool is the easiest way to get set up. No terminal required. Advanced users who'd rather deal with scripts and such
+          can use scripts/secluso_manual_relay_install.sh from the core repository directly on the server. It performs
+          the same install steps on the machine itself.
+        </span>
+      </div>
+    {/if}
 
     <section class="panel">
       <h2>SSH Target</h2>
