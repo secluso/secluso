@@ -619,12 +619,18 @@
   }
 
   .select-input {
+    appearance: none;
+    -webkit-appearance: none;
     width: 100%;
     height: 32px;
-    border: 0;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
     outline: 0;
-    padding: 0;
-    background: transparent;
+    padding: 0 30px 0 10px;
+    background-color: #0b0b0b;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='none' stroke='%23fafafa' stroke-width='1.5' d='M1 1l4 4 4-4'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
     color: #fafafa;
     font-size: 16px;
     line-height: 24px;
