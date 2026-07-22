@@ -8,6 +8,12 @@ mod open_external;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // https://github.com/tauri-apps/tauri/issues/9304: webkit2gtk is broken under 2.44 with Nvidia GPUs
+    // "KMS: DRM_IOCTL_MODE_CREATE_DUMB failed: Permission denied" [https://github.com/secluso/core/issues/113]
+    // WEBKIT_DISABLE_DMABUF_RENDERER falls back to portable compositing
+    #[cfg(target_os = "linux")]
+    std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
