@@ -138,7 +138,7 @@ enum Mode {
     Night,
 }
 
-const LIGHT_THRESHOLD: u32 = 40;
+const LIGHT_THRESHOLD: u32 = 20;
 const REQUIRED_CONSECUTIVE: u8 = 3;
 
 fn main() -> Result<()> {
