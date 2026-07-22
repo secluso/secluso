@@ -2802,6 +2802,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
+name = "opusic-c"
+version = "1.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89f8e9c909466f15e60277212cc4fec082c68a5e1c9f6e373eee716fec2fed47"
+dependencies = [
+ "opusic-sys",
+]
+
+[[package]]
+name = "opusic-sys"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2804e694ef0de3b4cbb254de565053b7cb48d3398df7fd60c6c62bed40c5372a"
+dependencies = [
+ "cmake",
+]
+
+[[package]]
 name = "order-stat"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3714,6 +3732,7 @@ dependencies = [
  "log",
  "ndarray 0.17.2",
  "openmls",
+ "opusic-c",
  "rand 0.9.4",
  "reqwest",
  "retina",
