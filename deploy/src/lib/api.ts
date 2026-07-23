@@ -47,6 +47,7 @@ export interface ServerPlan {
   binariesRepo?: string;
   githubToken?: string;
   manifestVersionOverride?: string;
+  serverLogLevel?: "normal" | "debug" | "critical" | "off";
 }
 
 export interface JobStart {

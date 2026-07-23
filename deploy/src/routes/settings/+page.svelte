@@ -17,8 +17,11 @@
     key2User: string;
     githubToken: string;
     manifestVersionOverride: string;
+    serverLogLevel: ServerLogLevel;
     maskUserPathsWithDemo: boolean;
   };
+
+  type ServerLogLevel = "normal" | "debug" | "critical" | "off";
 
   const STORAGE_KEY = "secluso-dev-settings";
   const backIcon = "/deploy-assets/settings-back-latest.svg";
@@ -38,6 +41,7 @@
     key2User: "",
     githubToken: "",
     manifestVersionOverride: "",
+    serverLogLevel: "normal",
     maskUserPathsWithDemo: false
   };
 
@@ -298,6 +302,26 @@
             />
           </label>
           <p>Overrides the version sent in the post-install server health check.</p>
+        </section>
+
+        <section class="option-card token-card">
+          <div class="option-header">
+            <h2>Server Log Level</h2>
+            <span class="badge">OPTIONAL</span>
+          </div>
+
+          <label class="field">
+            <span>Level</span>
+            <select class="select-input" bind:value={devSettings.serverLogLevel}>
+              <option value="normal">normal (default)</option>
+              <option value="debug">debug</option>
+              <option value="critical">critical</option>
+              <option value="off">off</option>
+            </select>
+          </label>
+          <p>
+            Sets <code>ROCKET_LOG_LEVEL</code> in the provisioned server's systemd unit.
+          </p>
         </section>
       </section>
     {/if}
@@ -592,6 +616,31 @@
 
   .field input::placeholder {
     color: rgba(250, 250, 250, 0.5);
+  }
+
+  .select-input {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 100%;
+    height: 32px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    outline: 0;
+    padding: 0 30px 0 10px;
+    background-color: #0b0b0b;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='none' stroke='%23fafafa' stroke-width='1.5' d='M1 1l4 4 4-4'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    color: #fafafa;
+    font-size: 16px;
+    line-height: 24px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  .select-input option {
+    background: #0b0b0b;
+    color: #fafafa;
   }
 
   .binaries-card {

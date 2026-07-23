@@ -61,6 +61,7 @@
     key2User: string;
     githubToken: string;
     manifestVersionOverride: string;
+    serverLogLevel: "normal" | "debug" | "critical" | "off";
     maskUserPathsWithDemo: boolean;
   };
 
@@ -77,6 +78,7 @@
     key2User: "",
     githubToken: "",
     manifestVersionOverride: "",
+    serverLogLevel: "normal",
     maskUserPathsWithDemo: false
   };
   let devSettings: DevSettings | null = null;
@@ -628,6 +630,10 @@
       manifestVersionOverride:
         devSettings?.enabled && devSettings?.manifestVersionOverride.trim()
           ? devSettings.manifestVersionOverride.trim()
+          : undefined,
+      serverLogLevel:
+        devSettings?.enabled && devSettings?.serverLogLevel && devSettings.serverLogLevel !== "normal"
+          ? devSettings.serverLogLevel
           : undefined,
       overwrite: overwriteInstall
     };

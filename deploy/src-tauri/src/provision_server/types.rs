@@ -88,4 +88,5 @@ pub struct ServerPlan {
   pub binaries_repo: Option<String>,
   pub github_token: Option<String>,
   pub manifest_version_override: Option<String>,
+  pub server_log_level: Option<String>,
 }
