@@ -10,6 +10,7 @@ use secluso_client_lib::mls_clients::{
     THUMBNAIL, LIVESTREAM_DED, CONFIG_DED,
     MlsClientsCommon, MlsClientsDedicated,
 };
+use secluso_client_lib::notification::{generate_notification, Notification};
 use secluso_client_lib::thumbnail_meta_info::ThumbnailMetaInfo;
 use std::fs;
 use std::fs::File;
@@ -759,14 +760,11 @@ fn core(
 
             let state_dir_ref = state_dir.as_str();
             info!("Sending the motion notification with timestamp.");
-            let notification_msg =
-                clients_com[FCM].encrypt(&bincode::serialize(&motion_timestamp).unwrap())?;
+            let notification = generate_notification(Notification::NewVideo(motion_timestamp))?;
+            let notification_msg = clients_com[FCM].encrypt(&notification)?;
             clients_com[FCM].save_group_state().unwrap();
-            match send_notification(state_dir_ref, &http_client, notification_msg) {
-                Ok(_) => {}
-                Err(e) => {
-                    error!("Failed to send motion notification ({})", e);
-                }
+            if let Err(e) = send_notification(state_dir_ref, &http_client, notification_msg) {
+                error!("Failed to send motion notification ({})", e);
             }
 
             info!("Starting to record, prepare, and encrypt video.");
@@ -794,15 +792,11 @@ fn core(
                 "Sending the post-upload notification to start downloading over {}.",
                 platform_label
             );
-            let notification_timestamp: u64 = 0;
-            let notification_msg = clients_com[FCM]
-                .encrypt(&bincode::serialize(&notification_timestamp).unwrap())?;
+            let notification = generate_notification(Notification::Download)?;
+            let notification_msg = clients_com[FCM].encrypt(&notification)?;
             clients_com[FCM].save_group_state().unwrap();
-            match send_notification(state_dir_ref, &http_client, notification_msg) {
-                Ok(_) => {}
-                Err(e) => {
-                    error!("Failed to send motion notification ({})", e);
-                }
+            if let Err(e) = send_notification(state_dir_ref, &http_client, notification_msg) {
+                error!("Failed to send download notification ({})", e);
             }
 
             locked_motion_check_time = Some(Instant::now().add(Duration::from_secs(60)));
@@ -893,9 +887,24 @@ fn core(
             for (enc_command, app_id) in enc_commands_to_process {
                 if app_id == PRIMARY_APP_ID {
                     println!("About to call process_config_command for primary app");
+                    let has_existing_secondary_apps = !clients_ded_secondary.is_empty();
                     let secondary_app_limit_reached =
                         clients_ded_secondary.len() >= MAX_SECONDARY_APPS;
                     let next_secondary_app_number = clients_ded_secondary.len() + 2;
+
+                    // Why do we generate this notification here, before we even process
+                    // the config command (which might or might not be an add_app request)?
+                    // This notification is used in case of an add_app request. Its goal is
+                    // to let other secondary phones know that there are some MLS updates
+                    // that they need to download. Notifications use the FCM MLS channel for
+                    // encryption. If we generate it after the config command is processed,
+                    // it will be encrypted in the new FCM MLS epoch and those secondary
+                    // apps won't be able to decrypt it. Therefore, we generate it here
+                    // and use it (if needed) later.
+                    let notification = generate_notification(Notification::NewInfo)?;
+                    let notification_msg = clients_com[FCM].encrypt(&notification)?;
+                    clients_com[FCM].save_group_state().unwrap();
+
                     let process_ret = process_config_command(
                         &mut clients_com,
                         &mut clients_ded_primary,
@@ -910,6 +919,13 @@ fn core(
                     )?;
 
                     if let Some(clients_ded_sec) = process_ret {
+                        if has_existing_secondary_apps {
+                            info!("Sending new app information notification.");
+                            if let Err(e) = send_notification(state_dir.as_str(), &http_client, notification_msg) {
+                                error!("Failed to send new app information notification ({})", e);
+                            }
+                        }
+
                         let app_id = clients_ded_secondary.len() + 1;
                         println!("Launching threads for app {}.", app_id + 1);
                         spawn_dedicated_check_threads(

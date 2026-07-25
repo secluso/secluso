@@ -4,6 +4,7 @@ pub mod config;
 pub mod identity;
 pub mod mls_client;
 pub mod mls_clients;
+pub mod notification;
 pub mod openmls_rust_persistent_crypto;
 pub mod pairing;
 pub mod tests;
