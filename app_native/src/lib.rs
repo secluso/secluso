@@ -718,7 +718,8 @@ pub fn process_heartbeat_config_response(
 
                     for i in 0..add_app_resps_com.len() {
                         if i < NUM_COMMON_MLS_CLIENTS {
-                            // Merge the psk_proposal and commit for the add operation
+                            // Store update proposals, merge the psk_proposal, and commit for the add operation
+                            clients.as_mut().unwrap().mls_clients[i].store_update_proposals(add_app_resps_com[i].update_proposals_vec.clone()).unwrap();
                             clients.as_mut().unwrap().mls_clients[i].decrypt(add_app_resps_com[i].psk_proposal_vec.clone(), false).unwrap();
                             clients.as_mut().unwrap().mls_clients[i].decrypt_with_secret(add_app_resps_com[i].commit_msg_vec.clone(), false, secret.clone()).unwrap();
                             clients.as_mut().unwrap().mls_clients[i].save_group_state().unwrap();
@@ -827,7 +828,8 @@ pub fn process_add_app_config_response(
 
                     let new_app_data: [NewAppData; NUM_MLS_CLIENTS] = std::array::from_fn(|i| {
                         if i < NUM_COMMON_MLS_CLIENTS {
-                            // Merge the psk_proposal and commit for the add operation
+                            // Store update proposals, merge the psk_proposal, and commit for the add operation
+                            clients.as_mut().unwrap().mls_clients[i].store_update_proposals(add_app_resps_com[i].update_proposals_vec.clone()).unwrap();
                             clients.as_mut().unwrap().mls_clients[i].decrypt(add_app_resps_com[i].psk_proposal_vec.clone(), false).unwrap();
                             clients.as_mut().unwrap().mls_clients[i].decrypt_with_secret(add_app_resps_com[i].commit_msg_vec.clone(), false, secret.clone()).unwrap();
                             clients.as_mut().unwrap().mls_clients[i].save_group_state().unwrap();

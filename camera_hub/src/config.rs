@@ -161,6 +161,8 @@ fn handle_add_app_request(
             )
             .unwrap();
 
+            let update_proposals_vec = clients_com[i].get_update_proposals().unwrap();
+
             let (welcome_msg_vec, psk_proposal_vec, commit_msg_vec) = clients_com[i]
                 .invite_with_secret(&camera_contact, secret.clone())
                 .unwrap();
@@ -172,6 +174,7 @@ fn handle_add_app_request(
                 welcome_msg_vec,
                 psk_proposal_vec,
                 commit_msg_vec,
+                update_proposals_vec,
             }
         });
 

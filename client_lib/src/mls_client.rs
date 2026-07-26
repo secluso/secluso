@@ -283,6 +283,15 @@ impl MlsClient {
             group.mls_group.set_aad(group_aad.as_bytes().to_vec());
         }
 
+        for contact in &mut group.contacts {
+            if let Some(proposal) = contact.update_proposal.take() {
+                group
+                    .mls_group
+                    .store_pending_proposal(self.provider.storage(), proposal)
+                    .map_err(|e| io::Error::other(format!("Error: could not store proposal - {e}")))?;
+            }
+        }
+
         // Build a proposal with this key package and do the MLS bits.
         let joiner_key_package = contact.key_package.clone();
 
@@ -1021,7 +1030,7 @@ impl MlsClient {
                     || !(staged_commit.psk_proposals().next().is_none()
                         || staged_commit.psk_proposals().collect::<Vec<_>>().len() == 1)
                     || !(staged_commit.queued_proposals().next().is_none()
-                        || staged_commit.queued_proposals().collect::<Vec<_>>().len() <= cmp::max(2, num_apps_in_group))
+                        || staged_commit.queued_proposals().collect::<Vec<_>>().len() <= cmp::max(2, num_apps_in_group + 2)) // 1 psk, 1 add, 1 update per member
                 {
                     return Err(io::Error::other(
                         "Error: staged commit message must contain at most one update/queued proposal and no other proposals.",
