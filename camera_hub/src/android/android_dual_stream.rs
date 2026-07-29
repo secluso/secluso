@@ -13,6 +13,10 @@ use crate::mp4::mp4_camera::{Frame, FrameKind};
 
 pub const ANDROID_CAMERA_FACING_BACK: i32 = 0;
 pub const ANDROID_CAMERA_FACING_FRONT: i32 = 1;
+const DETECTION_STREAM_TARGET_WIDTH: usize = 640;
+const DETECTION_STREAM_TARGET_HEIGHT: usize = 480;
+const PREVIEW_MAX_LONG_SIDE: usize = 1920;
+const PREVIEW_MAX_SHORT_SIDE: usize = 1080;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AndroidCameraResolution {
@@ -41,6 +45,62 @@ pub struct AndroidCameraSettings {
     pub frame_rate_range: AndroidCameraFrameRateRange,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ResolutionBound {
+    max_long_side: usize,
+    max_short_side: usize,
+}
+
+fn preview_bound(display_width: usize, display_height: usize) -> Option<ResolutionBound> {
+    if display_width == 0 || display_height == 0 {
+        return None;
+    }
+
+    // Camera2 defines PREVIEW as the best match to the device display, capped
+    // at 1920x1080. Compare long and short sides to handle display orientation.
+    // https://developer.android.com/reference/android/hardware/camera2/CameraDevice (under CameraCaptureSession)
+    Some(ResolutionBound {
+        max_long_side: display_width.max(display_height).min(PREVIEW_MAX_LONG_SIDE),
+        max_short_side: display_width.min(display_height).min(PREVIEW_MAX_SHORT_SIDE),
+    })
+}
+
+fn resolution_fits_bound(
+    resolution: &AndroidCameraResolution,
+    bound: ResolutionBound,
+) -> bool {
+    resolution.width.max(resolution.height) <= bound.max_long_side
+        && resolution.width.min(resolution.height) <= bound.max_short_side
+}
+
+fn detection_stream_resolution(
+    resolutions: &[AndroidCameraResolution],
+    preview: ResolutionBound,
+) -> Option<AndroidCameraResolution> {
+    let target = ResolutionBound {
+        max_long_side: DETECTION_STREAM_TARGET_WIDTH.max(DETECTION_STREAM_TARGET_HEIGHT),
+        max_short_side: DETECTION_STREAM_TARGET_WIDTH.min(DETECTION_STREAM_TARGET_HEIGHT),
+    };
+
+    resolutions
+        .iter()
+        .filter(|resolution| {
+            resolution_fits_bound(resolution, preview)
+                && resolution_fits_bound(resolution, target)
+        })
+        .cloned()
+        .max_by_key(|resolution| {
+            let exact_target = resolution.width == DETECTION_STREAM_TARGET_WIDTH
+                && resolution.height == DETECTION_STREAM_TARGET_HEIGHT;
+            (
+                exact_target,
+                resolution.width.saturating_mul(resolution.height),
+                resolution.width,
+                resolution.height,
+            )
+        })
+}
+
 impl Default for AndroidCameraSettings {
     fn default() -> Self {
         Self {
@@ -52,8 +112,13 @@ impl Default for AndroidCameraSettings {
     }
 }
 
-pub fn get_available_specs() -> anyhow::Result<Vec<AndroidCameraSpec>> {
-    ndk::available_camera_specs()
+pub fn get_available_specs(
+    display_width: usize,
+    display_height: usize,
+) -> anyhow::Result<Vec<AndroidCameraSpec>> {
+    let preview = preview_bound(display_width, display_height)
+        .ok_or_else(|| anyhow::anyhow!("display dimensions must be non-zero"))?;
+    ndk::available_camera_specs(preview)
         .map_err(|e| anyhow::anyhow!("failed to get Android camera specs: {e}"))
 }
 
@@ -109,6 +174,8 @@ pub fn start(
         facing,
         width,
         height,
+        raw_width: 0,
+        raw_height: 0,
         fps_min: frame_rate_range.min,
         fps_max: frame_rate_range.max,
         bitrate,
@@ -226,14 +293,16 @@ mod ndk {
     use std::os::raw::{c_char, c_int, c_void};
     use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Condvar, Mutex};
+    use std::sync::{Arc, Condvar, Mutex, OnceLock};
     use std::thread::{self, JoinHandle};
     use std::time::{Duration, Instant};
 
     use ndk_sys as sys;
 
     use super::{
-        AndroidCameraFrameRateRange, AndroidCameraResolution, AndroidCameraSpec,
+        detection_stream_resolution, resolution_fits_bound, AndroidCameraFrameRateRange,
+        AndroidCameraResolution, AndroidCameraSpec, ResolutionBound,
+        DETECTION_STREAM_TARGET_HEIGHT, DETECTION_STREAM_TARGET_WIDTH,
         ANDROID_CAMERA_FACING_BACK, ANDROID_CAMERA_FACING_FRONT,
     };
 
@@ -255,6 +324,8 @@ mod ndk {
         pub facing: c_int,
         pub width: c_int,
         pub height: c_int,
+        pub raw_width: c_int,
+        pub raw_height: c_int,
         pub fps_min: c_int,
         pub fps_max: c_int,
         pub bitrate: c_int,
@@ -275,7 +346,59 @@ mod ndk {
         bridge: Box<CameraBridge>,
     }
 
-    pub(super) fn available_camera_specs() -> Result<Vec<AndroidCameraSpec>, String> {
+    struct AndroidCameraCapabilities {
+        spec: AndroidCameraSpec,
+        detection_resolutions: Vec<AndroidCameraResolution>,
+    }
+
+    static PREVIEW_BOUND: OnceLock<Mutex<Option<ResolutionBound>>> = OnceLock::new();
+
+    pub(super) fn available_camera_specs(
+        preview: ResolutionBound,
+    ) -> Result<Vec<AndroidCameraSpec>, String> {
+        *PREVIEW_BOUND
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .map_err(|_| "Android camera preview bound lock was poisoned".to_string())? =
+            Some(preview);
+
+        let result = unsafe {
+            // SAFETY
+            // None.
+            read_camera_capabilities(preview)
+        };
+
+        result.map(|capabilities| {
+            capabilities
+                .into_iter()
+                .map(|capability| capability.spec)
+                .collect()
+        })
+    }
+
+    fn available_detection_resolutions_for_facing(
+        facing: c_int,
+        preview: ResolutionBound,
+    ) -> Result<Option<Vec<AndroidCameraResolution>>, String> {
+        let result = unsafe {
+            // SAFETY
+            // None.
+            read_camera_capabilities(preview)
+        };
+
+        result.map(|capabilities| {
+            capabilities
+                .into_iter()
+                .find(|capability| capability.spec.facing == facing)
+                .map(|capability| capability.detection_resolutions)
+        })
+    }
+
+    /// # Safety
+    /// None.
+    unsafe fn read_camera_capabilities(
+        preview: ResolutionBound,
+    ) -> Result<Vec<AndroidCameraCapabilities>, String> {
         let manager = unsafe {
             // SAFETY
             // None.
@@ -285,26 +408,6 @@ mod ndk {
             return Err("ACameraManager_create failed".to_string());
         }
 
-        let result = unsafe {
-            // SAFETY
-            // 1. manager is a live ACameraManager.
-            read_camera_specs(manager)
-        };
-
-        unsafe {
-            // SAFETY
-            // 1. manager is live and no longer used after this call.
-            sys::ACameraManager_delete(manager);
-        }
-
-        result
-    }
-
-    /// # Safety
-    /// 1. manager must be a live ACameraManager.
-    unsafe fn read_camera_specs(
-        manager: *mut sys::ACameraManager,
-    ) -> Result<Vec<AndroidCameraSpec>, String> {
         if manager.is_null() {
             return Err("ACameraManager was null".to_string());
         }
@@ -364,7 +467,7 @@ mod ndk {
 
             // SAFETY
             // 1. metadata is live until it is freed below.
-            let spec = unsafe { read_camera_spec(metadata) };
+            let spec = unsafe { read_camera_spec(metadata, preview) };
 
             // SAFETY
             // 1. metadata was returned by the NDK and not freed yet.
@@ -374,7 +477,9 @@ mod ndk {
                 // Avoid duplicate cameras.
                 if !specs
                     .iter()
-                    .any(|existing: &AndroidCameraSpec| existing.facing == spec.facing)
+                    .any(|existing: &AndroidCameraCapabilities| {
+                        existing.spec.facing == spec.spec.facing
+                    })
                 {
                     specs.push(spec);
                 }
@@ -385,12 +490,21 @@ mod ndk {
         // 1. ids is a live camera-id list returned by the NDK.
         unsafe { sys::ACameraManager_deleteCameraIdList(ids) };
 
+        unsafe {
+            // SAFETY
+            // 1. manager is live and no longer used after this call.
+            sys::ACameraManager_delete(manager);
+        }
+
         Ok(specs)
     }
 
     /// # Safety
     /// 1. metadata must be a live ACameraMetadata.
-    unsafe fn read_camera_spec(metadata: *mut sys::ACameraMetadata) -> Option<AndroidCameraSpec> {
+    unsafe fn read_camera_spec(
+        metadata: *mut sys::ACameraMetadata,
+        preview: ResolutionBound,
+    ) -> Option<AndroidCameraCapabilities> {
         if metadata.is_null() {
             return None;
         }
@@ -401,16 +515,25 @@ mod ndk {
 
         // SAFETY
         // 1. metadata is live.
-        let resolutions = unsafe { read_camera_resolutions(metadata) };
+        let (resolutions, detection_resolutions) =
+            unsafe { read_camera_resolutions(metadata, preview) };
+        if resolutions.is_empty()
+            || detection_stream_resolution(&detection_resolutions, preview).is_none()
+        {
+            return None;
+        }
 
         // SAFETY
         // 1. metadata is live.
         let frame_rate_ranges = unsafe { read_frame_rate_ranges(metadata) };
 
-        Some(AndroidCameraSpec {
-            facing,
-            resolutions,
-            frame_rate_ranges,
+        Some(AndroidCameraCapabilities {
+            spec: AndroidCameraSpec {
+                facing,
+                resolutions,
+                frame_rate_ranges,
+            },
+            detection_resolutions,
         })
     }
 
@@ -464,9 +587,10 @@ mod ndk {
     /// 1. metadata must be a live ACameraMetadata.
     unsafe fn read_camera_resolutions(
         metadata: *mut sys::ACameraMetadata,
-    ) -> Vec<AndroidCameraResolution> {
+        preview: ResolutionBound,
+    ) -> (Vec<AndroidCameraResolution>, Vec<AndroidCameraResolution>) {
         if metadata.is_null() {
-            return default_resolutions();
+            return (Vec::new(), Vec::new());
         }
 
         let mut entry = std::mem::MaybeUninit::<sys::ACameraMetadata_const_entry>::uninit();
@@ -480,21 +604,21 @@ mod ndk {
             entry.as_mut_ptr(),
         ) } != CAMERA_OK
         {
-            return default_resolutions();
+            return (Vec::new(), Vec::new());
         }
 
         // SAFETY
         // 1. The successful NDK call initialized entry.
         let entry = unsafe { entry.assume_init() };
         if entry.count < 4 {
-            return default_resolutions();
+            return (Vec::new(), Vec::new());
         }
 
         // SAFETY
         // 1. ACAMERA_SCALER_AVAILABLE_STREAM_CONFIGURATIONS contains i32 data.
         // 2. entry came from a successful metadata lookup.
         let Some(values) = (unsafe { camera_metadata_i32_vec(&entry) }) else {
-            return default_resolutions();
+            return (Vec::new(), Vec::new());
         };
 
         let mut yuv_resolutions = BTreeSet::new();
@@ -507,6 +631,9 @@ mod ndk {
             let Ok(height) = usize::try_from(chunk[2]) else {
                 continue;
             };
+            if width == 0 || height == 0 {
+                continue;
+            }
 
             // input/output flag
             let input = chunk[3] != 0;
@@ -526,28 +653,31 @@ mod ndk {
             }
         }
 
-        // The capture session sends the same camera stream to a YUV reader and
-        // the MediaCodec input surface. Only advertise dimensions supported by
-        // both output types.
-        let mut resolutions: Vec<_> = yuv_resolutions
-            .intersection(&encoder_surface_resolutions)
-            .map(|&(width, height)| AndroidCameraResolution { width, height })
+        // In the guaranteed PRIV + YUV combinations, PRIV (the opaque
+        // MediaCodec input surface here) is bounded by PREVIEW.
+        // https://developer.android.com/reference/android/hardware/camera2/CameraDevice (under CameraCaptureSession)
+        let mut resolutions: Vec<_> = encoder_surface_resolutions
+            .into_iter()
+            .map(|(width, height)| AndroidCameraResolution { width, height })
+            .filter(|resolution| resolution_fits_bound(resolution, preview))
+            .collect();
+        let mut detection_resolutions: Vec<_> = yuv_resolutions
+            .into_iter()
+            .map(|(width, height)| AndroidCameraResolution { width, height })
             .collect();
 
-        resolutions.sort_by(|a, b| {
+        let sort_resolutions = |a: &AndroidCameraResolution, b: &AndroidCameraResolution| {
             let area_a = a.width.saturating_mul(a.height);
             let area_b = b.width.saturating_mul(b.height);
             area_b
                 .cmp(&area_a)
                 .then_with(|| b.width.cmp(&a.width))
                 .then_with(|| b.height.cmp(&a.height))
-        });
+        };
+        resolutions.sort_by(sort_resolutions);
+        detection_resolutions.sort_by(sort_resolutions);
 
-        if resolutions.is_empty() {
-            default_resolutions()
-        } else {
-            resolutions
-        }
+        (resolutions, detection_resolutions)
     }
 
     /// # Safety
@@ -607,13 +737,6 @@ mod ndk {
         }
     }
 
-    fn default_resolutions() -> Vec<AndroidCameraResolution> {
-        vec![AndroidCameraResolution {
-            width: 1280,
-            height: 720,
-        }]
-    }
-
     fn default_frame_rate_ranges() -> Vec<AndroidCameraFrameRateRange> {
         vec![AndroidCameraFrameRateRange { min: 10, max: 10 }]
     }
@@ -625,7 +748,36 @@ mod ndk {
     unsafe impl Send for NativeCamera {}
 
     impl NativeCamera {
-        pub(super) fn start(config: CameraConfig, callbacks: CameraCallbacks) -> Result<Self, String> {
+        pub(super) fn start(
+            mut config: CameraConfig,
+            callbacks: CameraCallbacks,
+        ) -> Result<Self, String> {
+            let preview = (*PREVIEW_BOUND
+                .get_or_init(|| Mutex::new(None))
+                .lock()
+                .map_err(|_| "Android camera preview bound lock was poisoned".to_string())?)
+            .ok_or_else(|| {
+                "Android camera capabilities must be queried before camera startup".to_string()
+            })?;
+            let raw_resolution =
+                available_detection_resolutions_for_facing(config.facing, preview)?
+                .and_then(|resolutions| detection_stream_resolution(&resolutions, preview))
+                .ok_or_else(|| {
+                    "selected Android camera has no valid YUV_420_888 output resolution"
+                        .to_string()
+                })?;
+            config.raw_width = c_int::try_from(raw_resolution.width)
+                .map_err(|_| "selected Android camera YUV width is invalid".to_string())?;
+            config.raw_height = c_int::try_from(raw_resolution.height)
+                .map_err(|_| "selected Android camera YUV height is invalid".to_string())?;
+            log::info!(
+                "Android detection stream resolution selected: {}x{} (target={}x{})",
+                config.raw_width,
+                config.raw_height,
+                DETECTION_STREAM_TARGET_WIDTH,
+                DETECTION_STREAM_TARGET_HEIGHT
+            );
+
             let mut bridge = Box::new(CameraBridge::new(config, callbacks));
             unsafe {
                 // SAFETY
@@ -1087,8 +1239,8 @@ mod ndk {
             // SAFETY
             // 1. self.reader is writable.
             let status = unsafe { sys::AImageReader_new(
-                self.config.width,
-                self.config.height,
+                self.config.raw_width,
+                self.config.raw_height,
                 AIMAGE_FORMAT_YUV_420_888,
                 4, // max number of images that we'll want to access simultaneously
                 &mut self.reader,
@@ -1656,14 +1808,15 @@ mod ndk {
                 && unsafe { sys::AImage_getPlanePixelStride(image, 2, &mut v_pix) } == MEDIA_OK;
 
             if ok && !y.is_null() && !u.is_null() && !v.is_null() {
-                let expected = (self.config.width * self.config.height * 3 / 2) as usize;
+                let expected =
+                    (self.config.raw_width * self.config.raw_height * 3 / 2) as usize;
                 let mut i420 = vec![0u8; expected];
                 // SAFETY
                 // 1. Plane pointers and lengths come from the live NDK image.
                 unsafe { copy_yuv420_to_i420(
                     &mut i420,
-                    self.config.width,
-                    self.config.height,
+                    self.config.raw_width,
+                    self.config.raw_height,
                     Plane { ptr: y, len: y_len, row_stride: y_row, pixel_stride: y_pix },
                     Plane { ptr: u, len: u_len, row_stride: u_row, pixel_stride: u_pix },
                     Plane { ptr: v, len: v_len, row_stride: v_row, pixel_stride: v_pix },
@@ -1671,8 +1824,8 @@ mod ndk {
                 (self.callbacks.on_raw_i420)(
                     self.callbacks.state.as_ref(),
                     &i420,
-                    self.config.width as usize,
-                    self.config.height as usize,
+                    self.config.raw_width as usize,
+                    self.config.raw_height as usize,
                 );
             }
 

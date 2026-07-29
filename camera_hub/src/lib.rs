@@ -35,8 +35,11 @@ pub use crate::android::android_dual_stream::{
 };
 
 #[cfg(feature = "android")]
-pub fn get_android_camera_specs() -> anyhow::Result<Vec<AndroidCameraSpec>> {
-    get_available_specs()
+pub fn get_android_camera_specs(
+    display_width: usize,
+    display_height: usize,
+) -> anyhow::Result<Vec<AndroidCameraSpec>> {
+    get_available_specs(display_width, display_height)
 }
 
 #[cfg(feature = "android")]
