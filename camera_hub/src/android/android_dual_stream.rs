@@ -297,7 +297,14 @@ mod ndk {
     use std::thread::{self, JoinHandle};
     use std::time::{Duration, Instant};
 
+    #[cfg(all(target_os = "android", not(miri)))]
     use ndk_sys as sys;
+
+    #[cfg(miri)]
+    use crate::android::mock_ndk_sys as sys;
+
+    #[cfg(all(not(target_os = "android"), not(miri)))]
+    compile_error!("Android camera requires either the Android target or Miri");
 
     use super::{
         detection_stream_resolution, resolution_fits_bound, AndroidCameraFrameRateRange,
@@ -2259,6 +2266,7 @@ mod ndk {
         }
     }
 
+    #[derive(Clone, Copy)]
     struct Plane {
         ptr: *const u8,
         len: c_int,
@@ -2480,5 +2488,10 @@ mod ndk {
         // SAFETY
         // 1. ptr is not null and points to a valid C string.
         Ok(unsafe { std::ffi::CStr::from_ptr(ptr) }.to_owned())
+    }
+
+    #[cfg(all(test, miri))]
+    mod tests {
+        include!("tests.rs");
     }
 }

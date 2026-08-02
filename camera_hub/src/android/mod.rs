@@ -4,3 +4,6 @@
 
 pub(crate) mod android_camera;
 pub(crate) mod android_dual_stream;
+
+#[cfg(miri)]
+pub(crate) mod mock_ndk_sys;

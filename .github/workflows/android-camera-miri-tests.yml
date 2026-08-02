@@ -1,0 +1,43 @@
+name: Android Camera Miri Tests
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'camera_hub/**'
+      - '.github/workflows/android-camera-miri-tests.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'camera_hub/**'
+      - '.github/workflows/android-camera-miri-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test-android-camera-miri:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: camera_hub
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: camera_hub -> target
+
+      - name: Run Miri tests
+        run: cargo miri test --lib --features android --verbose -- --test-threads=1
