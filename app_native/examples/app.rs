@@ -10,7 +10,8 @@ use secluso_app_native::{
     get_group_name, initialize, livestream_decrypt, livestream_update,
     process_heartbeat_config_response, generate_add_app_request_config_command,
     process_add_app_config_response, join_camera_groups,
-    get_key_packages, decrypt_thumbnail,
+    get_key_packages, decrypt_thumbnail, generate_remove_app_request_config_command,
+    process_remove_app_config_response,
 };
 use secluso_client_lib::http_client::HttpClient;
 use secluso_client_lib::pairing::{NUM_SECRET_BYTES};
@@ -23,7 +24,7 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -40,6 +41,10 @@ const CAMERA_NAME: &str = "Camera";
 const DATA_DIR: &str = "example_app_data";
 
 pub const MAX_ALLOWED_MSG_LEN: u64 = 65536;
+
+// The name used by the camera to refer to this app.
+static MY_NAME: LazyLock<Mutex<String>> =
+    LazyLock::new(|| Mutex::new(String::new()));
 
 const USAGE: &str = "
 Runs a simple Secluso app.
@@ -134,11 +139,13 @@ fn main() -> io::Result<()> {
             let new_app_data_vec = http_client.receive_msg("test_add_app_response_token")?;
             println!("Received add_app response");
 
-            let epochs: [u64; NUM_MLS_CLIENTS] = join_camera_groups(
+            let (epochs, my_name): ([u64; NUM_MLS_CLIENTS], String) = join_camera_groups(
                 &mut clients.lock().unwrap(),
                 add_app_secret.clone(),
                 new_app_data_vec,
             )?;
+
+            *MY_NAME.lock().unwrap() = my_name;
 
             write_epoch("motion_epoch", epochs[MOTION] + 1);
             write_epoch("thumbnail_epoch", epochs[THUMBNAIL] + 1);
@@ -217,6 +224,10 @@ fn main_loop(
     num_iters: usize,
     add_app_secret: Vec<u8>,
 ) -> io::Result<()> {
+    let mut remove_app_needed = false;
+    let mut remove_app_iter: usize = 60;
+    let mut remove_app_name = "".to_string();
+
     for iter in 0..num_iters {
         thread::sleep(Duration::from_secs(1));
 
@@ -225,23 +236,43 @@ fn main_loop(
         fetch_thumbnails(Arc::clone(&clients), &http_client)?;
 
         if iter % 60 == 29 {
-            heartbeat(Arc::clone(&clients), &http_client)?;
+            let terminate = heartbeat(Arc::clone(&clients), &http_client)?;
+            if terminate {
+                return Ok(());
+            }
         }
 
         if iter % 60 == 59 {
             livestream(Arc::clone(&clients), &http_client, 2)?;
         }
 
+        if remove_app_needed {
+            remove_app_iter -= 1;
+            if remove_app_iter <= 0 {
+                remove_app(
+                    Arc::clone(&clients),
+                    &http_client,
+                    &remove_app_name
+                )?;
+            }
+        }
+
         let mut add_app_data_opt = add_app_request.lock().unwrap();
         if let Some(add_app_data) = add_app_data_opt.as_ref() {
             println!("Add app request detected");
-            handle_add_app_request(
+            let app_name = handle_add_app_request(
                 Arc::clone(&clients),
                 &http_client,
                 add_app_data,
                 add_app_secret.clone(),
             )?;
             *add_app_data_opt = None;
+
+            if !remove_app_needed {
+                println!("Scheduling this app to be removed");
+                remove_app_needed = true;
+                remove_app_name = app_name;
+            }
         }
     }
 
@@ -253,7 +284,7 @@ fn handle_add_app_request(
     http_client: &HttpClient,
     add_app_data: &Vec<u8>,
     add_app_secret: Vec<u8>,
-) -> io::Result<()> {
+) -> io::Result<String> {
     println!("handle_add_app_request called");
 
     let new_app_key_packages_vec = add_app_data.clone();
@@ -281,12 +312,15 @@ fn handle_add_app_request(
 
     if config_response_opt.is_none() {
         println!("Error: couldn't fetch the add_app response. Camera might be offline.");
-        return Ok(());
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Error: couldn't fetch the add_app response. Camera might be offline."),
+        ));
     }
 
     let config_response = config_response_opt.unwrap();
 
-    let new_app_data_vec = process_add_app_config_response(
+    let (new_app_data_vec, new_app_name) = process_add_app_config_response(
         &mut clients.lock().unwrap(),
         config_response.clone(),
         add_app_secret,
@@ -297,13 +331,62 @@ fn handle_add_app_request(
 
     http_client.send_msg("test_add_app_response_token", new_app_data_vec)?;
 
+    Ok(new_app_name)
+}
+
+fn remove_app(
+    clients: Arc<Mutex<Option<Box<Clients>>>>,
+    http_client: &HttpClient,
+    app_name: &str,
+) -> io::Result<()> {
+    println!("remove_app called");
+
+    let config_msg_enc =
+        generate_remove_app_request_config_command(&mut clients.lock().unwrap(), app_name)?;
+
+    let config_group_name = get_group_name(&mut clients.lock().unwrap(), "config")?;
+
+    println!("Sending remove_app request.");
+    http_client.config_command(&config_group_name, config_msg_enc)?;
+
+    let mut config_response_opt: Option<Vec<u8>> = None;
+    for _i in 0..30 {
+        println!("Attempt {_i}");
+        thread::sleep(Duration::from_secs(2));
+        match http_client.fetch_config_response(&config_group_name) {
+            Ok(resp) => {
+                config_response_opt = Some(resp);
+                break;
+            }
+            Err(_) => {}
+        }
+    }
+
+    if config_response_opt.is_none() {
+        println!("Error: couldn't fetch the remove_app response. Camera might be offline.");
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("Error: couldn't fetch the add_app response. Camera might be offline."),
+        ));
+    }
+
+    let config_response = config_response_opt.unwrap();
+
+    process_remove_app_config_response(
+        &mut clients.lock().unwrap(),
+        config_response.clone(),
+    ).unwrap();
+
+    increment_epoch("motion_epoch");
+    increment_epoch("thumbnail_epoch");
+
     Ok(())
 }
 
 fn heartbeat(
     clients: Arc<Mutex<Option<Box<Clients>>>>,
     http_client: &HttpClient,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("Could not convert time")
@@ -313,6 +396,7 @@ fn heartbeat(
         generate_heartbeat_request_config_command(&mut clients.lock().unwrap(), timestamp)?;
 
     let config_group_name = get_group_name(&mut clients.lock().unwrap(), "config")?;
+    let livestream_group_name = get_group_name(&mut clients.lock().unwrap(), "livestream")?;
 
     println!("Sending heartbeat request: {}", timestamp);
 
@@ -363,6 +447,27 @@ fn heartbeat(
                 increment_epoch("motion_epoch");
                 increment_epoch("thumbnail_epoch");
             }
+            Ok(response) if response.contains("remove_app") => {
+                println!("Received remove_app notification.");
+                let my_name: String = MY_NAME.lock().unwrap().clone();
+                println!("my_name = {my_name}");
+                let removed_app_name = response
+                    .strip_prefix("remove_app")
+                    .expect("Couldn't extract the removed app name");
+
+                println!("removed_app_name = {response}");
+                if my_name == removed_app_name {
+                    println!("We have been removed. Terminating now.");
+                    // Remove dedicated group names from server before terminating
+                    http_client.deregister(&livestream_group_name)?;
+                    http_client.deregister(&config_group_name)?;
+                    return Ok(true);
+                } else {
+                    println!("Another app has been removed. Updating epochs.");
+                    increment_epoch("motion_epoch");
+                    increment_epoch("thumbnail_epoch");
+                }
+            }
             Ok(response) => {
                 //invalid timestamp || invalid epoch
                 // FIXME: Before processing the heartbeat response, we should make sure all motion videos are fetched and processed.
@@ -390,7 +495,7 @@ fn heartbeat(
         ));
     }
 
-    Ok(())
+    Ok(false)
 }
 
 fn read_epoch(epoch_filename: &str) -> u64 {

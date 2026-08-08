@@ -14,6 +14,7 @@ use openmls_traits::random::OpenMlsRand;
 use openmls_traits::OpenMlsProvider;
 use rand::distr::Uniform;
 use rand::Rng;
+use rand::distr::Alphanumeric;
 #[cfg(feature = "http_client")]
 use crate::http_client::HttpClient;
 use log::{error, info};
@@ -30,6 +31,12 @@ const CAMERA_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const CAMERA_IO_TIMEOUT: Duration = Duration::from_secs(12);
 const CAMERA_CONNECT_RETRIES: usize = 3;
 const CAMERA_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(350);
+
+// Used to generate random names.
+// With 16 alphanumeric characters, the probability of collision is very low.
+// Note: even if collision happens, it has no impact on
+// our security guarantees. Will only cause availability issues.
+const NUM_RANDOM_CHARS_FOR_NAMES: u8 = 16;
 
 #[cfg(feature = "camera_secret_qrcode")]
 fn save_camera_secret_qrcode(path: &Path, content: &[u8]) -> anyhow::Result<()> {
@@ -533,4 +540,13 @@ fn connect_camera_stream(addr: &SocketAddr) -> io::Result<TcpStream> {
     }
 
     Err(last_error.unwrap_or_else(|| io::Error::other("camera connect failed")))
+}
+
+pub fn get_random_name() -> String {
+    let mut rng = rand::rng();
+    let name: String = (0..NUM_RANDOM_CHARS_FOR_NAMES)
+        .map(|_| rng.sample(Alphanumeric) as char)
+        .collect();
+
+    name
 }

@@ -32,7 +32,11 @@ const KEY_STORE_FILENAME: &str = "key_store";
 
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 pub struct Contact {
-    username: String,
+    // The contact name is only used to search through the contacts by a name.
+    // It is not used by the MLS protocol.
+    // We need it to be able to use a single name for all the MLS clients
+    // used by a single node (camera or app).
+    name: String,
     id: Vec<u8>,
     //FIXME: do we need to keep the key_package?
     key_package: KeyPackage,
@@ -139,7 +143,7 @@ impl MlsClient {
     /// user_credentials: the user credentials needed to authenticate with the server. Different from OpenMLS credentials.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        username: String,
+        id: String,
         first_time: bool,
         file_dir: String,
         tag: String,
@@ -164,7 +168,7 @@ impl MlsClient {
             identity: Identity::new(
                 CIPHERSUITE,
                 &crypto,
-                username.as_bytes(),
+                id.as_bytes(),
                 first_time,
                 file_dir.clone(),
                 tag.clone(),
@@ -669,7 +673,7 @@ impl MlsClient {
             .serialized_content()
             .to_vec();
         let contact = Contact {
-            username: name.to_string(),
+            name: name.to_string(),
             key_package,
             id: id.clone(),
             update_proposal: None,
@@ -807,6 +811,75 @@ impl MlsClient {
         }
 
         Ok(())
+    }
+
+    /// Get a member
+    fn find_member_index(name: String, group: &mut Group) -> io::Result<LeafNodeIndex> {
+        let id = group
+        .contacts
+        .iter()
+        .find(|contact| contact.name == name)
+        .map(|contact| contact.id.clone())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Error: Found no contact named {name}"),
+            )
+        })?;
+
+        let mls_group = &group.mls_group;
+        for Member {
+            index,
+            encryption_key: _,
+            signature_key: _,
+            credential,
+        } in mls_group.members()
+        {
+            let credential = BasicCredential::try_from(credential).unwrap();
+            if credential.identity() == id {
+                return Ok(index);
+            }
+        }
+        Err(io::Error::other("Unknown member".to_string()))
+    }
+
+    /// Remove a contact from the group.
+    pub fn remove(
+        &mut self,
+        contact_name: &str,
+    ) -> io::Result<Vec<u8>> {
+        let group = self.group.as_mut().unwrap();
+
+        // Get the client leaf index
+        let leaf_index = Self::find_member_index(contact_name.to_string(), group)?;
+
+        // Set AAD for the commit message
+        let group_aad = group.group_name.clone() + " AAD";
+        group.mls_group.set_aad(group_aad.as_bytes().to_vec());
+
+        // Remove operation on the mls group
+        let (commit, _welcome, _group_info) = group
+            .mls_group
+            .remove_members(
+                &self.provider,
+                &self.identity.signer,
+                &[leaf_index],
+            )
+            .map_err(|e| io::Error::other(format!("Failed to remove member from group - {e}")))?;
+
+        let mut msg_vec = Vec::new();
+        commit
+            .tls_serialize(&mut msg_vec)
+            .map_err(|e| io::Error::other(format!("tls_serialize for out_messages failed ({e})")))?;
+
+        // Process the removal on our end.
+        group
+            .mls_group
+            .merge_pending_commit(&self.provider)
+            .expect("error merging pending commit");
+
+        // Return the remove_message
+        Ok(msg_vec)
     }
 
     /// Get the current group epoch
@@ -1024,7 +1097,8 @@ impl MlsClient {
                 // It's determined empirically and is best-effort.
                 if !(staged_commit.add_proposals().next().is_none()
                     || staged_commit.add_proposals().collect::<Vec<_>>().len() == 1)
-                    || staged_commit.remove_proposals().next().is_some()
+                    || !(staged_commit.remove_proposals().next().is_none()
+                        || staged_commit.remove_proposals().collect::<Vec<_>>().len() == 1)
                     || !(staged_commit.update_proposals().next().is_none()
                         || staged_commit.update_proposals().collect::<Vec<_>>().len() <= num_apps_in_group)
                     || !(staged_commit.psk_proposals().next().is_none()
