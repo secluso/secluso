@@ -12,7 +12,7 @@ pub mod routes {
     const PARAM_CAMERA: &[&str] = &["camera"];
     const PARAM_CAMERA_FILENAME: &[&str] = &["camera", "filename"];
     const PARAM_CAMERA_FILENAME_COUNTER: &[&str] = &["camera", "filename", "counter"];
-    const PARAM_OP: &[&str] = &["op"];
+    const PARAM_MSG_TAG: &[&str] = &["msg_tag"];
 
     pub const ROUTE_PAIR: &str = "/pair";
     pub const ROUTE_UPLOAD: &str = "/<camera>/<filename>/<counter>";
@@ -35,8 +35,8 @@ pub mod routes {
     pub const ROUTE_FCM_CONFIG: &str = "/fcm_config";
     pub const ROUTE_STATUS: &str = "/status";
     pub const ROUTE_DEBUG_LOGS: &str = "/debug_logs";
-    pub const ROUTE_ADD_APP_CHECK: &str = "/add_app_check/<op>";
-    pub const ROUTE_ADD_APP_REQUEST: &str = "/add_app_request/<op>";
+    pub const ROUTE_RECEIVE_MSG: &str = "/receive_msg/<msg_tag>";
+    pub const ROUTE_SEND_MSG: &str = "/send_msg/<msg_tag>";
 
     pub const BASE_ROUTES: &[RouteSpec] = &[
         RouteSpec {
@@ -151,13 +151,13 @@ pub mod routes {
         },
         RouteSpec {
             method: HttpMethod::Get,
-            path: ROUTE_ADD_APP_CHECK,
-            params: PARAM_OP,
+            path: ROUTE_RECEIVE_MSG,
+            params: PARAM_MSG_TAG,
         },
         RouteSpec {
             method: HttpMethod::Post,
-            path: ROUTE_ADD_APP_REQUEST,
-            params: PARAM_OP,
+            path: ROUTE_SEND_MSG,
+            params: PARAM_MSG_TAG,
         },
     ];
 }

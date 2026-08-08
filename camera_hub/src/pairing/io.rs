@@ -1,12 +1,7 @@
 use std::fs::File;
-use std::{io, thread};
-use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
-use std::net::TcpStream;
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::time::Duration;
-use anyhow::anyhow;
 use rand::Rng;
-use secluso_client_lib::pairing::MAX_ALLOWED_MSG_LEN;
 use secluso_client_server_lib::auth::parse_user_credentials_full;
 
 // Used to generate random names.
@@ -82,69 +77,7 @@ pub fn get_names(
     Ok((camera_name, group_name))
 }
 
-// TODO: This is a duplicate of the code in app_native.
-pub(crate) fn write_varying_len(stream: &mut TcpStream, msg: &[u8]) -> io::Result<()> {
-    // FIXME: is u64 necessary?
-    let len = msg.len() as u64;
-    let len_data = len.to_be_bytes();
-
-    stream.write_all(&len_data)?;
-    stream.write_all(msg)?;
-    stream.flush()?;
-
-    Ok(())
-}
-
-// TODO: This is a duplicate of the code in app_native.
-pub(crate) fn read_varying_len(stream: &mut TcpStream) -> anyhow::Result<Vec<u8>> {
-    let mut len_data = [0u8; 8];
-
-    match stream.read_exact(&mut len_data) {
-        Ok(()) => {}
-        Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
-            return Err(anyhow!(io::Error::new(
-                ErrorKind::WouldBlock,
-                "Length read would block",
-            )))
-        }
-        Err(e) => return Err(anyhow!(e)),
-    }
-
-    let len = u64::from_be_bytes(len_data);
-
-    if len > MAX_ALLOWED_MSG_LEN {
-        error!("Communicated message length ({len}) exceeds the allowed length ({MAX_ALLOWED_MSG_LEN})");
-        return Err(anyhow!(io::Error::new(
-            ErrorKind::InvalidInput,
-            "Intended message length is too large",
-        )))
-    }
-
-    let mut msg = vec![0u8; usize::try_from(len)?];
-    let mut offset = 0;
-
-    while offset < msg.len() {
-        match stream.read(&mut msg[offset..]) {
-            Ok(0) => {
-                return Err(anyhow!(io::Error::new(
-                    ErrorKind::UnexpectedEof,
-                    "Socket closed during read",
-                )))
-            }
-            Ok(n) => {
-                offset += n;
-            }
-            Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
-                // retry a few times with a short delay
-                thread::sleep(Duration::from_millis(10));
-            }
-            Err(e) => return Err(anyhow!(e)),
-        }
-    }
-
-    Ok(msg)
-}
-
+#[cfg(any(feature = "raspberry", feature = "test"))]
 pub fn get_input_camera_secret() -> Vec<u8> {
     let pathname = match std::env::var("SECLUSO_USE_PROVISION").as_deref() {
         Ok("1") => "/provision/camera_secret",

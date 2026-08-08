@@ -16,7 +16,7 @@ use std::{
 };
 use bytes::Buf;
 
-use crate::raspberry_pi::rpi_camera::{Frame, FrameKind};
+use crate::mp4::mp4_camera::{Frame, FrameKind};
 use anyhow::anyhow;
 use bytes::BytesMut;
 use crossbeam_channel::Sender;

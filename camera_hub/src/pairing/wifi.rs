@@ -1,18 +1,18 @@
-//! Camera hub pairing
+//! Camera hub pairing over a WiFi hotspot
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
 use crate::notification_target::persist_notification_target;
 use crate::traits::Camera;
+use crate::pairing::flow::decrypt_msg;
 use secluso_client_lib::http_client::{HttpClient, PairingStatus};
 use secluso_client_lib::mls_client::MlsClient;
 use secluso_client_lib::mls_clients::{MlsClients, CONFIG};
+use secluso_client_lib::pairing::MessageTransport;
 use serde_json::Value;
 use std::fs;
-use std::fs::File;
 use std::io;
 use std::io::ErrorKind;
-use std::io::Write;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::process::Output;
 use std::process::{Command, Stdio};
@@ -32,35 +32,12 @@ pub fn get_input_wifi_password() -> String {
         .expect("Failed to read from \"wifi_password\" file. You can generate this in config tool")
 }
 
-fn decrypt_msg(mls_client: &mut MlsClient, msg: Vec<u8>) -> io::Result<Vec<u8>> {
-    let decrypted_msg = mls_client.decrypt(msg, true)?;
-    mls_client.save_group_state()?;
-
-    Ok(decrypted_msg)
-}
-
-pub(crate) fn receive_credentials_full(
-    stream: &mut TcpStream,
-    mls_client: &mut MlsClient,
-) -> anyhow::Result<()> {
-    let encrypted_msg = crate::pairing::io::read_varying_len(stream)?;
-    let credentials_full_bytes = decrypt_msg(mls_client, encrypted_msg)?;
-
-    // Write to file
-    let mut file = File::create("credentials_full").expect("Could not create file");
-    file.write_all(&credentials_full_bytes)?;
-    file.flush()?;
-    file.sync_all()?;
-
-    Ok(())
-}
-
 pub(crate) fn request_wifi_info(
-    stream: &mut TcpStream,
+    msg_transport: &mut dyn MessageTransport,
     mls_client: &mut MlsClient,
 ) -> anyhow::Result<(String, String, String)> {
     // Combine into one message to reduce risk of non-blocking errors
-    let wifi_msg = crate::pairing::io::read_varying_len(stream)?;
+    let wifi_msg = msg_transport.receive_msg("")?;
     let wifi_bytes = decrypt_msg(mls_client, wifi_msg)?;
 
     let payload_msg = String::from_utf8(wifi_bytes).expect("Invalid UTF-8 for WiFi message");
@@ -522,7 +499,7 @@ pub fn create_wifi_hotspot() {
 }
 
 pub(crate) fn attempt_wifi_pair(
-    stream: &mut TcpStream,
+    msg_transport: &mut dyn MessageTransport,
     mls_clients: &mut MlsClients,
     http_client: &HttpClient,
     camera: &dyn Camera,
@@ -530,7 +507,7 @@ pub(crate) fn attempt_wifi_pair(
 ) -> (bool, bool) {
     let mut changed_wifi = false;
     debug!("[Pairing] Before request wifi info");
-    match request_wifi_info(stream, &mut mls_clients[CONFIG]) {
+    match request_wifi_info(msg_transport, &mut mls_clients[CONFIG]) {
         Ok((ssid, password, pairing_token)) => {
             match attempt_wifi_connection(&ssid, &password, server_addr) {
                 Ok(()) => {

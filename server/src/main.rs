@@ -103,8 +103,8 @@ struct PairingEntry {
     expired: bool,
 }
 
-// Add App Structures
-struct AddAppEntry {
+// Relay message mailbox.
+struct RelayMsgEntry {
     payload: AsyncMutex<Option<Vec<u8>>>,
     notify: Notify,
 }
@@ -112,8 +112,8 @@ struct AddAppEntry {
 type PairingSessionKey = (String, String);
 type SharedPairingState = Arc<Mutex<HashMap<PairingSessionKey, Arc<Mutex<PairingEntry>>>>>;
 type AllEventState = Arc<DashMap<String, EventState>>;
-type AddAppKey = (String, String);
-type SharedAddAppState = Arc<DashMap<AddAppKey, Arc<AddAppEntry>>>;
+type RelayMsgKey = (String, String);
+type SharedRelayMsgState = Arc<DashMap<RelayMsgKey, Arc<RelayMsgEntry>>>;
 
 // Simple rate limiters for the server
 const MAX_MOTION_FILE_SIZE: usize = 50; // in mebibytes
@@ -121,13 +121,13 @@ const MAX_NUM_PENDING_MOTION_FILES: usize = 100;
 const MAX_LIVESTREAM_FILE_SIZE: usize = 20; // in mebibytes
 const MAX_NUM_PENDING_LIVESTREAM_FILES: usize = 50;
 const MAX_COMMAND_FILE_SIZE: usize = 100; // in kibibytes
-const MAX_ADD_APP_REQUEST_SIZE: usize = 100; // in kibibytes
+const MAX_RELAY_MSG_SIZE: usize = 100; // in kibibytes
 const MAX_JSON_SIZE: usize = 10; // in kibibytes
 #[cfg(not(test))]
 const PAIRING_SESSION_TIMEOUT: Duration = Duration::from_secs(45);
 #[cfg(test)]
 const PAIRING_SESSION_TIMEOUT: Duration = Duration::from_millis(250);
-const ADD_APP_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
+const RECEIVE_MSG_TIMEOUT: Duration = Duration::from_secs(45);
 
 async fn get_num_files(path: &Path) -> io::Result<usize> {
     let mut entries = fs::read_dir(path).await?;
@@ -1218,66 +1218,71 @@ async fn upload_debug_logs(data: Data<'_>, auth: &BasicAuth) -> io::Result<Strin
     Ok("ok".to_string())
 }
 
-#[get("/add_app_check/<op>")]
-async fn add_app_check(
-    op: &str,
+fn new_relay_msg_entry() -> Arc<RelayMsgEntry> {
+    Arc::new(RelayMsgEntry {
+        payload: AsyncMutex::new(None),
+        notify: Notify::new(),
+    })
+}
+
+#[get("/receive_msg/<msg_tag>")]
+async fn receive_msg(
+    msg_tag: &str,
     auth: &BasicAuth,
-    state: &rocket::State<SharedAddAppState>,
+    state: &rocket::State<SharedRelayMsgState>,
 ) -> Result<Vec<u8>, Custom<String>> {
-    if op.is_empty() || op.contains('"') {
-        debug!("[ADD_APP_CHECK] Invalid op (empty or contains quote character: {})", op);
-        return Err(Custom(Status::BadRequest, "invalid op".to_string()));
+    if msg_tag.is_empty() || msg_tag.contains('"') {
+        debug!(
+            "[RECEIVE_MSG] Invalid msg_tag (empty or contains quote character: {})",
+            msg_tag
+        );
+        return Err(Custom(Status::BadRequest, "invalid msg_tag".to_string()));
     }
 
-    let key = (auth.username.clone(), op.to_string());
+    let key = (auth.username.clone(), msg_tag.to_string());
+
     let entry = state
-        .entry(key.clone())
-        .or_insert_with(|| {
-            Arc::new(AddAppEntry {
-                payload: AsyncMutex::new(None),
-                notify: Notify::new(),
-            })
-        })
+        .entry(key)
+        .or_insert_with(new_relay_msg_entry)
         .clone();
 
-    let result = timeout(ADD_APP_REQUEST_TIMEOUT, async {
+    let result = timeout(RECEIVE_MSG_TIMEOUT, async {
         loop {
             let notified = entry.notify.notified();
+
             if let Some(payload) = entry.payload.lock().await.take() {
                 return payload;
             }
+
             notified.await;
         }
     })
     .await;
 
-    state.remove(&key);
     result.map_err(|_| Custom(Status::RequestTimeout, "request timed out".to_string()))
 }
 
-#[post("/add_app_request/<op>", data = "<data>")]
-async fn add_app_request(
-    op: &str,
+#[post("/send_msg/<msg_tag>", data = "<data>")]
+async fn send_msg(
+    msg_tag: &str,
     data: Data<'_>,
     auth: &BasicAuth,
-    state: &rocket::State<SharedAddAppState>,
+    state: &rocket::State<SharedRelayMsgState>,
 ) -> Result<String, Custom<String>> {
-    if op.is_empty() || op.contains('"') {
-        debug!("[ADD_APP_REQUEST] Invalid op (empty or contains quote character: {})", op);
-        return Err(Custom(Status::BadRequest, "invalid op".to_string()));
+    if msg_tag.is_empty() || msg_tag.contains('"') {
+        debug!(
+            "[SEND_MSG] Invalid msg_tag (empty or contains quote character: {})",
+            msg_tag
+        );
+        return Err(Custom(Status::BadRequest, "invalid msg_tag".to_string()));
     }
 
-    let key = (auth.username.clone(), op.to_string());
-    let entry = state
-        .get(&key)
-        .map(|entry| entry.value().clone())
-        .ok_or_else(|| Custom(Status::NotFound, "no app is waiting for this op".to_string()))?;
-
     let payload = data
-        .open(MAX_ADD_APP_REQUEST_SIZE.kibibytes())
+        .open(MAX_RELAY_MSG_SIZE.kibibytes())
         .into_bytes()
         .await
         .map_err(|error| Custom(Status::BadRequest, error.to_string()))?;
+
     if !payload.is_complete() {
         return Err(Custom(
             Status::PayloadTooLarge,
@@ -1285,15 +1290,20 @@ async fn add_app_request(
         ));
     }
 
-    let mut pending_payload = entry.payload.lock().await;
-    if pending_payload.is_some() {
-        return Err(Custom(
-            Status::Conflict,
-            "a request is already pending for this op".to_string(),
-        ));
+    let key = (auth.username.clone(), msg_tag.to_string());
+
+    let entry = state
+        .entry(key)
+        .or_insert_with(new_relay_msg_entry)
+        .clone();
+
+    {
+        let mut pending_payload = entry.payload.lock().await;
+
+        // Overwrite any existing message for this user/msg_tag.
+        *pending_payload = Some(payload.into_inner());
     }
-    *pending_payload = Some(payload.into_inner());
-    drop(pending_payload);
+
     entry.notify.notify_one();
 
     Ok("ok".to_string())
@@ -1307,7 +1317,7 @@ fn rocket() -> rocket::Rocket<rocket::Build> {
 pub fn build_rocket() -> rocket::Rocket<rocket::Build> {
     let all_event_state: AllEventState = Arc::new(DashMap::new());
     let pairing_state: SharedPairingState = Arc::new(Mutex::new(HashMap::new()));
-    let add_app_state: SharedAddAppState = Arc::new(DashMap::new());
+    let relay_msg_state: SharedRelayMsgState = Arc::new(DashMap::new());
     let failure_store: FailStore = Arc::new(DashMap::new());
 
     let mut network_type: Option<String> = None;
@@ -1391,7 +1401,7 @@ pub fn build_rocket() -> rocket::Rocket<rocket::Build> {
         .manage(pairing_state)
         .manage(fcm_config)
         .manage(notification_target_policy)
-        .manage(add_app_state)
+        .manage(relay_msg_state)
         .mount(
             "/",
             routes![
@@ -1417,8 +1427,8 @@ pub fn build_rocket() -> rocket::Rocket<rocket::Build> {
                 upload_debug_logs,
                 retrieve_fcm_data,
                 retrieve_server_status,
-                add_app_check,
-                add_app_request,
+                receive_msg,
+                send_msg,
             ],
         )
 }

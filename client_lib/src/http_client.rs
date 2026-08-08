@@ -22,7 +22,7 @@ const MAX_COMMAND_FILE_SIZE: u64 = 100 * 1024; // 100 kibibytes
 const MAX_CHECK_RESP_SIZE: u64 = 20 * 1024; // 20 kibibytes
 const MAX_NOTIFICATION_TARGET_SIZE: u64 = 10 * 1024; // 10 kibibytes
 const IOS_NOTIFICATION_RESP_MAX_SIZE: u64 = 10 * 1024; // 10 kibibytes
-const MAX_ADD_APP_REQUEST_SIZE: u64 = 100 * 1024; // 100 kibibytes
+const MAX_RELAY_MSG_SIZE: u64 = 100 * 1024; // 100 kibibytes
 
 #[derive(Clone)]
 pub struct HttpClient {
@@ -903,10 +903,10 @@ impl HttpClient {
         Ok(response_vec)
     }
 
-    pub fn add_app_check(&self, op: &str) -> io::Result<Vec<u8>> {
-        let max_size = MAX_ADD_APP_REQUEST_SIZE;
+    pub fn receive_msg(&self, msg_tag: &str) -> io::Result<Vec<u8>> {
+        let max_size = MAX_RELAY_MSG_SIZE;
 
-        let server_url = format!("{}/add_app_check/{}", self.server_addr, op);
+        let server_url = format!("{}/receive_msg/{}", self.server_addr, msg_tag);
 
         let client = Client::builder()
             .timeout(None)
@@ -917,9 +917,16 @@ impl HttpClient {
             .get(&server_url))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-
+        
         if response.status() == StatusCode::CONFLICT {
             Self::give_hint_to_updater();
+        }
+
+        if response.status() == StatusCode::REQUEST_TIMEOUT {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Server error: timeout",
+            ));
         }
 
         if !response.status().is_success() {
@@ -936,15 +943,15 @@ impl HttpClient {
         if data.len() >= max_size as usize {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
-                "Add app request exceeded maximum allowed size",
+                "Relay message exceeded maximum allowed size",
             ));
         }
 
         Ok(data)
     }
 
-    pub fn add_app_request(&self, op: &str, data: Vec<u8>) -> io::Result<()> {
-        let server_url = format!("{}/add_app_request/{}", self.server_addr, op);
+    pub fn send_msg(&self, msg_tag: &str, data: Vec<u8>) -> io::Result<()> {
+        let server_url = format!("{}/send_msg/{}", self.server_addr, msg_tag);
 
         let client = Client::new();
         let response = self.authorized_headers(client

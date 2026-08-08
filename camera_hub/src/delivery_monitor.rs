@@ -29,14 +29,6 @@ impl VideoInfo {
         }
     }
 
-    pub fn from(timestamp: u64) -> Self {
-        Self {
-            timestamp,
-            filename: Self::get_filename_from_timestamp(timestamp),
-            epoch: 0,
-        }
-    }
-
     pub fn get_filename_from_timestamp(timestamp: u64) -> String {
         "video_".to_owned() + &timestamp.to_string() + ".mp4"
     }

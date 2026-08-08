@@ -120,6 +120,7 @@ fn main() -> io::Result<()> {
                 "".to_string(),
                 "".to_string(),
                 credentials_full_string,
+                false,
             )
         } else {
             println!("Sending the add_app request");
@@ -128,9 +129,9 @@ fn main() -> io::Result<()> {
             let key_packages_vec = get_key_packages(&mut clients.lock().unwrap())?;
 
             println!("About to send add_app request");
-            http_client.add_app_request("test_add_app_request_token", key_packages_vec)?;
+            http_client.send_msg("test_add_app_request_token", key_packages_vec)?;
             println!("About to wait for add_app response");
-            let new_app_data_vec = http_client.add_app_check("test_add_app_response_token")?;
+            let new_app_data_vec = http_client.receive_msg("test_add_app_response_token")?;
             println!("Received add_app response");
 
             let epochs: [u64; NUM_MLS_CLIENTS] = join_camera_groups(
@@ -169,7 +170,7 @@ fn main() -> io::Result<()> {
 
         thread::spawn(move || loop {
             println!("About to wait for add_app request");
-            match http_client_clone.add_app_check("test_add_app_request_token") {
+            match http_client_clone.receive_msg("test_add_app_request_token") {
                 Ok(data) => {
                     println!("Received add_app request.");
                     let mut data_opt = add_app_request_clone.lock().unwrap();
@@ -294,7 +295,7 @@ fn handle_add_app_request(
     increment_epoch("motion_epoch");
     increment_epoch("thumbnail_epoch");
 
-    http_client.add_app_request("test_add_app_response_token", new_app_data_vec)?;
+    http_client.send_msg("test_add_app_response_token", new_app_data_vec)?;
 
     Ok(())
 }
