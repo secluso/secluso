@@ -10,6 +10,7 @@ use secluso_client_lib::mls_clients::{
     THUMBNAIL, LIVESTREAM_DED, CONFIG_DED,
     MlsClientsCommon, MlsClientsDedicated,
 };
+use secluso_client_lib::notification::{generate_notification, Notification};
 use secluso_client_lib::thumbnail_meta_info::ThumbnailMetaInfo;
 use std::fs;
 use std::fs::File;
@@ -79,6 +80,14 @@ const VERSION_FILE: &str = "/var/lib/secluso/current_version/raspberry_camera_hu
 const VERSION_DIR: &str = "current_version";
 #[cfg(feature = "android")]
 const VERSION_FILE: &str = "current_version/android_camera_hub";
+
+const PRIMARY_APP_ID: usize = 0;
+// Technically, we can support an arbitrary number of secondary apps.
+// However, it's best to enforce a reasonable upper bound here.
+// Each secondary app required dedicated threads and too many of them
+// can impact our performance.
+// Note: we have a copy of this upper bound in the server too.
+const MAX_SECONDARY_APPS: usize = 6;
 
 // A counter representing the amount of active camera threads
 static GLOBAL_THREAD_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -560,6 +569,79 @@ fn split_clients(clients: MlsClients) -> (MlsClientsCommon, MlsClientsDedicated)
     ([c0, c1, c2], [d0, d1])
 }
 
+fn spawn_dedicated_check_threads(
+    app_id: usize,
+    clients_ded: &MlsClientsDedicated,
+    http_client: &HttpClient,
+    livestream_requests: Arc<Mutex<Vec<usize>>>,
+    config_enc_commands: Arc<Mutex<Vec<(Vec<u8>, usize)>>>,
+    worker_handles: &mut Vec<std::thread::JoinHandle<()>>,
+) -> anyhow::Result<()> {
+    let group_livestream_name = clients_ded[LIVESTREAM_DED].get_group_name()?;
+    let group_config_name = clients_ded[CONFIG_DED].get_group_name()?;
+
+    #[cfg(any(feature = "android", feature = "test"))]
+    {
+        register_stop_waiter(StopWaiter::Livestream {
+            http_client: http_client.clone(),
+            group_name: group_livestream_name.clone(),
+        });
+        register_stop_waiter(StopWaiter::Config {
+            http_client: http_client.clone(),
+            group_name: group_config_name.clone(),
+        });
+    }
+
+    let http_client_livestream = http_client.clone();
+
+    worker_handles.push(thread::spawn(move || loop {
+        if http_client_livestream
+            .livestream_check(&group_livestream_name)
+            .is_ok()
+        {
+            #[cfg(any(feature = "android", feature = "test"))]
+            if STOP_REQUESTED.load(Ordering::SeqCst) {
+                break;
+            }
+
+            println!("Livestream{} detected", app_id + 1);
+            let mut requests = livestream_requests.lock().unwrap();
+            requests.push(app_id);
+        } else {
+            #[cfg(any(feature = "android", feature = "test"))]
+            if STOP_REQUESTED.load(Ordering::SeqCst) {
+                break;
+            }
+
+            sleep(Duration::from_secs(1));
+        }
+    }));
+
+    let http_client_config = http_client.clone();
+
+    worker_handles.push(thread::spawn(move || loop {
+        if let Ok(enc_command) = http_client_config.config_check(&group_config_name) {
+            #[cfg(any(feature = "android", feature = "test"))]
+            if STOP_REQUESTED.load(Ordering::SeqCst) {
+                break;
+            }
+
+            let mut config_enc_commands = config_enc_commands.lock().unwrap();
+            config_enc_commands.push((enc_command, app_id));
+        } else {
+            #[cfg(any(feature = "android", feature = "test"))]
+            if STOP_REQUESTED.load(Ordering::SeqCst) {
+                break;
+            }
+
+            error!("Error in receiving config command");
+            sleep(Duration::from_secs(1));
+        }
+    }));
+
+    Ok(())
+}
+
 fn core(
     camera: &mut dyn Camera,
     input_camera_secret: Option<Vec<u8>>,
@@ -604,70 +686,20 @@ fn core(
     let thumbnail_dir = camera.get_thumbnail_dir();
     let mut delivery_monitor =
         DeliveryMonitor::from_file_or_new(video_dir, thumbnail_dir, state_dir.clone());
-    let livestream_request = Arc::new(Mutex::new((false, true)));
-    let livestream_request_clone = Arc::clone(&livestream_request);
-    let group_livestream_name_clone = clients_ded_primary[LIVESTREAM_DED].get_group_name().unwrap();
-    let http_client_clone = http_client.clone();
-    let group_config_name_clone = clients_ded_primary[CONFIG_DED].get_group_name().unwrap();
-    let http_client_clone_2 = http_client.clone();
-    let config_enc_commands: Arc<Mutex<Vec<(Vec<u8>, bool)>>> = Arc::new(Mutex::new(vec![]));
-    let config_enc_commands_clone = Arc::clone(&config_enc_commands);
-    let clients_ded_secondary: Arc<Mutex<Option<MlsClientsDedicated>>> = Arc::new(Mutex::new(None));
-
-    #[cfg(any(feature = "android", feature = "test"))]
-    {
-        register_stop_waiter(StopWaiter::Livestream {
-            http_client: http_client_clone.clone(),
-            group_name: group_livestream_name_clone.clone(),
-        });
-        register_stop_waiter(StopWaiter::Config {
-            http_client: http_client_clone_2.clone(),
-            group_name: group_config_name_clone.clone(),
-        });
-    }
+    let livestream_requests: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(vec![]));
+    let config_enc_commands: Arc<Mutex<Vec<(Vec<u8>, usize)>>> = Arc::new(Mutex::new(vec![]));
+    let mut clients_ded_secondary: Vec<MlsClientsDedicated> = Vec::new();
 
     let mut worker_handles = vec![];
 
-    worker_handles.push(thread::spawn(move || loop {
-        if http_client_clone
-            .livestream_check(&group_livestream_name_clone)
-            .is_ok()
-        {
-            #[cfg(any(feature = "android", feature = "test"))]
-            if STOP_REQUESTED.load(Ordering::SeqCst) {
-                break;
-            }
-
-            println!("Livestream1 detected");
-            let mut check = livestream_request_clone.lock().unwrap();
-            *check = (true, true);  // second true -> livestream command from the primary app
-        } else {
-            #[cfg(any(feature = "android", feature = "test"))]
-            if STOP_REQUESTED.load(Ordering::SeqCst) {
-                break;
-            }
-            sleep(Duration::from_secs(1));
-        }
-    }));
-
-    worker_handles.push(thread::spawn(move || loop {
-        if let Ok(enc_command) = http_client_clone_2.config_check(&group_config_name_clone) {
-            #[cfg(any(feature = "android", feature = "test"))]
-            if STOP_REQUESTED.load(Ordering::SeqCst) {
-                break;
-            }
-
-            let mut config_enc_commands = config_enc_commands_clone.lock().unwrap();
-            config_enc_commands.push((enc_command, true)); // true -> config command from the primary app
-        } else {
-            #[cfg(any(feature = "android", feature = "test"))]
-            if STOP_REQUESTED.load(Ordering::SeqCst) {
-                break;
-            }
-            error!("Error in receiving config command");
-            sleep(Duration::from_secs(1));
-        }
-    }));
+    spawn_dedicated_check_threads(
+        PRIMARY_APP_ID,
+        &clients_ded_primary,
+        &http_client,
+        Arc::clone(&livestream_requests),
+        Arc::clone(&config_enc_commands),
+        &mut worker_handles,
+    )?;
 
     #[cfg(feature = "test")]
     let mut num_iters = 0usize;
@@ -697,12 +729,7 @@ fn core(
             let motion_timestamp = video_info.timestamp;
             println!("Detected motion.");
 
-            let clients_ded_sec_opt = clients_ded_secondary.lock().unwrap();
-            let num_apps = if clients_ded_sec_opt.is_some() {
-                2
-            } else {
-                1
-            };
+            let num_apps = 1 + clients_ded_secondary.len();
 
             // We send the thumbnail BEFORE the FCM notification, to ensure that when the mobile app receives it, it can download it.
             if let Some(thumbnail_image) = motion_event.thumbnail {
@@ -733,14 +760,11 @@ fn core(
 
             let state_dir_ref = state_dir.as_str();
             info!("Sending the motion notification with timestamp.");
-            let notification_msg =
-                clients_com[FCM].encrypt(&bincode::serialize(&motion_timestamp).unwrap())?;
+            let notification = generate_notification(Notification::NewVideo(motion_timestamp))?;
+            let notification_msg = clients_com[FCM].encrypt(&notification)?;
             clients_com[FCM].save_group_state().unwrap();
-            match send_notification(state_dir_ref, &http_client, notification_msg) {
-                Ok(_) => {}
-                Err(e) => {
-                    error!("Failed to send motion notification ({})", e);
-                }
+            if let Err(e) = send_notification(state_dir_ref, &http_client, notification_msg) {
+                error!("Failed to send motion notification ({})", e);
             }
 
             info!("Starting to record, prepare, and encrypt video.");
@@ -768,15 +792,11 @@ fn core(
                 "Sending the post-upload notification to start downloading over {}.",
                 platform_label
             );
-            let notification_timestamp: u64 = 0;
-            let notification_msg = clients_com[FCM]
-                .encrypt(&bincode::serialize(&notification_timestamp).unwrap())?;
+            let notification = generate_notification(Notification::Download)?;
+            let notification_msg = clients_com[FCM].encrypt(&notification)?;
             clients_com[FCM].save_group_state().unwrap();
-            match send_notification(state_dir_ref, &http_client, notification_msg) {
-                Ok(_) => {}
-                Err(e) => {
-                    error!("Failed to send motion notification ({})", e);
-                }
+            if let Err(e) = send_notification(state_dir_ref, &http_client, notification_msg) {
+                error!("Failed to send download notification ({})", e);
             }
 
             locked_motion_check_time = Some(Instant::now().add(Duration::from_secs(60)));
@@ -788,29 +808,28 @@ fn core(
             || locked_livestream_check_time.unwrap().le(&Instant::now())
         {
             // Livestream request? Start it.
-            let mut check = livestream_request.lock().unwrap();
-            let primary_app = check.1;
-            if check.0 {
+            let requested_app_ids = {
+                let mut requests = livestream_requests.lock().unwrap();
+                std::mem::take(&mut *requests)
+            };
+
+            for app_id in requested_app_ids {
                 info!("Livestream start detected");
-                *check = (false, false);
-                if primary_app {
+                if app_id == PRIMARY_APP_ID {
                     livestream(
                         &mut clients_ded_primary[LIVESTREAM_DED],
                         camera,
                         &mut delivery_monitor,
                         &http_client,
                     )?;
-                } else {
-                    let mut clients_ded_sec_opt = clients_ded_secondary.lock().unwrap();
-                    if let Some(ref mut clients_ded_sec) = *clients_ded_sec_opt { // Should always be the case if we get here
-                        livestream(
-                            &mut clients_ded_sec[LIVESTREAM_DED],
-                            camera,
-                            // FIXME: delivery_monitor should use a separate queue for app2
-                            &mut delivery_monitor,
-                            &http_client,
-                        )?;
-                    }
+                } else if let Some(clients_ded_sec) = clients_ded_secondary.get_mut(app_id - 1) {
+                    livestream(
+                        &mut clients_ded_sec[LIVESTREAM_DED],
+                        camera,
+                        // FIXME: delivery_monitor should use a separate queue for secondary apps
+                        &mut delivery_monitor,
+                        &http_client,
+                    )?;
                 }
             }
 
@@ -821,12 +840,7 @@ fn core(
         if locked_delivery_check_time.is_none()
             || locked_delivery_check_time.unwrap().le(&Instant::now())
         {
-            let clients_ded_sec_opt = clients_ded_secondary.lock().unwrap();
-            let num_apps = if clients_ded_sec_opt.is_some() {
-                2
-            } else {
-                1
-            };
+            let num_apps = 1 + clients_ded_secondary.len();
 
             if upload_pending_enc_videos(
                 &clients_com[MOTION].get_group_name().unwrap(),
@@ -865,107 +879,82 @@ fn core(
         if locked_config_check_time.is_none()
             || locked_config_check_time.unwrap().le(&Instant::now())
         {
-            let mut enc_commands = config_enc_commands.lock().unwrap();
-            for enc_command in &*enc_commands {
-                let primary_app = enc_command.1;
+            let enc_commands_to_process = {
+                let mut enc_commands = config_enc_commands.lock().unwrap();
+                std::mem::take(&mut *enc_commands)
+            };
 
-                if primary_app {
+            for (enc_command, app_id) in enc_commands_to_process {
+                if app_id == PRIMARY_APP_ID {
                     println!("About to call process_config_command for primary app");
-                    let mut clients_ded_sec_opt = clients_ded_secondary.lock().unwrap();
+                    let has_existing_secondary_apps = !clients_ded_secondary.is_empty();
+                    let secondary_app_limit_reached =
+                        clients_ded_secondary.len() >= MAX_SECONDARY_APPS;
+                    let next_secondary_app_number = clients_ded_secondary.len() + 2;
+
+                    // Why do we generate this notification here, before we even process
+                    // the config command (which might or might not be an add_app request)?
+                    // This notification is used in case of an add_app request. Its goal is
+                    // to let other secondary phones know that there are some MLS updates
+                    // that they need to download. Notifications use the FCM MLS channel for
+                    // encryption. If we generate it after the config command is processed,
+                    // it will be encrypted in the new FCM MLS epoch and those secondary
+                    // apps won't be able to decrypt it. Therefore, we generate it here
+                    // and use it (if needed) later.
+                    let notification = generate_notification(Notification::NewInfo)?;
+                    let notification_msg = clients_com[FCM].encrypt(&notification)?;
+                    clients_com[FCM].save_group_state().unwrap();
+
                     let process_ret = process_config_command(
                         &mut clients_com,
                         &mut clients_ded_primary,
-                        &enc_command.0,
+                        &enc_command,
                         &http_client,
                         // TODO: We only keep track of video delivery to the primary app for now.
                         Some(&mut delivery_monitor),
                         true,
-                        clients_ded_sec_opt.is_some(),
+                        secondary_app_limit_reached,
+                        Some(next_secondary_app_number),
+                        Some(&mut clients_ded_secondary),
                     )?;
 
-                    if clients_ded_sec_opt.is_none() {
-                        *clients_ded_sec_opt = process_ret;
-
-                        if let Some(ref clients_ded_sec) = *clients_ded_sec_opt {
-                            println!("Launching threads for the second app.");
-                            let group_livestream2_name_clone = clients_ded_sec[LIVESTREAM_DED].get_group_name()?;
-                            let livestream_request_clone_2 = Arc::clone(&livestream_request);
-                            let http_client_clone_3 = http_client.clone();
-                            let group_config2_name_clone = clients_ded_sec[CONFIG_DED].get_group_name()?;
-                            let http_client_clone_4 = http_client.clone();
-                            let config_enc_commands_clone_2 = Arc::clone(&config_enc_commands);
-
-                            #[cfg(any(feature = "android", feature = "test"))]
-                            {
-                                register_stop_waiter(StopWaiter::Livestream {
-                                    http_client: http_client_clone_3.clone(),
-                                    group_name: group_livestream2_name_clone.clone(),
-                                });
-                                register_stop_waiter(StopWaiter::Config {
-                                    http_client: http_client_clone_4.clone(),
-                                    group_name: group_config2_name_clone.clone(),
-                                });
+                    if let Some(clients_ded_sec) = process_ret {
+                        if has_existing_secondary_apps {
+                            info!("Sending new app information notification.");
+                            if let Err(e) = send_notification(state_dir.as_str(), &http_client, notification_msg) {
+                                error!("Failed to send new app information notification ({})", e);
                             }
-
-                            worker_handles.push(thread::spawn(move || loop {
-                                if http_client_clone_3
-                                    .livestream_check(&group_livestream2_name_clone)
-                                    .is_ok()
-                                {
-                                    #[cfg(any(feature = "android", feature = "test"))]
-                                    if STOP_REQUESTED.load(Ordering::SeqCst) {
-                                        break;
-                                    }
-
-                                    println!("Livestream2 detected");
-                                    let mut check = livestream_request_clone_2.lock().unwrap();
-                                    *check = (true, false); // false -> livestream command from the secondary app
-                                } else {
-                                    #[cfg(any(feature = "android", feature = "test"))]
-                                    if STOP_REQUESTED.load(Ordering::SeqCst) {
-                                        break;
-                                    }
-                                    sleep(Duration::from_secs(1));
-                                }
-                            }));
-
-                            worker_handles.push(thread::spawn(move || loop {
-                                if let Ok(enc_command) = http_client_clone_4.config_check(&group_config2_name_clone) {
-                                    #[cfg(any(feature = "android", feature = "test"))]
-                                    if STOP_REQUESTED.load(Ordering::SeqCst) {
-                                        break;
-                                    }
-
-                                    let mut config_enc_commands = config_enc_commands_clone_2.lock().unwrap();
-                                    config_enc_commands.push((enc_command, false)); // false -> config command from the secondary app
-                                } else {
-                                    #[cfg(any(feature = "android", feature = "test"))]
-                                    if STOP_REQUESTED.load(Ordering::SeqCst) {
-                                        break;
-                                    }
-                                    error!("Error in receiving config command");
-                                    sleep(Duration::from_secs(1));
-                                }
-                            }));
                         }
-                    }
-                } else {
-                    println!("About to call process_config_command for secondary app");
-                    let mut clients_ded_sec_opt = clients_ded_secondary.lock().unwrap();
-                    if let Some(ref mut clients_ded_sec) = *clients_ded_sec_opt {
-                        let _ = process_config_command(
-                            &mut clients_com,
-                            clients_ded_sec, // Will not be None if we get here
-                            &enc_command.0,
+
+                        let app_id = clients_ded_secondary.len() + 1;
+                        println!("Launching threads for app {}.", app_id + 1);
+                        spawn_dedicated_check_threads(
+                            app_id,
+                            &clients_ded_sec,
                             &http_client,
-                            None,
-                            false,
-                            true,
+                            Arc::clone(&livestream_requests),
+                            Arc::clone(&config_enc_commands),
+                            &mut worker_handles,
                         )?;
+                        clients_ded_secondary.push(clients_ded_sec);
                     }
+                } else if let Some(clients_ded_sec) = clients_ded_secondary.get_mut(app_id - 1) {
+                    println!("About to call process_config_command for secondary app");
+                    let _ = process_config_command(
+                        &mut clients_com,
+                        clients_ded_sec,
+                        &enc_command,
+                        &http_client,
+                        None,
+                        false,
+                        true,
+                        None,
+                        None,
+                    )?;
+                } else {
+                    error!("Ignoring config command for unknown app id {}", app_id);
                 }
             }
-            enc_commands.clear();
             locked_config_check_time = Some(Instant::now().add(Duration::from_secs(1)));
         }
 

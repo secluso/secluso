@@ -315,65 +315,79 @@ fn heartbeat(
     let config_group_name = get_group_name(&mut clients.lock().unwrap(), "config")?;
 
     println!("Sending heartbeat request: {}", timestamp);
+
     http_client.config_command(&config_group_name, config_msg_enc)?;
 
-    let mut config_response_opt: Option<Vec<u8>> = None;
+    let mut received_heartbeat: bool = false;
     for _i in 0..30 {
         println!("Attempt {_i}");
         thread::sleep(Duration::from_secs(2));
         // We want to fetch all pending videos and thumbnails before checking for the heartbeat response.
         let _ = fetch_motion_videos(Arc::clone(&clients), http_client);
         let _ = fetch_thumbnails(Arc::clone(&clients), http_client);
+        let mut config_response_opt: Option<Vec<u8>> = None;
         match http_client.fetch_config_response(&config_group_name) {
             Ok(resp) => {
                 config_response_opt = Some(resp);
-                break;
             }
             Err(_) => {}
         }
+
+        if config_response_opt.is_none() {
+            continue;
+        }
+
+        let config_response = config_response_opt.unwrap();
+
+        println!("About to call process_heartbeat_config");
+        match process_heartbeat_config_response(
+            &mut clients.lock().unwrap(),
+            config_response.clone(),
+            timestamp,
+        ) {
+            Ok(response) if response.contains("\"status\":\"healthy\"") => {
+                println!("Healthy heartbeat");
+                println!("{response}");
+                received_heartbeat = true;
+                break;
+            }
+            Ok(response) if response.contains("\"status\":\"invalid ciphertext\"") => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("The connection to the camera is corrupted. Pair the app with the camera again."),
+                ));
+            }
+            Ok(response) if response.contains("add_app") => {
+                println!("Received and processed the new add_app commit.");
+                println!("{response}");
+                increment_epoch("motion_epoch");
+                increment_epoch("thumbnail_epoch");
+            }
+            Ok(response) => {
+                //invalid timestamp || invalid epoch
+                // FIXME: Before processing the heartbeat response, we should make sure all motion videos are fetched and processed.
+                // But we're not doing that here, therefore an "invalid epoch" might not mean a corrupted channel.
+                println!("{response}");
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("The connection to the camera might have got corrupted. Consider pairing the app with the camera again."),
+                ));
+            }
+            Err(e) => {
+                println!("Error processing heartbeat response {e}");
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("The connection to the camera might have got corrupted. Consider pairing the app with the camera again."),
+                ));
+            }
+        }
     }
 
-    if config_response_opt.is_none() {
+    if !received_heartbeat {
         return Err(io::Error::new(
             io::ErrorKind::Other,
             format!("Error: couldn't fetch the heartbeat response. Camera might be offline."),
         ));
-    }
-
-    let config_response = config_response_opt.unwrap();
-
-    match process_heartbeat_config_response(
-        &mut clients.lock().unwrap(),
-        config_response.clone(),
-        timestamp,
-    ) {
-        Ok(response) if response.contains("\"status\":\"healthy\"") => {
-            println!("Healthy heartbeat");
-            println!("{response}");
-        }
-        Ok(response) if response.contains("\"status\":\"invalid ciphertext\"") => {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("The connection to the camera is corrupted. Pair the app with the camera again."),
-            ));
-        }
-        Ok(response) => {
-            //invalid timestamp || invalid epoch
-            // FIXME: Before processing the heartbeat response, we should make sure all motion videos are fetched and processed.
-            // But we're not doing that here, therefore an "invalid epoch" might not mean a corrupted channel.
-            println!("{response}");
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("The connection to the camera might have got corrupted. Consider pairing the app with the camera again."),
-            ));
-        }
-        Err(e) => {
-            println!("Error processing heartbeat response {e}");
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("The connection to the camera might have got corrupted. Consider pairing the app with the camera again."),
-            ));
-        }
     }
 
     Ok(())
@@ -415,7 +429,8 @@ fn fetch_motion_videos(
     http_client: &HttpClient,
 ) -> io::Result<()> {
     let mut clients_locked = clients.lock().unwrap();
-    let mut epoch = read_epoch("motion_epoch");    
+    let mut epoch = read_epoch("motion_epoch");
+    println!("fetch_motion_videos: checking for epoch {epoch}");  
 
     loop {
         let group_name = get_group_name(&mut clients_locked, "motion")?;

@@ -258,14 +258,6 @@ impl MlsClient {
 
         let group = self.group.as_mut().unwrap();
 
-        #[cfg(not(test))] {
-            // For now, we allow two apps only.
-            // We allow more apps for tests.
-            if group.contacts.len() >= 2 {
-                return Err(io::Error::other("Cannot invite more than two apps".to_string()));
-            }
-        }
-
         // first is true if we're inviting the first app, i.e., the admin_app
         let first = group.contacts.len() == 0;
 
@@ -289,6 +281,15 @@ impl MlsClient {
             // Set AAD for the commit message
             let group_aad = group.group_name.clone() + " AAD";
             group.mls_group.set_aad(group_aad.as_bytes().to_vec());
+        }
+
+        for contact in &mut group.contacts {
+            if let Some(proposal) = contact.update_proposal.take() {
+                group
+                    .mls_group
+                    .store_pending_proposal(self.provider.storage(), proposal)
+                    .map_err(|e| io::Error::other(format!("Error: could not store proposal - {e}")))?;
+            }
         }
 
         // Build a proposal with this key package and do the MLS bits.
@@ -1029,7 +1030,7 @@ impl MlsClient {
                     || !(staged_commit.psk_proposals().next().is_none()
                         || staged_commit.psk_proposals().collect::<Vec<_>>().len() == 1)
                     || !(staged_commit.queued_proposals().next().is_none()
-                        || staged_commit.queued_proposals().collect::<Vec<_>>().len() <= cmp::max(2, num_apps_in_group))
+                        || staged_commit.queued_proposals().collect::<Vec<_>>().len() <= cmp::max(2, num_apps_in_group + 2)) // 1 psk, 1 add, 1 update per member
                 {
                     return Err(io::Error::other(
                         "Error: staged commit message must contain at most one update/queued proposal and no other proposals.",

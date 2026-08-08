@@ -8,8 +8,9 @@ use log::{debug, error, info};
 use rand::distr::Alphanumeric;
 use rand::Rng;
 use secluso_client_lib::config::{
-    CameraVersionInfo, Heartbeat, HeartbeatRequest, HeartbeatResult, OPCODE_HEARTBEAT_REQUEST, OPCODE_HEARTBEAT_RESPONSE,
-    AddAppRequest, AddAppResponseCommon, AddAppResponseDedicated, OPCODE_ADD_APP_REQUEST, OPCODE_ADD_APP_RESPONSE,
+    CameraVersionInfo, Heartbeat, HeartbeatRequest, HeartbeatResult, OPCODE_HEARTBEAT_REQUEST,
+    OPCODE_HEARTBEAT_RESPONSE, AddAppRequest, AddAppResponseCommon, AddAppResponseDedicated,
+    OPCODE_ADD_APP_REQUEST, OPCODE_ADD_APP_RESPONSE, OPCODE_ADD_APP_INFO,
 };
 use secluso_client_lib::mls_client::{Contact, MlsClient, ClientType};
 use secluso_client_lib::mls_clients::MlsClients;
@@ -17,6 +18,7 @@ use secluso_client_lib::mls_clients::{
     CONFIG, FCM, LIVESTREAM, MLS_CLIENT_TAGS, MOTION, NUM_MLS_CLIENTS, THUMBNAIL,
     NUM_COMMON_MLS_CLIENTS, NUM_DEDICATED_MLS_CLIENTS,
 };
+use secluso_client_lib::notification::{decode_notification, Notification};
 use secluso_client_lib::pairing::{self, generate_add_app_secret, MessageTransport,
     TcpStreamTransport, RelayTransport};
 use secluso_client_lib::video::{encrypt_video_file, decrypt_video_file, decrypt_thumbnail_file};
@@ -469,6 +471,7 @@ pub fn decrypt_thumbnail(
     )
 }
 
+/// This is only used for decrypting FCM messages (for now).
 pub fn decrypt_message(
     clients: &mut Option<Box<Clients>>,
     client_tag: &str,
@@ -489,30 +492,22 @@ pub fn decrypt_message(
         clients.as_mut().unwrap().mls_clients[mls_client_index.unwrap()].decrypt(message, true)?;
     clients.as_mut().unwrap().mls_clients[mls_client_index.unwrap()].save_group_state().unwrap();
 
-    // New JSON structure. Ensure valid JSON string
-    if let Ok(message) = str::from_utf8(&dec_msg_bytes) {
-        if serde_json::from_str::<serde_json::Value>(message).is_ok() {
-            return Ok(message.to_string());
-        }
-    }
+    decode_message_content(&dec_msg_bytes)
+}
 
-    // For messages not in JSON. For now, this is only for decoding FCM messages. TODO: Port all FCM over to JSON
-    let response = if dec_msg_bytes.len() == 8 {
-        let timestamp: u64 = bincode::deserialize(&dec_msg_bytes)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        if timestamp != 0 {
-            timestamp.to_string()
-        } else {
-            "Download".to_string()
+fn decode_message_content(message: &[u8]) -> io::Result<String> {
+    let notification_error = match decode_notification(message) {
+        Ok(notification) => {
+            return Ok(match notification {
+                Notification::NewVideo(timestamp) => timestamp.to_string(),
+                Notification::Download => "Download".to_string(),
+                Notification::NewInfo => "New info".to_string(),
+            });
         }
-    } else {
-        return Err(io::Error::other(format!(
-            "Error: invalid len in decrypted msg ({})",
-            dec_msg_bytes.len()
-        )));
+        Err(e) => e,
     };
 
-    Ok(response)
+    Err(notification_error)
 }
 
 pub fn get_group_name(clients: &mut Option<Box<Clients>>, client_tag: &str) -> io::Result<String> {
@@ -712,6 +707,26 @@ pub fn process_heartbeat_config_response(
                             version_info: None,
                         }).unwrap()),
                     }
+                },
+
+                OPCODE_ADD_APP_INFO => {
+                    let (add_app_resps_com, secret):
+                        ([AddAppResponseCommon; NUM_COMMON_MLS_CLIENTS], Vec<u8>) =
+                        bincode::deserialize(&command[1..]).map_err(|e| {
+                            io::Error::other(format!("Failed to deserialize add_app msg - {e}"))
+                        })?;
+
+                    for i in 0..add_app_resps_com.len() {
+                        if i < NUM_COMMON_MLS_CLIENTS {
+                            // Store update proposals, merge the psk_proposal, and commit for the add operation
+                            clients.as_mut().unwrap().mls_clients[i].store_update_proposals(add_app_resps_com[i].update_proposals_vec.clone()).unwrap();
+                            clients.as_mut().unwrap().mls_clients[i].decrypt(add_app_resps_com[i].psk_proposal_vec.clone(), false).unwrap();
+                            clients.as_mut().unwrap().mls_clients[i].decrypt_with_secret(add_app_resps_com[i].commit_msg_vec.clone(), false, secret.clone()).unwrap();
+                            clients.as_mut().unwrap().mls_clients[i].save_group_state().unwrap();
+                        }
+                    }
+
+                    return Ok("add_app".to_string());
                 }
                 _ => {
                     error!("Error: Unexpected config command response opcode! - {}", command[0]);
@@ -767,12 +782,13 @@ pub fn generate_add_app_request_config_command(
         bincode::deserialize(&new_app_key_packages_vec).unwrap();
 
     let add_app_requests: [AddAppRequest; NUM_MLS_CLIENTS] = std::array::from_fn(|i| AddAppRequest {
-        secret: secret.clone(),
         new_app_key_package: new_app_key_packages[i].clone(),
     });
 
+    let add_app_msg = (add_app_requests, secret);
+
     let mut config_msg = vec![OPCODE_ADD_APP_REQUEST];
-    config_msg.extend(bincode::serialize(&add_app_requests).unwrap());
+    config_msg.extend(bincode::serialize(&add_app_msg).unwrap());
 
     let config_msg_enc = clients.as_mut().unwrap().mls_clients[CONFIG].encrypt(&config_msg)?;
 
@@ -812,7 +828,8 @@ pub fn process_add_app_config_response(
 
                     let new_app_data: [NewAppData; NUM_MLS_CLIENTS] = std::array::from_fn(|i| {
                         if i < NUM_COMMON_MLS_CLIENTS {
-                            // Merge the psk_proposal and commit for the add operation
+                            // Store update proposals, merge the psk_proposal, and commit for the add operation
+                            clients.as_mut().unwrap().mls_clients[i].store_update_proposals(add_app_resps_com[i].update_proposals_vec.clone()).unwrap();
                             clients.as_mut().unwrap().mls_clients[i].decrypt(add_app_resps_com[i].psk_proposal_vec.clone(), false).unwrap();
                             clients.as_mut().unwrap().mls_clients[i].decrypt_with_secret(add_app_resps_com[i].commit_msg_vec.clone(), false, secret.clone()).unwrap();
                             clients.as_mut().unwrap().mls_clients[i].save_group_state().unwrap();
