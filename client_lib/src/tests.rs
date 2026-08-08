@@ -11,6 +11,7 @@ mod tests {
     use crate::video::{encrypt_video_file, decrypt_video_file,
         encrypt_thumbnail_file, decrypt_thumbnail_file};
     use crate::thumbnail_meta_info::ThumbnailMetaInfo;
+    use openmls::prelude::QueuedProposal;
     use std::fs::{self, File};
     use std::io;
     use std::io::{Read, Write};
@@ -587,14 +588,14 @@ mod tests {
         assert!(msg == msg_dec);
     }
 
-    /// This function is a complete, successful pairing process with built-in secrets.
+    /// This function is a complete, successful pairing process with the first
+    /// secondary app (app2) with built-in secrets.
     /// It is used in other tests.
-    fn pair_with_two_more_apps(
+    fn pair_with_app2(
         camera: &mut MlsClient,
         app: &mut MlsClient,
-    ) -> (MlsClient, MlsClient) {
+    ) -> MlsClient {
         fs::create_dir("test_data/app2").unwrap();
-        fs::create_dir("test_data/app3").unwrap();
 
         // Add the second app
         let mut app2 = MlsClient::new(
@@ -616,14 +617,27 @@ mod tests {
         let (welcome_msg_vec, psk_proposal_vec, commit_msg_vec) = camera
             .invite_with_secret(&camera_contact, new_secret.clone()).unwrap();
         camera.save_group_state().unwrap();
+        let update_proposals = camera.get_update_proposals().unwrap();
 
         app2.process_welcome_with_secret(app2_contact, welcome_msg_vec, new_secret.clone(), GROUP_NAME).unwrap();
         app2.save_group_state().unwrap();
 
         // App merges the psk_proposal and commit for the add operation
+        app.store_update_proposals(update_proposals).unwrap();
         app.decrypt(psk_proposal_vec, false).unwrap();
         app.decrypt_with_secret(commit_msg_vec, false, new_secret).unwrap();
         app.save_group_state().unwrap();
+
+        app2
+    }
+
+    /// This function is the first step of adding the second secondary app (app3).
+    /// It is used in other tests.
+    fn pair_with_app3_handshake(
+        camera: &mut MlsClient,
+        app: &mut MlsClient,
+    ) -> (MlsClient, Vec<u8>, Vec<u8>, Vec<QueuedProposal>) {
+        fs::create_dir("test_data/app3").unwrap();
 
         // Add the third app
         let mut app3 = MlsClient::new(
@@ -641,6 +655,7 @@ mod tests {
 
         let new_secret = vec![3u8; NUM_SECRET_BYTES];
 
+        let update_proposals = camera.get_update_proposals().unwrap();
         let (welcome_msg_vec, psk_proposal_vec, commit_msg_vec) = camera
             .invite_with_secret(&camera_contact, new_secret.clone()).unwrap();
         camera.save_group_state().unwrap();
@@ -648,14 +663,41 @@ mod tests {
         app3.process_welcome_with_secret(app3_contact, welcome_msg_vec, new_secret.clone(), GROUP_NAME).unwrap();
         app3.save_group_state().unwrap();
 
+        app.store_update_proposals(update_proposals.clone()).unwrap();
         app.decrypt(psk_proposal_vec.clone(), false).unwrap();
         app.decrypt_with_secret(commit_msg_vec.clone(), false, new_secret.clone()).unwrap();
         app.save_group_state().unwrap();
+
+        (app3, psk_proposal_vec, commit_msg_vec, update_proposals)
+    }
+
+    /// This function is the second step of adding the second secondary app (app3).
+    /// It is used in other tests.
+    fn pair_with_app3_inform_app2(
+        app2: &mut MlsClient,
+        psk_proposal_vec: Vec<u8>,
+        commit_msg_vec: Vec<u8>,
+        update_proposals: Vec<QueuedProposal>,
+    ) {
+        // Must be the same as the one in pair_with_app3_handshake()
+        let new_secret = vec![3u8; NUM_SECRET_BYTES];
         
+        app2.store_update_proposals(update_proposals).unwrap();
         app2.decrypt(psk_proposal_vec, false).unwrap();
         app2.decrypt_with_secret(commit_msg_vec, false, new_secret).unwrap();
         app2.save_group_state().unwrap();
+    }
 
+    /// This function is a complete, successful pairing process with built-in secrets.
+    /// It is used in other tests.
+    fn pair_with_two_more_apps(
+        camera: &mut MlsClient,
+        app: &mut MlsClient,
+    ) -> (MlsClient, MlsClient) {
+        let mut app2 = pair_with_app2(camera, app);
+        let (app3, psk_proposal_vec, commit_msg_vec, update_proposals) = pair_with_app3_handshake(camera, app);
+        pair_with_app3_inform_app2(&mut app2, psk_proposal_vec, commit_msg_vec, update_proposals);
+        
         (app2, app3)
     }
 
@@ -1455,5 +1497,151 @@ mod tests {
             // Check decrypted file
             check_decrypted_dummy_file(&dec_thumbnail_pathname, file_size);
         }
+    }
+
+    /// The input app generates an update proposal and returns it.
+    fn app_update(
+        app: &mut MlsClient,
+    ) -> Vec<u8> {
+        let update_proposal = app.update_proposal().unwrap();
+        app.save_group_state().unwrap();
+
+        update_proposal
+    }
+
+    /// Camera receives the update proposal.
+    fn camera_receive_update_proposal(
+        camera: &mut MlsClient,
+        update_proposal: Vec<u8>,
+    ) {
+        camera.decrypt(update_proposal, false).unwrap();
+        camera.save_group_state().unwrap();
+    }
+
+    /// Camera receives the update proposal.
+    fn camera_receive_update_proposal_ignore_old(
+        camera: &mut MlsClient,
+        update_proposal: Vec<u8>,
+    ) {
+        let _ = camera.decrypt(update_proposal, false);
+        camera.save_group_state().unwrap();
+    }
+
+    /// Decrypts an encrypted file and check the decrypted file.
+    fn decrypt_and_check_file(
+        app: &mut MlsClient,
+        name: &str,
+        enc_video_pathname: &str,
+        file_size: usize,
+    ) {
+        // App decrypts video file
+        let dir = format!("test_data/{}/videos", name);
+        fs::create_dir_all(&dir).unwrap();
+
+        let dec_video_filename = decrypt_video_file(
+            app,
+            enc_video_pathname,
+        ).unwrap();
+
+        let dec_video_pathname = format!("{}/{}", dir, dec_video_filename);
+
+        // Check decrypted file
+        check_decrypted_dummy_file(&dec_video_pathname, file_size);
+    }
+
+    #[test]
+    /// Functionally, this test is supposed to be similar
+    /// to camera_to_more_apps_update_video_test.
+    /// However, it is one of the tests that shuffle
+    /// the operations to test race conditions that we find.
+    /// In this specific test, app3 is added after updates by other apps,
+    /// but before a video is encrypted.
+    fn camera_to_more_apps_update_video_race_test_1() {
+        let (mut camera, mut app) = pair();
+        //let (mut app2, mut app3) = pair_with_two_more_apps(&mut camera, &mut app);
+        let mut app2 = pair_with_app2(&mut camera, &mut app);
+
+        // app1 update
+        let update_proposal = app_update(&mut app);
+        camera_receive_update_proposal(&mut camera, update_proposal);
+
+        // app2 update
+        let update_proposal = app_update(&mut app2);
+        camera_receive_update_proposal(&mut camera, update_proposal);
+        
+        // Create input video file to be encrypted (all 0's)
+        let video_pathname = "test_data/video_file";
+        let file_size: usize = 96 * 1024 + 135;
+
+        generate_dummy_file(video_pathname, file_size);
+
+        // Add app3
+        let (mut app3, psk_proposal_vec, commit_msg_vec, update_proposals) = pair_with_app3_handshake(&mut camera, &mut app);
+        pair_with_app3_inform_app2(&mut app2, psk_proposal_vec, commit_msg_vec, update_proposals);
+
+        // Camera encrypts video file
+        let enc_video_pathname = "test_data/enc_video_file";
+
+        encrypt_video_file(
+            &mut camera,
+            video_pathname,
+            enc_video_pathname,
+            0,
+        ).unwrap();
+
+        decrypt_and_check_file(&mut app, "app", enc_video_pathname, file_size);
+        decrypt_and_check_file(&mut app2, "app2", enc_video_pathname, file_size);
+        decrypt_and_check_file(&mut app3, "app3", enc_video_pathname, file_size);
+    }
+
+    #[test]
+    /// Functionally, this test is supposed to be similar
+    /// to camera_to_more_apps_update_video_test.
+    /// However, it is one of the tests that shuffle
+    /// the operations to test race conditions that we find.
+    /// In this specific test, app2 is informed of the addition of
+    /// app3 after app performs an update.
+    fn camera_to_more_apps_update_video_race_test_2() {
+        let (mut camera, mut app) = pair();
+        //let (mut app2, mut app3) = pair_with_two_more_apps(&mut camera, &mut app);
+        let mut app2 = pair_with_app2(&mut camera, &mut app);
+        let (mut app3, psk_proposal_vec, commit_msg_vec, update_proposals) = pair_with_app3_handshake(&mut camera, &mut app);
+
+        // app1 update
+        let update_proposal = app_update(&mut app);
+        camera_receive_update_proposal(&mut camera, update_proposal);
+
+        // app2 update
+        // NOTE: diagnosis: update generated by app2 is on an old epoch.
+        // This is currently prevented by fetching config response before generating a new heartbeat.
+        // Can there be a race condition there? What if config response hasn't been submitted yet?
+        let update_proposal = app_update(&mut app2);
+
+        pair_with_app3_inform_app2(&mut app2, psk_proposal_vec, commit_msg_vec, update_proposals);
+        camera_receive_update_proposal_ignore_old(&mut camera, update_proposal);
+
+        // app3 update
+        let update_proposal = app_update(&mut app3);
+        camera_receive_update_proposal(&mut camera, update_proposal);
+
+        // Create input video file to be encrypted (all 0's)
+        let video_pathname = "test_data/video_file";
+        let file_size: usize = 96 * 1024 + 135;
+
+        generate_dummy_file(video_pathname, file_size);
+
+        // Camera encrypts video file
+        let enc_video_pathname = "test_data/enc_video_file";
+
+        encrypt_video_file(
+            &mut camera,
+            video_pathname,
+            enc_video_pathname,
+            0,
+        ).unwrap();
+
+        decrypt_and_check_file(&mut app, "app", enc_video_pathname, file_size);
+        decrypt_and_check_file(&mut app2, "app2", enc_video_pathname, file_size);
+        decrypt_and_check_file(&mut app3, "app3", enc_video_pathname, file_size);
     }
 }

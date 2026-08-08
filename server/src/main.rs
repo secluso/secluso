@@ -11,8 +11,8 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::io;
 use std::io::ErrorKind;
-use std::path::Path;
-use std::time::{Duration, UNIX_EPOCH};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, UNIX_EPOCH, SystemTime, Instant};
 
 use base64::engine::general_purpose::STANDARD as base64_engine;
 use base64::Engine;
@@ -27,7 +27,7 @@ use rocket::response::stream::{Event, EventStream};
 use rocket::response::status::Custom;
 use rocket::serde::json::Json;
 use rocket::tokio;
-use rocket::tokio::fs::{self, File};
+use rocket::tokio::fs::{self, File, OpenOptions};
 use rocket::tokio::select;
 use rocket::tokio::sync::broadcast::{channel, Sender};
 use rocket::tokio::sync::Mutex as AsyncMutex;
@@ -41,7 +41,6 @@ use secluso_server_backbone::types::{
     PairingResponse, ServerStatus,
 };
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 pub mod auth;
 pub mod fcm;
@@ -128,6 +127,7 @@ const PAIRING_SESSION_TIMEOUT: Duration = Duration::from_secs(45);
 #[cfg(test)]
 const PAIRING_SESSION_TIMEOUT: Duration = Duration::from_millis(250);
 const RECEIVE_MSG_TIMEOUT: Duration = Duration::from_secs(45);
+const MAX_SECONDARY_APPS: u32 = 6;
 
 async fn get_num_files(path: &Path) -> io::Result<usize> {
     let mut entries = fs::read_dir(path).await?;
@@ -358,9 +358,9 @@ async fn upload(
     data: Data<'_>,
     auth: &BasicAuth,
 ) -> io::Result<String> {
-    // Validate counter (must be 1 or 2)
-    if counter == 0 || counter > 2 {
-        return Err(io::Error::other("counter must be 1 or 2"));
+    // Validate counter (must be less than or equal to MAX_SECONDARY_APPS + 1)
+    if counter == 0 || counter > (MAX_SECONDARY_APPS + 1) {
+        return Err(io::Error::other(format!("counter ({counter}) must between 1 and {}", MAX_SECONDARY_APPS + 1)));
     }
 
     let root = Path::new("data").join(&auth.username);
@@ -1137,20 +1137,42 @@ async fn config_response(camera: &str, data: Data<'_>, auth: &BasicAuth) -> io::
     check_path_sandboxed(&root, &camera_path)?;
 
     if !camera_path.exists() {
-        return Err(io::Error::other("Error: config camera doesn't exist."));
+        fs::create_dir_all(&camera_path).await?;
     }
 
-    let filepath = camera_path.join("config_response");
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| {
+            io::Error::other(format!(
+                "Failed to generate config response timestamp: {error}"
+            ))
+        })?
+        .as_nanos();
+
+    let filename = format!("config_response_{timestamp}");
+    let temporary_filename = format!("config_response_{timestamp}_tmp");
+
+    let filepath = camera_path.join(filename);
     check_path_sandboxed(&root, &filepath)?;
 
-    let filepath_tmp = camera_path.join("config_response_tmp");
+    let filepath_tmp = camera_path.join(temporary_filename);
     check_path_sandboxed(&root, &filepath_tmp)?;
 
-    let mut file = fs::File::create(&filepath_tmp).await?;
+    // Atomically create the temporary file only if it does not already exist.
+    // This prevents an existing response from being overwritten in the
+    // unlikely event that two requests receive the same timestamp.
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&filepath_tmp)
+        .await?;
+
     let mut stream = data.open(MAX_COMMAND_FILE_SIZE.kibibytes());
     tokio::io::copy(&mut stream, &mut file).await?;
+
     // Flush the file to disk
     file.sync_all().await?;
+    drop(file);
 
     // We write to a temp file first and then rename to avoid a race with the retrieve operation.
     fs::rename(filepath_tmp, filepath).await?;
@@ -1164,24 +1186,66 @@ async fn config_response(camera: &str, data: Data<'_>, auth: &BasicAuth) -> io::
 
 #[get("/config_response/<camera>")]
 async fn retrieve_config_response(camera: &str, auth: &BasicAuth) -> Option<RawText<File>> {
+    const RESPONSE_PREFIX: &str = "config_response_";
+
     let root = Path::new("data").join(&auth.username);
     let camera_path = join_validated_child(&root, camera, "camera").ok()?;
-    if check_path_sandboxed(&root, &camera_path).is_err() {
+
+    if check_path_sandboxed(&root, &camera_path).is_err()
+        || !camera_path.exists()
+    {
         return None;
     }
 
-    let filepath = camera_path.join("config_response");
-    if check_path_sandboxed(&root, &filepath).is_err() {
-        return None;
+    // Return the config_response file with the smallest timestamp (i.e., oldest response).
+    let mut entries = fs::read_dir(&camera_path).await.ok()?;
+    let mut oldest_response: Option<(u128, PathBuf)> = None;
+
+    while let Some(entry) = entries.next_entry().await.ok()? {
+        let file_type = entry.file_type().await.ok()?;
+
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let filename = entry.file_name();
+        let filename = match filename.to_str() {
+            Some(filename) => filename,
+            None => continue,
+        };
+
+        let timestamp = match filename
+            .strip_prefix(RESPONSE_PREFIX)
+            .and_then(|value| value.parse::<u128>().ok())
+        {
+            Some(timestamp) => timestamp,
+            None => continue,
+        };
+
+        let path = entry.path();
+
+        if check_path_sandboxed(&root, &path).is_err() {
+            continue;
+        }
+
+        let should_replace = oldest_response
+            .as_ref()
+            .is_none_or(|(oldest_timestamp, _)| {
+                timestamp < *oldest_timestamp
+            });
+
+        if should_replace {
+            oldest_response = Some((timestamp, path));
+        }
     }
 
-    if camera_path.exists() {
-        let response = File::open(&filepath).await.map(RawText).ok();
-        fs::remove_file(filepath).await.ok();
-        return response;
-    }
+    let (_, filepath) = oldest_response?;
 
-    None
+    let file = File::open(&filepath).await.ok()?;
+
+    fs::remove_file(&filepath).await.ok()?;
+
+    Some(RawText(file))
 }
 
 // state.inner() utilizes a borrowed value

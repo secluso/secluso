@@ -4,7 +4,7 @@
 
 use crate::mls_clients::{MlsClients, MLS_CLIENT_TAGS, MOTION, NUM_MLS_CLIENTS, THUMBNAIL,
     MlsClientsCommon, MlsClientsDedicated, NUM_COMMON_MLS_CLIENTS, LIVESTREAM_DED};
-use openmls::prelude::KeyPackage;
+use openmls::prelude::{KeyPackage, QueuedProposal};
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -14,6 +14,7 @@ pub const OPCODE_HEARTBEAT_REQUEST: u8 = 0;
 pub const OPCODE_HEARTBEAT_RESPONSE: u8 = 1;
 pub const OPCODE_ADD_APP_REQUEST: u8 = 2;
 pub const OPCODE_ADD_APP_RESPONSE: u8 = 3;
+pub const OPCODE_ADD_APP_INFO: u8 = 4;
 
 pub enum HeartbeatResult {
     InvalidTimestamp,
@@ -66,13 +67,17 @@ impl HeartbeatRequest {
             if MLS_CLIENT_TAGS[i] == "motion"
                 || MLS_CLIENT_TAGS[i] == "thumbnail"
             {
+                // It is possible that the update proposal races with an add app commit and end up
+                // being in an older epoch. We just ignore such update proposals. The app will generate
+                // another update in the next heartbeat.
                 let _ =
-                    clients_com[i].decrypt(self.update_proposals[proposals_i].clone(), false)?;
+                    clients_com[i].decrypt(self.update_proposals[proposals_i].clone(), false);
                 clients_com[i].save_group_state().unwrap();
                 proposals_i += 1;
             } else if MLS_CLIENT_TAGS[i] == "livestream" {
+                // Same comment here as above.
                 let _ =
-                    clients_ded[i - NUM_COMMON_MLS_CLIENTS].decrypt(self.update_proposals[proposals_i].clone(), false)?;
+                    clients_ded[i - NUM_COMMON_MLS_CLIENTS].decrypt(self.update_proposals[proposals_i].clone(), false);
                 clients_ded[i - NUM_COMMON_MLS_CLIENTS].save_group_state().unwrap();
                 proposals_i += 1;
             }
@@ -219,16 +224,16 @@ impl Heartbeat {
 
 #[derive(Serialize, Deserialize)]
 pub struct AddAppRequest {
-    pub secret: Vec<u8>,
     pub new_app_key_package: KeyPackage,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct AddAppResponseCommon {
     pub camera_key_package: KeyPackage,
     pub welcome_msg_vec: Vec<u8>,
     pub psk_proposal_vec: Vec<u8>,
     pub commit_msg_vec: Vec<u8>,
+    pub update_proposals_vec: Vec<QueuedProposal>,
 }
 
 #[derive(Serialize, Deserialize)]
