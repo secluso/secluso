@@ -1,14 +1,8 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use rand::Rng;
 use secluso_client_server_lib::auth::parse_user_credentials_full;
-
-// Used to generate random names.
-// With 16 alphanumeric characters, the probability of collision is very low.
-// Note: even if collision happens, it has no impact on
-// our security guarantees. Will only cause availability issues.
-pub(crate) const NUM_RANDOM_CHARS: u8 = 16;
+use secluso_client_lib::pairing::get_random_name;
 
 /// Returns username, password, and server addr
 pub fn read_parse_full_credentials() -> (String, String, String) {
@@ -37,19 +31,14 @@ pub fn get_names(
     let group_path = state_dir_path.join(group_filename);
 
     let (camera_name, group_name) = if first_time {
-        let mut rng = rand::rng();
-        let cname: String = (0..NUM_RANDOM_CHARS)
-            .map(|_| rng.sample(rand::distr::Alphanumeric) as char)
-            .collect();
+        let cname = get_random_name();
 
         let mut file = File::create(camera_path).expect("Could not create file");
         file.write_all(cname.as_bytes())?;
         file.flush()?;
         file.sync_all()?;
 
-        let gname: String = (0..NUM_RANDOM_CHARS)
-            .map(|_| rng.sample(rand::distr::Alphanumeric) as char)
-            .collect();
+        let gname = get_random_name();
 
         file = File::create(group_path).expect("Could not create file");
         file.write_all(gname.as_bytes())?;

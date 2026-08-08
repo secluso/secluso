@@ -5,12 +5,11 @@
 use anyhow::anyhow;
 use anyhow::Context;
 use log::{debug, error, info};
-use rand::distr::Alphanumeric;
-use rand::Rng;
 use secluso_client_lib::config::{
     CameraVersionInfo, Heartbeat, HeartbeatRequest, HeartbeatResult, OPCODE_HEARTBEAT_REQUEST,
     OPCODE_HEARTBEAT_RESPONSE, AddAppRequest, AddAppResponseCommon, AddAppResponseDedicated,
-    OPCODE_ADD_APP_REQUEST, OPCODE_ADD_APP_RESPONSE, OPCODE_ADD_APP_INFO,
+    OPCODE_ADD_APP_REQUEST, OPCODE_ADD_APP_RESPONSE, OPCODE_ADD_APP_INFO, OPCODE_REMOVE_APP_REQUEST,
+    OPCODE_REMOVE_APP_RESPONSE, OPCODE_REMOVE_APP_INFO,
 };
 use secluso_client_lib::mls_client::{Contact, MlsClient, ClientType};
 use secluso_client_lib::mls_clients::MlsClients;
@@ -20,7 +19,7 @@ use secluso_client_lib::mls_clients::{
 };
 use secluso_client_lib::notification::{decode_notification, Notification};
 use secluso_client_lib::pairing::{self, generate_add_app_secret, MessageTransport,
-    TcpStreamTransport, RelayTransport};
+    TcpStreamTransport, RelayTransport, get_random_name};
 use secluso_client_lib::video::{encrypt_video_file, decrypt_video_file, decrypt_thumbnail_file};
 use secluso_client_server_lib::auth::parse_user_credentials_full;
 use openmls::prelude::KeyPackage;
@@ -32,12 +31,6 @@ use std::io;
 use std::io::{BufRead, BufReader, Write};
 use std::str;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-// Used to generate random names.
-// With 16 alphanumeric characters, the probability of collision is very low.
-// Note: even if collision happens, it has no impact on
-// our security guarantees. Will only cause availability issues.
-const NUM_RANDOM_CHARS: u8 = 16;
 
 #[derive(Serialize)]
 struct HeartbeatStatus {
@@ -82,10 +75,7 @@ impl Clients {
 
 fn get_app_name(first_time: bool, file_dir: String, filename: String) -> String {
     let app_name = if first_time {
-        let mut rng = rand::rng();
-        let aname: String = (0..NUM_RANDOM_CHARS)
-            .map(|_| rng.sample(Alphanumeric) as char)
-            .collect();
+        let aname = get_random_name();
 
         let mut file =
             fs::File::create(file_dir.clone() + "/" + &filename).expect("Could not create file");
@@ -713,7 +703,7 @@ pub fn process_heartbeat_config_response(
                     let (add_app_resps_com, secret):
                         ([AddAppResponseCommon; NUM_COMMON_MLS_CLIENTS], Vec<u8>) =
                         bincode::deserialize(&command[1..]).map_err(|e| {
-                            io::Error::other(format!("Failed to deserialize add_app msg - {e}"))
+                            io::Error::other(format!("Failed to deserialize add_app info msg - {e}"))
                         })?;
 
                     for i in 0..add_app_resps_com.len() {
@@ -727,6 +717,23 @@ pub fn process_heartbeat_config_response(
                     }
 
                     return Ok("add_app".to_string());
+                }
+                OPCODE_REMOVE_APP_INFO => {
+                    let (remove_app_resps_com, removed_app_name):
+                        ([Vec<u8>; NUM_COMMON_MLS_CLIENTS], String) =
+                        bincode::deserialize(&command[1..]).map_err(|e| {
+                            io::Error::other(format!("Failed to deserialize remove_app info msg - {e}"))
+                        })?;
+
+                    for i in 0..remove_app_resps_com.len() {
+                        if i < NUM_COMMON_MLS_CLIENTS {
+                            // Store update proposals, merge the psk_proposal, and commit for the add operation
+                            clients.as_mut().unwrap().mls_clients[i].decrypt(remove_app_resps_com[i].clone(), false).unwrap();
+                            clients.as_mut().unwrap().mls_clients[i].save_group_state().unwrap();
+                        }
+                    }
+
+                    return Ok(format!("remove_app{}", removed_app_name));
                 }
                 _ => {
                     error!("Error: Unexpected config command response opcode! - {}", command[0]);
@@ -808,7 +815,7 @@ pub fn process_add_app_config_response(
     clients: &mut Option<Box<Clients>>,
     config_response: Vec<u8>,
     secret: Vec<u8>,
-) -> io::Result<Vec<u8>> {
+) -> io::Result<(Vec<u8>, String)> {
     if clients.is_none() {
         return Err(io::Error::other(
             "Error: clients not initialized!".to_string(),
@@ -820,13 +827,13 @@ pub fn process_add_app_config_response(
             clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state().unwrap();
             match command[0] {
                 OPCODE_ADD_APP_RESPONSE => {
-                    let (add_app_resps_com, add_app_resps_ded):
-                        ([AddAppResponseCommon; NUM_COMMON_MLS_CLIENTS], [AddAppResponseDedicated; NUM_DEDICATED_MLS_CLIENTS]) =
+                    let (add_app_resps_com, add_app_resps_ded, new_app_name):
+                        ([AddAppResponseCommon; NUM_COMMON_MLS_CLIENTS], [AddAppResponseDedicated; NUM_DEDICATED_MLS_CLIENTS], String) =
                         bincode::deserialize(&command[1..]).map_err(|e| {
                             io::Error::other(format!("Failed to deserialize add_app msg - {e}"))
                         })?;
 
-                    let new_app_data: [NewAppData; NUM_MLS_CLIENTS] = std::array::from_fn(|i| {
+                    let new_app_data_array: [NewAppData; NUM_MLS_CLIENTS] = std::array::from_fn(|i| {
                         if i < NUM_COMMON_MLS_CLIENTS {
                             // Store update proposals, merge the psk_proposal, and commit for the add operation
                             clients.as_mut().unwrap().mls_clients[i].store_update_proposals(add_app_resps_com[i].update_proposals_vec.clone()).unwrap();
@@ -849,9 +856,10 @@ pub fn process_add_app_config_response(
                         }
                     });
 
+                    let new_app_data = (new_app_data_array, new_app_name.clone());
                     let new_app_data_vec = bincode::serialize(&new_app_data).unwrap();
 
-                    return Ok(new_app_data_vec)
+                    return Ok((new_app_data_vec, new_app_name))
                 }
                 _ => {
                     error!("Error: Unexpected config command response opcode! - {}", command[0]);
@@ -874,15 +882,15 @@ pub fn join_camera_groups(
     clients: &mut Option<Box<Clients>>,
     secret: Vec<u8>,
     new_app_data_vec: Vec<u8>,
-) -> io::Result<[u64; NUM_MLS_CLIENTS]> {
-    let new_app_data: [NewAppData; NUM_MLS_CLIENTS] =
+) -> io::Result<([u64; NUM_MLS_CLIENTS], String)> {
+    let (new_app_data_array, new_app_name): ([NewAppData; NUM_MLS_CLIENTS], String) =
         bincode::deserialize(&new_app_data_vec).unwrap();
 
     let epochs: [u64; NUM_MLS_CLIENTS] = std::array::from_fn(|i| {
         let app_contact =
-            MlsClient::create_contact("camera", new_app_data[i].camera_key_package.clone()).unwrap();
+            MlsClient::create_contact("camera", new_app_data_array[i].camera_key_package.clone()).unwrap();
 
-        clients.as_mut().unwrap().mls_clients[i].process_welcome_with_secret(app_contact, new_app_data[i].welcome_msg_vec.clone(), secret.clone(), &new_app_data[i].group_name).unwrap();
+        clients.as_mut().unwrap().mls_clients[i].process_welcome_with_secret(app_contact, new_app_data_array[i].welcome_msg_vec.clone(), secret.clone(), &new_app_data_array[i].group_name).unwrap();
         clients.as_mut().unwrap().mls_clients[i].save_group_state().unwrap();
 
         clients.as_mut().unwrap().mls_clients[i].get_epoch().unwrap()
@@ -890,5 +898,68 @@ pub fn join_camera_groups(
 
     // FIXME: return the firmware version too.
     // FIXME: return a String, similar to add_camera
-    Ok(epochs)
+    Ok((epochs, new_app_name))
+}
+
+pub fn generate_remove_app_request_config_command(
+    clients: &mut Option<Box<Clients>>,
+    app_name: &str,
+) -> io::Result<Vec<u8>> {
+    if clients.is_none() {
+        return Err(io::Error::other(
+            "Error: clients not initialized!".to_string(),
+        ));
+    }
+
+    let mut config_msg = vec![OPCODE_REMOVE_APP_REQUEST];
+    config_msg.extend(bincode::serialize(app_name).unwrap());
+
+    let config_msg_enc = clients.as_mut().unwrap().mls_clients[CONFIG].encrypt(&config_msg)?;
+
+    clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state().unwrap();
+
+    Ok(config_msg_enc)
+}
+
+pub fn process_remove_app_config_response(
+    clients: &mut Option<Box<Clients>>,
+    config_response: Vec<u8>,
+) -> io::Result<()> {
+    if clients.is_none() {
+        return Err(io::Error::other(
+            "Error: clients not initialized!".to_string(),
+        ));
+    }
+
+    match clients.as_mut().unwrap().mls_clients[CONFIG].decrypt(config_response, true) {
+        Ok(command) => {
+            clients.as_mut().unwrap().mls_clients[CONFIG].save_group_state().unwrap();
+            match command[0] {
+                OPCODE_REMOVE_APP_RESPONSE => {
+                    let remove_app_resps_com: [Vec<u8>; NUM_COMMON_MLS_CLIENTS] =
+                        bincode::deserialize(&command[1..]).map_err(|e| {
+                            io::Error::other(format!("Failed to deserialize remove_app msg - {e}"))
+                        })?;
+
+                    for i in 0..NUM_COMMON_MLS_CLIENTS {
+                        clients.as_mut().unwrap().mls_clients[i].decrypt(remove_app_resps_com[i].clone(), false).unwrap();
+                    }
+
+                    return Ok(())
+                }
+                _ => {
+                    error!("Error: Unexpected config command response opcode! - {}", command[0]);
+                    Err(io::Error::other(
+                        "Error: Unexpected config response opcode!".to_string(),
+                    ))
+                }
+            }
+        }
+        Err(e) => {
+            error!("Failed to decrypt command message: {e}");
+            Err(io::Error::other(format!(
+                "Failed to decrypt command message: {e}"
+            )))
+        }
+    }
 }

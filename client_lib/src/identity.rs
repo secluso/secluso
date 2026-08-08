@@ -22,12 +22,12 @@ impl Identity {
     pub(crate) fn new(
         ciphersuite: Ciphersuite,
         crypto: &OpenMlsRustPersistentCrypto,
-        username: &[u8],
+        id: &[u8],
         first_time: bool,
         file_dir: String,
         tag: String,
     ) -> Self {
-        let credential = BasicCredential::new(username.to_vec());
+        let credential = BasicCredential::new(id.to_vec());
         let pathname = file_dir + "/signature_key_" + &tag;
         let signature_keys = if first_time {
             let sig_keys = SignatureKeyPair::new(ciphersuite.signature_algorithm()).unwrap();

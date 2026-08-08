@@ -18,11 +18,12 @@ use std::io;
 use std::ops::Add;
 use std::panic;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Instant;
 use std::{thread, time::Duration};
+use std::collections::{BTreeSet, HashMap};
 use anyhow::anyhow;
 use crate::delivery_monitor::{DeliveryMonitor, VideoInfo};
 use crate::motion::{
@@ -52,10 +53,8 @@ cfg_if! {
             AndroidCameraSettings, ANDROID_CAMERA_FACING_BACK, ANDROID_CAMERA_FACING_FRONT,
         };
         use std::io::ErrorKind;
-        use std::sync::atomic::AtomicBool;
     } else if #[cfg(feature = "test")] {
         use crate::test_camera::TestCamera;
-        use std::sync::atomic::AtomicBool;
         use crate::pairing::io::get_input_camera_secret;
     } else {
         compile_error!("One of the features 'manual', 'raspberry', 'ip', 'android', or 'test' must be enabled.");
@@ -81,7 +80,7 @@ const VERSION_DIR: &str = "current_version";
 #[cfg(feature = "android")]
 const VERSION_FILE: &str = "current_version/android_camera_hub";
 
-const PRIMARY_APP_ID: usize = 0;
+const PRIMARY_APP_NAME: &str = "";
 // Technically, we can support an arbitrary number of secondary apps.
 // However, it's best to enforce a reasonable upper bound here.
 // Each secondary app required dedicated threads and too many of them
@@ -569,13 +568,88 @@ fn split_clients(clients: MlsClients) -> (MlsClientsCommon, MlsClientsDedicated)
     ([c0, c1, c2], [d0, d1])
 }
 
+fn secondary_app_names(state_dir: &str) -> anyhow::Result<Vec<String>> {
+    let state_dir = Path::new(state_dir);
+    let mut app_names = BTreeSet::new();
+
+    for entry in fs::read_dir(state_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let filename = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow!("Secondary MLS state directory name is not valid UTF-8"))?;
+        let Some(app_name) = filename.strip_prefix("livestream") else {
+            continue;
+        };
+        if app_name.is_empty() {
+            // This is the state for the primary app.
+            continue;
+        }
+
+        let config_tag = format!("config{app_name}");
+        if !state_dir.join(&config_tag).is_dir() {
+            return Err(anyhow!(
+                "Missing config MLS state for secondary app {app_name}"
+            ));
+        }
+        app_names.insert(app_name.to_owned());
+    }
+
+    if app_names.len() > MAX_SECONDARY_APPS {
+        return Err(anyhow!("Persisted secondary app limit exceeded"));
+    }
+
+    Ok(app_names.into_iter().collect())
+}
+
+fn restore_secondary_mls_clients(
+    state_dir: &str,
+) -> anyhow::Result<HashMap<String, MlsClientsDedicated>> {
+    let app_names = secondary_app_names(state_dir)?;
+
+    app_names
+        .into_iter()
+        .map(|app_name| {
+            let restore = |tag: String| -> anyhow::Result<MlsClient> {
+                let (camera_name, _) = get_names(
+                    state_dir,
+                    false,
+                    format!("camera_{tag}_name"),
+                    format!("group_{tag}_name"),
+                )?;
+                Ok(MlsClient::new(
+                    camera_name,
+                    false,
+                    state_dir.to_owned(),
+                    tag,
+                    ClientType::Camera,
+                )?)
+            };
+
+            let clients = [
+                restore(format!("livestream{app_name}"))?,
+                restore(format!("config{app_name}"))?,
+            ];
+            Ok((app_name, clients))
+        })
+        .collect()
+}
+
+struct DedicatedCheckWorkers {
+    stop_requested: Arc<AtomicBool>,
+    handles: Vec<std::thread::JoinHandle<()>>,
+}
+
 fn spawn_dedicated_check_threads(
-    app_id: usize,
+    app_name: &str,
     clients_ded: &MlsClientsDedicated,
     http_client: &HttpClient,
-    livestream_requests: Arc<Mutex<Vec<usize>>>,
-    config_enc_commands: Arc<Mutex<Vec<(Vec<u8>, usize)>>>,
-    worker_handles: &mut Vec<std::thread::JoinHandle<()>>,
+    livestream_requests: Arc<Mutex<Vec<String>>>,
+    config_enc_commands: Arc<Mutex<Vec<(String, Vec<u8>)>>>,
+    worker_handles: &mut HashMap<String, DedicatedCheckWorkers>,
 ) -> anyhow::Result<()> {
     let group_livestream_name = clients_ded[LIVESTREAM_DED].get_group_name()?;
     let group_config_name = clients_ded[CONFIG_DED].get_group_name()?;
@@ -593,20 +667,31 @@ fn spawn_dedicated_check_threads(
     }
 
     let http_client_livestream = http_client.clone();
+    let livestream_app_name = app_name.to_owned();
+    let stop_requested = Arc::new(AtomicBool::new(false));
+    let livestream_stop_requested = Arc::clone(&stop_requested);
 
-    worker_handles.push(thread::spawn(move || loop {
+    let livestream_handle = thread::spawn(move || loop {
+        if livestream_stop_requested.load(Ordering::SeqCst) {
+            break;
+        }
+
         if http_client_livestream
             .livestream_check(&group_livestream_name)
             .is_ok()
         {
+            if livestream_stop_requested.load(Ordering::SeqCst) {
+                break;
+            }
+
             #[cfg(any(feature = "android", feature = "test"))]
             if STOP_REQUESTED.load(Ordering::SeqCst) {
                 break;
             }
 
-            println!("Livestream{} detected", app_id + 1);
+            println!("Livestream{} detected", livestream_app_name);
             let mut requests = livestream_requests.lock().unwrap();
-            requests.push(app_id);
+            requests.push(livestream_app_name.clone());
         } else {
             #[cfg(any(feature = "android", feature = "test"))]
             if STOP_REQUESTED.load(Ordering::SeqCst) {
@@ -615,19 +700,29 @@ fn spawn_dedicated_check_threads(
 
             sleep(Duration::from_secs(1));
         }
-    }));
+    });
 
     let http_client_config = http_client.clone();
+    let config_app_name = app_name.to_owned();
+    let config_stop_requested = Arc::clone(&stop_requested);
 
-    worker_handles.push(thread::spawn(move || loop {
+    let config_handle = thread::spawn(move || loop {
+        if config_stop_requested.load(Ordering::SeqCst) {
+            break;
+        }
+
         if let Ok(enc_command) = http_client_config.config_check(&group_config_name) {
+            if config_stop_requested.load(Ordering::SeqCst) {
+                break;
+            }
+
             #[cfg(any(feature = "android", feature = "test"))]
             if STOP_REQUESTED.load(Ordering::SeqCst) {
                 break;
             }
 
             let mut config_enc_commands = config_enc_commands.lock().unwrap();
-            config_enc_commands.push((enc_command, app_id));
+            config_enc_commands.push((config_app_name.clone(), enc_command));
         } else {
             #[cfg(any(feature = "android", feature = "test"))]
             if STOP_REQUESTED.load(Ordering::SeqCst) {
@@ -637,7 +732,15 @@ fn spawn_dedicated_check_threads(
             error!("Error in receiving config command");
             sleep(Duration::from_secs(1));
         }
-    }));
+    });
+
+    worker_handles.insert(
+        app_name.to_owned(),
+        DedicatedCheckWorkers {
+            stop_requested,
+            handles: vec![livestream_handle, config_handle],
+        },
+    );
 
     Ok(())
 }
@@ -686,20 +789,34 @@ fn core(
     let thumbnail_dir = camera.get_thumbnail_dir();
     let mut delivery_monitor =
         DeliveryMonitor::from_file_or_new(video_dir, thumbnail_dir, state_dir.clone());
-    let livestream_requests: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(vec![]));
-    let config_enc_commands: Arc<Mutex<Vec<(Vec<u8>, usize)>>> = Arc::new(Mutex::new(vec![]));
-    let mut clients_ded_secondary: Vec<MlsClientsDedicated> = Vec::new();
-
-    let mut worker_handles = vec![];
+    let livestream_requests: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
+    let config_enc_commands: Arc<Mutex<Vec<(String, Vec<u8>)>>> = Arc::new(Mutex::new(vec![]));
+    let mut clients_ded_secondary = if first_time {
+        HashMap::new()
+    } else {
+        restore_secondary_mls_clients(&state_dir)?
+    };
+    let mut worker_handles: HashMap<String, DedicatedCheckWorkers> = HashMap::new();
 
     spawn_dedicated_check_threads(
-        PRIMARY_APP_ID,
+        PRIMARY_APP_NAME,
         &clients_ded_primary,
         &http_client,
         Arc::clone(&livestream_requests),
         Arc::clone(&config_enc_commands),
         &mut worker_handles,
     )?;
+
+    for (app_name, clients_ded) in &clients_ded_secondary {
+        spawn_dedicated_check_threads(
+            app_name,
+            clients_ded,
+            &http_client,
+            Arc::clone(&livestream_requests),
+            Arc::clone(&config_enc_commands),
+            &mut worker_handles,
+        )?;
+    }
 
     #[cfg(feature = "test")]
     let mut num_iters = 0usize;
@@ -808,21 +925,21 @@ fn core(
             || locked_livestream_check_time.unwrap().le(&Instant::now())
         {
             // Livestream request? Start it.
-            let requested_app_ids = {
+            let requesting_app_names = {
                 let mut requests = livestream_requests.lock().unwrap();
                 std::mem::take(&mut *requests)
             };
 
-            for app_id in requested_app_ids {
+            for app_name in requesting_app_names {
                 info!("Livestream start detected");
-                if app_id == PRIMARY_APP_ID {
+                if app_name == PRIMARY_APP_NAME {
                     livestream(
                         &mut clients_ded_primary[LIVESTREAM_DED],
                         camera,
                         &mut delivery_monitor,
                         &http_client,
                     )?;
-                } else if let Some(clients_ded_sec) = clients_ded_secondary.get_mut(app_id - 1) {
+                } else if let Some(clients_ded_sec) = clients_ded_secondary.get_mut(&app_name) {
                     livestream(
                         &mut clients_ded_sec[LIVESTREAM_DED],
                         camera,
@@ -884,13 +1001,12 @@ fn core(
                 std::mem::take(&mut *enc_commands)
             };
 
-            for (enc_command, app_id) in enc_commands_to_process {
-                if app_id == PRIMARY_APP_ID {
+            for (requesting_app_name, enc_command) in enc_commands_to_process {
+                if requesting_app_name == PRIMARY_APP_NAME {
                     println!("About to call process_config_command for primary app");
                     let has_existing_secondary_apps = !clients_ded_secondary.is_empty();
                     let secondary_app_limit_reached =
                         clients_ded_secondary.len() >= MAX_SECONDARY_APPS;
-                    let next_secondary_app_number = clients_ded_secondary.len() + 2;
 
                     // Why do we generate this notification here, before we even process
                     // the config command (which might or might not be an add_app request)?
@@ -914,11 +1030,11 @@ fn core(
                         Some(&mut delivery_monitor),
                         true,
                         secondary_app_limit_reached,
-                        Some(next_secondary_app_number),
                         Some(&mut clients_ded_secondary),
                     )?;
 
-                    if let Some(clients_ded_sec) = process_ret {
+                    if let Some((app_name, clients_ded_sec_opt)) = process_ret {
+                        // Either an add or remove app op
                         if has_existing_secondary_apps {
                             info!("Sending new app information notification.");
                             if let Err(e) = send_notification(state_dir.as_str(), &http_client, notification_msg) {
@@ -926,19 +1042,64 @@ fn core(
                             }
                         }
 
-                        let app_id = clients_ded_secondary.len() + 1;
-                        println!("Launching threads for app {}.", app_id + 1);
-                        spawn_dedicated_check_threads(
-                            app_id,
-                            &clients_ded_sec,
-                            &http_client,
-                            Arc::clone(&livestream_requests),
-                            Arc::clone(&config_enc_commands),
-                            &mut worker_handles,
-                        )?;
-                        clients_ded_secondary.push(clients_ded_sec);
+                        if let Some(clients_ded_sec) = clients_ded_sec_opt {
+                            // An add op
+                            println!("Launching threads for app {}.", app_name);
+                            spawn_dedicated_check_threads(
+                                &app_name,
+                                &clients_ded_sec,
+                                &http_client,
+                                Arc::clone(&livestream_requests),
+                                Arc::clone(&config_enc_commands),
+                                &mut worker_handles,
+                            )?;
+                            clients_ded_secondary.insert(app_name, clients_ded_sec);
+                        } else {
+                            // A remove op
+                            let clients_ded_sec = clients_ded_secondary
+                                .get_mut(&app_name)
+                                .ok_or_else(|| anyhow!("Cannot remove unknown secondary app"))?;
+
+                            // First, stop dedicated worker threads.
+                            let livestream_group_name =
+                                clients_ded_sec[LIVESTREAM_DED].get_group_name()?;
+                            let config_group_name =
+                                clients_ded_sec[CONFIG_DED].get_group_name()?;
+
+                            let workers = worker_handles
+                                .get_mut(&app_name)
+                                .ok_or_else(|| anyhow!("Missing workers for secondary app"))?;
+                            workers.stop_requested.store(true, Ordering::SeqCst);
+
+                            let livestream_stop_result =
+                                http_client.livestream_start(&livestream_group_name);
+                            let config_stop_result =
+                                http_client.config_command(&config_group_name, vec![0]);
+                            livestream_stop_result?;
+                            config_stop_result?;
+
+                            // Second, remove worker thread handles.
+                            let workers = worker_handles
+                                .remove(&app_name)
+                                .ok_or_else(|| anyhow!("Missing workers for secondary app"))?;
+                            for handle in workers.handles {
+                                if handle.join().is_err() {
+                                    error!("Secondary app worker panicked while stopping");
+                                }
+                            }
+
+                            // Third, clean dedicated MLS clients.
+                            for client in clients_ded_sec.iter_mut() {
+                                client.clean()?;
+                            }
+
+                            // Fourth, remove dedicated MLS clients.
+                            clients_ded_secondary.remove(&app_name);
+                        }
                     }
-                } else if let Some(clients_ded_sec) = clients_ded_secondary.get_mut(app_id - 1) {
+                } else if let Some(clients_ded_sec) =
+                    clients_ded_secondary.get_mut(&requesting_app_name)
+                {
                     println!("About to call process_config_command for secondary app");
                     let _ = process_config_command(
                         &mut clients_com,
@@ -949,10 +1110,9 @@ fn core(
                         false,
                         true,
                         None,
-                        None,
                     )?;
                 } else {
-                    error!("Ignoring config command for unknown app id {}", app_id);
+                    error!("Ignoring config command for unknown app: {}", requesting_app_name);
                 }
             }
             locked_config_check_time = Some(Instant::now().add(Duration::from_secs(1)));
@@ -974,8 +1134,10 @@ fn core(
     #[cfg(any(feature = "android", feature = "test"))]
     {
         log::info!("Stop requested; waiting for camera hub workers");
-        for handle in worker_handles {
-            let _ = handle.join();
+        for workers in worker_handles.into_values() {
+            for handle in workers.handles {
+                let _ = handle.join();
+            }
         }
 
         Ok(())

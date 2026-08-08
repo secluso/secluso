@@ -15,6 +15,9 @@ pub const OPCODE_HEARTBEAT_RESPONSE: u8 = 1;
 pub const OPCODE_ADD_APP_REQUEST: u8 = 2;
 pub const OPCODE_ADD_APP_RESPONSE: u8 = 3;
 pub const OPCODE_ADD_APP_INFO: u8 = 4;
+pub const OPCODE_REMOVE_APP_REQUEST: u8 = 5;
+pub const OPCODE_REMOVE_APP_RESPONSE: u8 = 6;
+pub const OPCODE_REMOVE_APP_INFO: u8 = 7;
 
 pub enum HeartbeatResult {
     InvalidTimestamp,
