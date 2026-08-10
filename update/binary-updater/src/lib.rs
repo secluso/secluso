@@ -1,9 +1,9 @@
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use reqwest::blocking::Client;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -15,10 +15,10 @@ use std::time::{Duration, Instant};
 use zip::ZipArchive;
 
 use openpgp::cert::Cert;
+use openpgp::parse::Parse;
 use openpgp::parse::stream::{
     DetachedVerifierBuilder, GoodChecksum, MessageLayer, MessageStructure, VerificationHelper,
 };
-use openpgp::parse::Parse;
 use openpgp::policy::StandardPolicy;
 use openpgp::{Fingerprint, KeyHandle};
 use sequoia_openpgp as openpgp;
@@ -40,7 +40,7 @@ pub const NUM_USERNAME_CHARS: usize = 14;
 pub const NUM_PASSWORD_CHARS: usize = 14;
 
 /// A signer entry: label controls signature filename, github_user controls accepted keyring source.
-///Fingerprint (optionally in developer mode) pins trust to one exact OpenPGP primary key
+/// Fingerprint (optionally in developer mode) pins trust to one exact OpenPGP primary key
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Signer {
     pub label: String,

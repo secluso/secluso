@@ -1,0 +1,13 @@
+[package]
+name = "tuf-updater"
+version = "0.1.0"
+edition = "2024"
+authors = ["John Kaczman <jkaczman@pm.me>"]
+
+[dependencies]
+tough = { version = "0.23.0", features = ["http"] }
+url = "2.5.8"
+tokio = { version = "1.0.0", features = ["rt", "rt-multi-thread", "macros"] }
+anyhow = "1.0.102"
+semver = "1"
+system_shutdown = "4.1.0"

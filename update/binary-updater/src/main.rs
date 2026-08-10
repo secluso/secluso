@@ -13,12 +13,12 @@ use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use secluso_update::{
-    build_github_client, default_signers, download_and_verify_component, fetch_latest_release,
-    get_current_version, github_token_from_env, parse_sig_keys, require_release_is_immutable,
-    write_current_version, Component, DEFAULT_OWNER_REPO,
+    Component, DEFAULT_OWNER_REPO, build_github_client, default_signers,
+    download_and_verify_component, fetch_latest_release, get_current_version,
+    github_token_from_env, parse_sig_keys, require_release_is_immutable, write_current_version,
 };
 
-const USAGE: &str = r#"
+const USAGE: &str = r"
 Secluso updater.
 
 Usage:
@@ -42,7 +42,7 @@ Options:
   --hint-check-interval-secs N  Update hint poll interval seconds [default: 10].
   --version, -v                 Show tool version.
   --help, -h                    Show this screen.
-"#;
+";
 
 #[derive(Debug, Deserialize)]
 struct Args {
@@ -125,14 +125,14 @@ fn main() -> ! {
     if args.flag_once {
         println!("Going to check for updates.");
         if let Err(e) = check_update(&args) {
-            eprintln!("Update check failed: {:#}", e);
+            eprintln!("Update check failed: {e:#}");
             std::process::exit(1);
         }
         std::process::exit(0);
     }
 
     if let Some(ref update_hint_path) = args.flag_update_hint_path {
-        if args.flag_interval_secs % args.flag_hint_check_interval_secs != 0 {
+        if !args.flag_interval_secs.is_multiple_of(args.flag_hint_check_interval_secs) {
             eprintln!(
                 "flag_interval_secs ({}) must be divisible by flag_update_hint_interval_secs ({})",
                 args.flag_interval_secs, args.flag_hint_check_interval_secs
@@ -141,14 +141,14 @@ fn main() -> ! {
         }
 
         // We want to force a check in the beginning.
-        let mut last_full_check = Instant::now() - Duration::from_secs(args.flag_interval_secs);
+        let mut last_full_check = Instant::now().checked_sub(Duration::from_secs(args.flag_interval_secs)).unwrap();
 
         loop {
             let elapsed = last_full_check.elapsed();
             if elapsed >= Duration::from_secs(args.flag_interval_secs) {
                 println!("Scheduled update check.");
                 if let Err(e) = check_update(&args) {
-                    eprintln!("Update check failed: {:#}", e);
+                    eprintln!("Update check failed: {e:#}");
                 }
                 last_full_check = Instant::now();
                 continue;
@@ -156,10 +156,10 @@ fn main() -> ! {
 
             sleep(Duration::from_secs(args.flag_hint_check_interval_secs));
 
-            if is_there_update_hint(&update_hint_path) {
+            if is_there_update_hint(update_hint_path) {
                 println!("Update hint received, triggering early check.");
                 if let Err(e) = check_update(&args) {
-                    eprintln!("Update check failed: {:#}", e);
+                    eprintln!("Update check failed: {e:#}");
                 }
                 last_full_check = Instant::now();
             }
@@ -168,13 +168,14 @@ fn main() -> ! {
         loop {
             println!("Going to check for updates.");
             if let Err(e) = check_update(&args) {
-                eprintln!("Update check failed: {:#}", e);
+                eprintln!("Update check failed: {e:#}");
             }
             sleep(Duration::from_secs(args.flag_interval_secs));
         }
     }
 }
 
+#[must_use]
 pub fn is_there_update_hint(path: &str) -> bool {
     let p = Path::new(path);
 
@@ -229,7 +230,7 @@ fn check_update(args: &Args) -> Result<()> {
         ReleaseSource::LatestImmutableGitHub => {
             println!("Using the latest immutable GitHub release.");
         }
-    };
+    }
 
     let release = selected_release.release;
 
@@ -264,7 +265,7 @@ fn check_update(args: &Args) -> Result<()> {
         prepare_verified_component_install(Path::new(&final_path), &verified.component_bytes)?;
 
     if let Some(unit) = args.flag_restart_unit.as_deref() {
-        println!("Stopping unit: {}", unit);
+        println!("Stopping unit: {unit}");
         run(&format!("systemctl stop {}", shell_escape(unit)));
     }
 
@@ -276,7 +277,7 @@ fn check_update(args: &Args) -> Result<()> {
     prepared_install.commit()?;
 
     if let Some(unit) = args.flag_restart_unit.as_deref() {
-        println!("Starting unit: {}", unit);
+        println!("Starting unit: {unit}");
         run(&format!("systemctl start {}", shell_escape(unit)));
     }
 
@@ -306,8 +307,7 @@ fn prepare_verified_component_install(
 
     let target_name = final_path
         .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "secluso-binary".to_string());
+        .map_or_else(|| "secluso-binary".to_string(), |name| name.to_string_lossy().into_owned());
 
     // Create the temp inode ourselves in the protected target directory with exclusive creation.
     // *Even if the filename is predictable, create_new refuses to adopt a preexisting file*
@@ -370,7 +370,7 @@ fn create_secure_install_temp_file(
             .open(&tmp_path)
         {
             Ok(file) => return Ok((tmp_path, file)),
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {},
             Err(err) => {
                 return Err(err)
                     .with_context(|| format!("creating temp install path {}", tmp_path.display()));
@@ -385,7 +385,7 @@ fn create_secure_install_temp_file(
 }
 
 fn select_release_for_component<FLatest, FRequireImmutable>(
-    component: Component,
+    _component: Component,
     current_version: &Version,
     fetch_latest_release_fn: FLatest,
     require_release_is_immutable_fn: FRequireImmutable,
@@ -394,23 +394,19 @@ where
     FLatest: FnOnce() -> Result<secluso_update::GhRelease>,
     FRequireImmutable: FnOnce(&secluso_update::GhRelease) -> Result<()>,
 {
-    match component {
-        _ => {
-            let release = fetch_latest_release_fn()?;
-            require_release_is_immutable_fn(&release)?;
+    let release = fetch_latest_release_fn()?;
+    require_release_is_immutable_fn(&release)?;
 
-            let latest_version = release.parsed_version()?;
-            if current_version >= &latest_version {
-                println!("Already on the latest immutable GitHub release.");
-                return Ok(None);
-            }
-
-            Ok(Some(SelectedRelease {
-                release,
-                source: ReleaseSource::LatestImmutableGitHub,
-            }))
-        }
+    let latest_version = release.parsed_version()?;
+    if current_version >= &latest_version {
+        println!("Already on the latest immutable GitHub release.");
+        return Ok(None);
     }
+
+    Ok(Some(SelectedRelease {
+        release,
+        source: ReleaseSource::LatestImmutableGitHub,
+    }))
 }
 
 // "best-effort" command runner used for service stop/start so updater can still finish installation
@@ -421,6 +417,18 @@ fn run(cmd: &str) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+}
+
+
+// Minimal shell escaping helper to safely embed unit names into sh -c commands.
+fn shell_escape(s: &str) -> String {
+    if s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@'))
+    {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', r"'\''"))
+    }
 }
 
 #[cfg(test)]
@@ -500,16 +508,5 @@ mod tests {
         // If installation aborts after the temp inode is created, cleanup should remove it, so that we don't accumulate executable staging files in the protected install directory.
         assert!(!tmp_path.exists());
         assert!(!final_path.exists());
-    }
-}
-
-// Minimal shell escaping helper to safely embed unit names into sh -c commands.
-fn shell_escape(s: &str) -> String {
-    if s.chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@'))
-    {
-        s.to_string()
-    } else {
-        format!("'{}'", s.replace('\'', r#"'\''"#))
     }
 }

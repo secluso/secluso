@@ -1,8 +1,8 @@
 [package]
 name = "secluso-update"
 version = "1.0.2"
-edition = "2021"
-authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
+edition = "2024"
+authors = ["Ardalan Amiri Sani <arrdalan@proton.me>", "John Kaczman <jkaczman@pm.me>"]
 
 [dependencies]
 anyhow = "1"
