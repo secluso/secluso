@@ -1,3 +1,6 @@
+use secluso_client_lib::object_name::load_or_create_object_secret;
+use secluso_client_lib::subscription::save_subscription_uuid;
+use std::path::Path;
 use crate::core::initialize_mls_clients;
 use crate::traits::Camera;
 use crate::version::camera_version_info;
@@ -79,10 +82,11 @@ pub fn pair_all(
     #[cfg(feature = "android")]
     let mut msg_transport = {
         let (server_username, server_password, server_addr) = get_server_credentials();
-        RelayTransport::initialize_no_connect(
+        RelayTransport::initialize_no_connect_with_backend(
             server_username,
             server_password,
-            server_addr
+            server_addr,
+            crate::core::get_server_backend(),
         )?
     };
 
@@ -149,6 +153,12 @@ fn try_pairing(
         debug!("[Pairing] Failed to send firmware_version: {e}");
         return false;
     }
+    
+    debug!("[Pairing] Before sending object secret");
+    if let Err(e) = send_object_secret(msg_transport) {
+        debug!("[Pairing] Failed to send object_secret: {e}");
+        return false;
+    }
 
     debug!("[Pairing] Before pairing");
     for mls_client in mls_clients.iter_mut() {
@@ -173,6 +183,15 @@ fn try_pairing(
             Ok(()) => {}
             Err(e) => {
                 debug!("[Pairing] Failed to receive credentials_full: {e}");
+                return false;
+            }
+        }
+
+        debug!("[Pairing] Before receiving subscription uuid");
+        match receive_subscription_uuid(msg_transport, &mut mls_clients[CONFIG]) {
+            Ok(()) => {}
+            Err(e) => {
+                debug!("[Pairing] Failed to receive subscription_uuid: {e}");
                 return false;
             }
         }
@@ -208,6 +227,14 @@ fn send_firmware_version(
     let msg = serde_json::to_vec(&camera_version_info()?)
         .map_err(|e| io::Error::new(ErrorKind::InvalidData, e.to_string()))?;
     msg_transport.send_msg(&msg, "firmware_version")?;
+
+    Ok(())
+}
+
+/// Hand the app this camera's object naming secret.
+fn send_object_secret(msg_transport: &mut dyn MessageTransport) -> io::Result<()> {
+    let secret = load_or_create_object_secret(Path::new("."))?;
+    msg_transport.send_msg(&secret, "object_secret")?;
 
     Ok(())
 }
@@ -278,6 +305,23 @@ fn receive_credentials_full(
     file.write_all(&credentials_full_bytes)?;
     file.flush()?;
     file.sync_all()?;
+
+    Ok(())
+}
+
+/// The subscription this camera bills against (chosen by the app)
+#[cfg(any(feature = "test", feature = "raspberry"))]
+fn receive_subscription_uuid(
+    msg_transport: &mut dyn MessageTransport,
+    mls_client: &mut MlsClient,
+) -> anyhow::Result<()> {
+    let encrypted_msg = msg_transport.receive_msg("")?;
+    let uuid_bytes = decrypt_msg(mls_client, encrypted_msg)?;
+    let uuid = String::from_utf8(uuid_bytes).unwrap_or_default();
+
+    if !uuid.is_empty() {
+        save_subscription_uuid(Path::new("."), &uuid)?;
+    }
 
     Ok(())
 }

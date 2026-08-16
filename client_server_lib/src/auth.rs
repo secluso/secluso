@@ -12,6 +12,24 @@ pub const NUM_PASSWORD_CHARS: usize = 14;
 
 pub const USER_CREDENTIALS_VERSION: &str = "uc-v1.0";
 
+/// Which kind of delivery service the credentials connect to
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ServerBackend {
+    /// The DIY server in this repo.
+    #[default]
+    #[serde(rename = "self_hosted", alias = "selfhosted")]
+    SelfHosted,
+
+    #[serde(rename = "enterprise")]
+    Enterprise,
+}
+
+impl ServerBackend {
+    pub fn is_enterprise(&self) -> bool {
+        matches!(self, ServerBackend::Enterprise)
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct UserCredentials {
     #[serde(rename = "v", alias = "version")]
@@ -25,6 +43,14 @@ pub struct UserCredentials {
 
     #[serde(rename = "sa", alias = "server_addr")]
     pub server_addr: String,
+
+    /// Absent means self-hosted (backwards compat.)
+    #[serde(rename = "b", alias = "backend", default, skip_serializing_if = "is_default_backend")]
+    pub backend: ServerBackend,
+}
+
+fn is_default_backend(backend: &ServerBackend) -> bool {
+    *backend == ServerBackend::default()
 }
 
 pub fn parse_user_credentials(credentials: Vec<u8>) -> io::Result<(String, String)> {
@@ -63,6 +89,22 @@ pub fn parse_user_credentials_full(
     ))
 }
 
+pub fn parse_user_credentials_any(credentials_full: Vec<u8>) -> io::Result<UserCredentials> {
+    if let Ok(parsed) = serde_json::from_slice::<UserCredentials>(&credentials_full) {
+        return Ok(parsed);
+    }
+
+    let (username, password, server_addr) = parse_user_credentials_full(credentials_full)?;
+
+    Ok(UserCredentials {
+        version: USER_CREDENTIALS_VERSION.to_string(),
+        username,
+        password,
+        server_addr,
+        backend: ServerBackend::SelfHosted,
+    })
+}
+
 pub fn generate_random(num_chars: usize, special_characters: bool) -> String {
     // We exclude : because that character has a special use in the http(s) auth header.
     // We exclude / because that character is used within the Linux file system
@@ -87,8 +129,31 @@ pub fn generate_random(num_chars: usize, special_characters: bool) -> String {
 }
 
 pub fn create_user_credentials(server_addr: String) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    let username = generate_random(NUM_USERNAME_CHARS, true);
-    let password = generate_random(NUM_PASSWORD_CHARS, true);
+    create_user_credentials_for(server_addr, ServerBackend::default())
+}
+
+/// Basically same as above but naming which server the credentials are for.
+/// The enterprise DS requires a letter, a digit, and a symbol in a password
+fn generate_password(num_chars: usize) -> String {
+    loop {
+        let candidate = generate_random(num_chars, true);
+        let letter = candidate.chars().any(|c| c.is_alphabetic());
+        let number = candidate.chars().any(|c| c.is_numeric());
+        let symbol = candidate
+            .chars()
+            .any(|c| !c.is_alphanumeric() && !c.is_whitespace());
+        if letter && number && symbol {
+            return candidate;
+        }
+    }
+}
+
+pub fn create_user_credentials_for(
+    server_addr: String,
+    backend: ServerBackend,
+) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    let username = generate_random(NUM_USERNAME_CHARS, !backend.is_enterprise());
+    let password = generate_password(NUM_PASSWORD_CHARS);
 
     let credentials_string = format!("{}{}", username, password);
     let credentials = credentials_string.into_bytes();
@@ -101,6 +166,7 @@ pub fn create_user_credentials(server_addr: String) -> anyhow::Result<(Vec<u8>, 
         username,
         password,
         server_addr,
+        backend,
     };
     let credentials_full_string = serde_json::to_string(&user_credentials)
         .context("Failed to serialize user credentials into JSON")?;

@@ -5,7 +5,9 @@
 #[macro_use]
 extern crate serde_derive;
 
+use secluso_client_lib::livestream_session::LivestreamSession;
 use secluso_app_native::{
+    get_subscription_uuid,
     Clients, add_camera, decrypt_video, deregister, generate_heartbeat_request_config_command,
     get_group_name, initialize, livestream_decrypt, livestream_update,
     process_heartbeat_config_response, generate_add_app_request_config_command,
@@ -15,7 +17,9 @@ use secluso_app_native::{
 };
 use secluso_client_lib::http_client::HttpClient;
 use secluso_client_lib::pairing::{NUM_SECRET_BYTES};
-use secluso_client_server_lib::auth::parse_user_credentials_full;
+use secluso_app_native::get_object_key;
+use secluso_client_lib::object_name::{object_name, object_name_with_kind};
+use secluso_client_server_lib::auth::parse_user_credentials_any;
 use secluso_client_lib::mls_clients::{MOTION, THUMBNAIL, NUM_MLS_CLIENTS};
 use docopt::Docopt;
 use std::env;
@@ -70,6 +74,25 @@ struct Args {
     flag_reset: bool,
 }
 
+/// The naming key for a group (or None when self-hosted)
+fn object_key_for(
+    http_client: &HttpClient,
+    clients: &mut Option<Box<Clients>>,
+    client_tag: &str,
+) -> Option<Vec<u8>> {
+    if !http_client.backend().is_enterprise() {
+        return None;
+    }
+
+    match get_object_key(clients, client_tag) {
+        Ok(key) => Some(key),
+        Err(e) => {
+            println!("Could not derive the object naming key: {e}");
+            None
+        }
+    }
+}
+
 fn main() -> io::Result<()> {
     let version = env!("CARGO_PKG_NAME").to_string() + ", version: " + env!("CARGO_PKG_VERSION");
 
@@ -83,8 +106,12 @@ fn main() -> io::Result<()> {
     let mut reader =
         BufReader::with_capacity(file.metadata().unwrap().len().try_into().unwrap(), file);
     let credentials_full = reader.fill_buf().unwrap();
-    let (server_username, server_password, server_addr) =
-        parse_user_credentials_full(credentials_full.to_vec()).unwrap();
+    let credentials = parse_user_credentials_any(credentials_full.to_vec()).unwrap();
+    let (server_username, server_password, server_addr) = (
+        credentials.username.clone(),
+        credentials.password.clone(),
+        credentials.server_addr.clone(),
+    );
 
     fs::create_dir_all(format!("{}/videos", DATA_DIR)).unwrap();
     fs::create_dir_all(format!("{}/encrypted", DATA_DIR)).unwrap();
@@ -93,7 +120,17 @@ fn main() -> io::Result<()> {
     let first_time: bool = !first_time_path.exists();
 
     let clients: Arc<Mutex<Option<Box<Clients>>>> = Arc::new(Mutex::new(None));
-    let http_client = HttpClient::new(server_addr, server_username, server_password);
+    let http_client = HttpClient::new_with_backend(
+        server_addr,
+        server_username,
+        server_password,
+        credentials.backend,
+    );
+
+    // No-op against the self-hosted DS, which has no accounts.
+    if let Err(e) = http_client.register() {
+        println!("Could not register with the delivery service: {e}");
+    }
 
     // We assume here that the new secret is shared via
     // another channel, e.g., QR code scan.
@@ -126,6 +163,7 @@ fn main() -> io::Result<()> {
                 "".to_string(),
                 credentials_full_string,
                 false,
+                http_client.subscription_uuid().unwrap_or_default(),
             )
         } else {
             println!("Sending the add_app request");
@@ -167,6 +205,11 @@ fn main() -> io::Result<()> {
         if args.flag_reset {
             return deregister_all(clients, &http_client);
         }
+    }
+
+    // The paired camera's subscription which is saved during pairing/add-app.
+    if let Ok(uuid) = get_subscription_uuid(&clients.lock().unwrap()) {
+        http_client.set_subscription_uuid(Some(uuid));
     }
 
     let add_app_request: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
@@ -542,7 +585,11 @@ fn fetch_motion_videos(
 
         let enc_filename = format!("{}", epoch);
         let enc_filepath = Path::new(DATA_DIR).join("encrypted").join(&enc_filename);
-        match http_client.fetch_enc_file(&group_name, &enc_filepath) {
+
+        let derived = object_key_for(http_client, &mut clients_locked, "motion")
+            .map(|key| object_name(key.as_slice(), &group_name, epoch))
+            .transpose()?;
+        match http_client.fetch_enc_file(&group_name, &enc_filepath, derived.as_deref()) {
             Ok(_) => {
                 let dec_filename = decrypt_video(&mut clients_locked, enc_filename).unwrap();
                 let _ = fs::remove_file(enc_filepath);
@@ -576,7 +623,11 @@ fn fetch_thumbnails(
 
         let enc_filename = format!("{}", epoch);
         let enc_filepath = Path::new(DATA_DIR).join("encrypted").join(&enc_filename);
-        match http_client.fetch_enc_file(&group_name, &enc_filepath) {
+        // A thumbnail shares its epoch with its video
+        let derived = object_key_for(http_client, &mut clients_locked, "thumbnail")
+            .map(|key| object_name_with_kind(key.as_slice(), &group_name, epoch, "thumbnail"))
+            .transpose()?;
+        match http_client.fetch_enc_file(&group_name, &enc_filepath, derived.as_deref()) {
             Ok(_) => {
                 let dec_filename = decrypt_thumbnail(&mut clients_locked, enc_filename, DATA_DIR.to_string()).unwrap();
                 let _ = fs::remove_file(enc_filepath);
@@ -607,11 +658,16 @@ fn livestream(
 
     http_client.livestream_start(&group_name)?;
 
+    // Chunk 0 = MLS commit. ALWAYS goes over the relay.
     let commit_msg = fetch_livestream_chunk(http_client, &group_name, 0)?;
     livestream_update(&mut clients.lock().unwrap(), commit_msg)?;
 
+    // Now try for a direct path. (p2p)
+    let session = open_livestream_session(http_client, &group_name);
+    println!("Livestreaming over the {:?} path", session.path());
+
     for i in 1..num_chunks {
-        let enc_data = fetch_livestream_chunk(http_client, &group_name, i)?;
+        let enc_data = fetch_livestream_chunk_via(&session, http_client, &group_name, i)?;
         let dec_data = livestream_decrypt(&mut clients.lock().unwrap(), enc_data, i as u64)?;
         println!("Received {} of livestream data.", dec_data.len());
     }
@@ -622,14 +678,54 @@ fn livestream(
     Ok(())
 }
 
+/// Open a livestream session, trying for a direct path to the camera
+#[cfg(feature = "p2p")]
+fn open_livestream_session(http_client: &HttpClient, group_name: &str) -> LivestreamSession {
+    LivestreamSession::open_direct(
+        http_client.clone(),
+        group_name,
+        group_name,
+        secluso_client_lib::p2p::Role::App,
+    )
+}
+
+#[cfg(not(feature = "p2p"))]
+fn open_livestream_session(http_client: &HttpClient, group_name: &str) -> LivestreamSession {
+    LivestreamSession::open(http_client.clone(), group_name, group_name)
+}
+
+/// Fetch a chunk.
+fn fetch_livestream_chunk_via(
+    session: &LivestreamSession,
+    http_client: &HttpClient,
+    group_name: &str,
+    chunk_number: u64,
+) -> io::Result<Vec<u8>> {
+    for _i in 0..5 {
+        match session.retrieve_chunk(chunk_number) {
+            Ok(data) => return Ok(data),
+            Err(e) => eprintln!("retrieve_chunk({chunk_number}) attempt failed: {e}"),
+        }
+        thread::sleep(Duration::from_secs(1));
+    }
+
+    let _ = http_client;
+    let _ = group_name;
+
+    Err(io::Error::other(
+        "Error: could not fetch livestream chunk (timeout)!".to_string(),
+    ))
+}
+
 fn fetch_livestream_chunk(
     http_client: &HttpClient,
     group_name: &str,
     chunk_number: u64,
 ) -> io::Result<Vec<u8>> {
     for _i in 0..5 {
-        if let Ok(data) = http_client.livestream_retrieve(group_name, chunk_number) {
-            return Ok(data);
+        match http_client.livestream_retrieve(group_name, chunk_number) {
+            Ok(data) => return Ok(data),
+            Err(e) => eprintln!("livestream_retrieve({chunk_number}) attempt failed: {e}"),
         }
         thread::sleep(Duration::from_secs(1));
     }

@@ -52,9 +52,10 @@ pub fn run_android(
     server_username: String,
     server_password: String,
     server_addr: String,
+    server_backend: String,
 ) -> io::Result<()> {
     log::info!("Reached run_android()");
-    set_android_server_credentials(server_username, server_password, server_addr)?;
+    set_android_server_credentials(server_username, server_password, server_addr, server_backend)?;
 
     let args = Args {
         flag_reset: false,
@@ -76,9 +77,10 @@ pub fn reset_android(
     server_username: String,
     server_password: String,
     server_addr: String,
+    server_backend: String,
 ) -> io::Result<()> {
     log::info!("Reached reset_android()");
-    set_android_server_credentials(server_username, server_password, server_addr)?;
+    set_android_server_credentials(server_username, server_password, server_addr, server_backend)?;
 
     let args = Args {
         flag_reset: false,

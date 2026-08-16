@@ -7,6 +7,7 @@ use image::RgbImage;
 use secluso_client_lib::http_client::HttpClient;
 use secluso_client_lib::mls_client::MlsClient;
 use secluso_client_lib::mls_clients::{MAX_OFFLINE_WINDOW};
+use secluso_client_lib::object_name::{object_name, object_name_with_kind};
 use secluso_client_lib::thumbnail_meta_info::{GeneralDetectionType, ThumbnailMetaInfo};
 use secluso_client_lib::video::{encrypt_thumbnail_file, encrypt_video_file};
 use std::io;
@@ -18,17 +19,35 @@ pub struct MotionResult {
     pub thumbnail: Option<RgbImage>,
 }
 
+/// object_key is the group's MLS exporter secret, present only when talking to the enterprise DS.
 pub fn upload_pending_enc_thumbnails(
     group_name: &str,
     delivery_monitor: &mut DeliveryMonitor,
     http_client: &HttpClient,
     num_apps: usize,
+    object_key: Option<&[u8]>,
 ) -> io::Result<()> {
     // Send pending thumbnails
     let send_list_thumbnails: Vec<ThumbnailMetaInfo> = delivery_monitor.thumbnails_to_send();
     if let Some(enc_thumbnail) = send_list_thumbnails.first() {
         let enc_video_file_path = delivery_monitor.get_enc_thumbnail_file_path(enc_thumbnail);
-        match http_client.upload_enc_file(group_name, &enc_video_file_path, num_apps) {
+        // A thumbnail shares its epoch with the video it belongs to...
+        // so it needs its own name or the two would collide.
+        let derived = match object_key {
+            Some(key) => Some(object_name_with_kind(
+                key,
+                group_name,
+                enc_thumbnail.epoch,
+                "thumbnail",
+            )?),
+            None => None,
+        };
+        match http_client.upload_enc_file(
+            group_name,
+            &enc_video_file_path,
+            num_apps,
+            derived.as_deref(),
+        ) {
             Ok(_) => {
                 info!(
                     "Thumbnail (epoch #{}) successfully uploaded to the server.",
@@ -55,13 +74,23 @@ pub fn upload_pending_enc_videos(
     delivery_monitor: &mut DeliveryMonitor,
     http_client: &HttpClient,
     num_apps: usize,
+    object_key: Option<&[u8]>,
 ) -> io::Result<()> {
     // Send pending videos
     let send_list_videos = delivery_monitor.videos_to_send();
     // The send list is sorted. We must send the videos in order.
     if let Some(video_info) = send_list_videos.first() {
         let enc_video_file_path = delivery_monitor.get_enc_video_file_path(video_info);
-        match http_client.upload_enc_file(group_name, &enc_video_file_path, num_apps) {
+        let derived = match object_key {
+            Some(key) => Some(object_name(key, group_name, video_info.epoch)?),
+            None => None,
+        };
+        match http_client.upload_enc_file(
+            group_name,
+            &enc_video_file_path,
+            num_apps,
+            derived.as_deref(),
+        ) {
             Ok(_) => {
                 info!(
                     "Video {} successfully uploaded to the server.",

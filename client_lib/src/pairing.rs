@@ -326,6 +326,12 @@ pub trait MessageTransport {
     fn send_msg(&mut self, msg: &[u8], msg_tag: &str) -> io::Result<()>;
     fn receive_msg(&mut self, msg_tag: &str) -> io::Result<Vec<u8>>;
     fn wait_for_pairing_request(&mut self) -> io::Result<()>;
+
+    /// Drop any queued messages on these tags.
+    /// A failed pairing attempt leaves its messages behind
+    fn flush_tags(&mut self, _msg_tags: &[&str]) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 pub struct TcpStreamTransport {
@@ -390,13 +396,47 @@ pub struct RelayTransport {
 }
 
 #[cfg(feature = "http_client")]
+use secluso_client_server_lib::auth::ServerBackend;
+
+#[cfg(feature = "http_client")]
 impl RelayTransport {
     pub fn initialize_connect(
         server_username: String,
         server_password: String,
         server_addr: String,
     ) -> io::Result<Self> {
-        let http_client = HttpClient::new(server_addr, server_username, server_password);
+        Self::initialize_connect_with_backend(
+            server_username,
+            server_password,
+            server_addr,
+            ServerBackend::default(),
+        )
+    }
+
+    /// As above, but which delivery service this is.
+    pub fn initialize_connect_with_backend(
+        server_username: String,
+        server_password: String,
+        server_addr: String,
+        backend: ServerBackend,
+    ) -> io::Result<Self> {
+        let http_client =
+            HttpClient::new_with_backend(server_addr, server_username, server_password, backend);
+        http_client.register()?;
+
+        // Drain anything a previous failed attempt left queued on our tags,
+        // otherwise we'd consume its stale messages instead of the fresh ones.
+        for tag in [
+            "pairing_request_ack",
+            "camera_msg",
+            "firmware_version",
+            "object_secret",
+            "welcome",
+            "group_name",
+        ] {
+            while http_client.receive_msg_nowait(tag)?.is_some() {}
+        }
+
         http_client.send_msg("pairing_request", vec![1, 2, 3])?;
         
         let msg = http_client.receive_msg("pairing_request_ack")?;
@@ -414,7 +454,22 @@ impl RelayTransport {
         server_password: String,
         server_addr: String,
     ) -> io::Result<Self> {
-        let http_client = HttpClient::new(server_addr, server_username, server_password);
+        Self::initialize_no_connect_with_backend(
+            server_username,
+            server_password,
+            server_addr,
+            ServerBackend::default(),
+        )
+    }
+
+    pub fn initialize_no_connect_with_backend(
+        server_username: String,
+        server_password: String,
+        server_addr: String,
+        backend: ServerBackend,
+    ) -> io::Result<Self> {
+        let http_client =
+            HttpClient::new_with_backend(server_addr, server_username, server_password, backend);
 
         Ok(Self {
             http_client,
@@ -446,8 +501,18 @@ impl MessageTransport for RelayTransport {
             return Err(io::Error::new(io::ErrorKind::Other, "Unexpected pairing_request msg"));
         }
 
+        // The app only sends after our ack, so anything queued now is stale.
+        self.flush_tags(&["app_msg"])?;
+
         self.http_client.send_msg("pairing_request_ack", vec![4, 5, 6])?;
 
+        Ok(())
+    }
+
+    fn flush_tags(&mut self, msg_tags: &[&str]) -> io::Result<()> {
+        for tag in msg_tags {
+            while self.http_client.receive_msg_nowait(tag)?.is_some() {}
+        }
         Ok(())
     }
 }
