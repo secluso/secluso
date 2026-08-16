@@ -1882,7 +1882,26 @@ mod ndk {
         /// 1. self.encoder must remain live while running is true.
         /// 2. This worker must have exclusive access to encoder output buffers.
         unsafe fn drain_encoder_unsafe(&self) {
+            // Ask for a sync frame every second.
+            let mut last_sync_request = std::time::Instant::now();
+
             while self.running.load(Ordering::SeqCst) {
+                if last_sync_request.elapsed() >= std::time::Duration::from_secs(1) {
+                    last_sync_request = std::time::Instant::now();
+                    // SAFETY
+                    // 1. self.encoder is live.
+                    // 2. The format is ours and freed before leaving the block.
+                    unsafe {
+                        let format = sys::AMediaFormat_new();
+                        if !format.is_null() {
+                            let key = c"request-sync";
+                            sys::AMediaFormat_setInt32(format, key.as_ptr(), 0);
+                            let _ = sys::AMediaCodec_setParameters(self.encoder, format);
+                            sys::AMediaFormat_delete(format);
+                        }
+                    }
+                }
+
                 let mut info = std::mem::MaybeUninit::<sys::AMediaCodecBufferInfo>::uninit();
                 // SAFETY
                 // 1. self.encoder is live.

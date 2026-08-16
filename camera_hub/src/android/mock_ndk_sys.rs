@@ -567,6 +567,14 @@ pub unsafe fn AMediaFormat_delete(format: *mut AMediaFormat) -> media_status_t {
     MEDIA_OK
 }
 
+#[allow(non_snake_case)]
+pub unsafe fn AMediaCodec_setParameters(
+    _codec: *mut AMediaCodec,
+    _format: *mut AMediaFormat,
+) -> media_status_t {
+    MEDIA_OK
+}
+
 pub unsafe fn AMediaFormat_setString(
     _format: *mut AMediaFormat,
     _name: *const c_char,

@@ -760,8 +760,14 @@ fn spawn_dedicated_check_threads(
             }
 
             println!("Livestream{} detected", livestream_app_name);
-            let mut requests = livestream_requests.lock().unwrap();
-            requests.push(livestream_app_name.clone());
+            {
+                let mut requests = livestream_requests.lock().unwrap();
+                if !requests.contains(&livestream_app_name) {
+                    requests.push(livestream_app_name.clone());
+                }
+            }
+            // Pace the next check
+            sleep(Duration::from_secs(1));
         } else {
             #[cfg(any(feature = "android", feature = "test"))]
             if STOP_REQUESTED.load(Ordering::SeqCst) {
@@ -1031,13 +1037,15 @@ fn core(
 
             for app_name in requesting_app_names {
                 info!("Livestream start detected");
-                if app_name == PRIMARY_APP_NAME {
+                // A failed run (network error, stale session) shouldn't kill the camera core.
+                // Try again next req
+                let livestream_result = if app_name == PRIMARY_APP_NAME {
                     livestream(
                         &mut clients_ded_primary[LIVESTREAM_DED],
                         camera,
                         &mut delivery_monitor,
                         &http_client,
-                    )?;
+                    )
                 } else if let Some(clients_ded_sec) = clients_ded_secondary.get_mut(&app_name) {
                     livestream(
                         &mut clients_ded_sec[LIVESTREAM_DED],
@@ -1045,7 +1053,12 @@ fn core(
                         // FIXME: delivery_monitor should use a separate queue for secondary apps
                         &mut delivery_monitor,
                         &http_client,
-                    )?;
+                    )
+                } else {
+                    Ok(())
+                };
+                if let Err(e) = livestream_result {
+                    error!("Livestream attempt failed: {e}");
                 }
             }
 

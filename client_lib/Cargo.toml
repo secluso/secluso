@@ -13,7 +13,7 @@ webpki-roots = { version = "0.26", optional = true }
 [features]
 default = ["logging"]
 logging = ["log"]
-http_client = ["dep:reqwest", "dep:base64", "dep:secluso-client-server-lib", "dep:rustls", "dep:webpki-roots"]
+http_client = ["dep:reqwest", "dep:base64", "dep:secluso-client-server-lib", "dep:rustls", "dep:webpki-roots", "dep:tungstenite"]
 camera_secret_qrcode = ["dep:qrcode", "dep:image"]
 # Direct peer-to-peer livestreaming, so chunks can skip the relay. QUIC / TLS
 p2p = ["dep:quinn", "dep:rustls", "dep:rcgen", "dep:tokio", "http_client"]
@@ -42,6 +42,8 @@ rand = "0.9.4"
 # P2P transport.
 quinn = { version = "0.11", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
+webpki-roots = { version = "0.26", optional = true }
+tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"], optional = true }
 rcgen = { version = "0.13", optional = true }
 tokio = { version = "1", features = ["rt", "time", "macros", "net"], optional = true }
 qrcode = { version = "0.14.1", optional = true }

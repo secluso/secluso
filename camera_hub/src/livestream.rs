@@ -90,6 +90,12 @@ pub fn livestream(
         //return Ok(());
     }
 
+    let group_name_probe = mls_client.get_group_name().unwrap();
+    if !http_client.livestream_session_ready(&group_name_probe) {
+        info!("Livestream: no session to stream into; skipping this run.");
+        return Ok(());
+    }
+
     // Update MLS epoch
     let (commit_msg, _epoch) = mls_client.update()?;
     mls_client.save_group_state().unwrap();
@@ -113,6 +119,7 @@ pub fn livestream(
     // (the enterprise DS drops the chunk without storing it)
     if http_client.livestream_upload(&group_name, updates_data, 0)? == 0 {
         info!("Livestream: session ended before the commit landed; will retry next run.");
+        http_client.forget_livestream_session(&group_name);
         return Ok(());
     }
     delivery_monitor.dequeue_livestream_updates();
@@ -177,6 +184,7 @@ pub fn livestream(
     }
 
     mls_client.save_group_state().unwrap();
+    http_client.forget_livestream_session(&group_name);
 
     Ok(())
 }

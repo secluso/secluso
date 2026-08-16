@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Write, Read};
+use std::net::TcpStream;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -317,6 +318,19 @@ impl HttpClient {
         }
     }
 
+    pub fn livestream_session_ready(&self, group_name: &str) -> bool {
+        if !self.backend.is_enterprise() {
+            return true;
+        }
+        self.livestream_session(group_name).is_ok()
+    }
+
+    pub fn forget_livestream_session(&self, group_name: &str) {
+        if let Ok(mut guard) = self.livestream_sessions.lock() {
+            guard.remove(group_name);
+        }
+    }
+
     fn remember_livestream_session(&self, group_name: &str, session: &str) {
         if let Ok(mut guard) = self.livestream_sessions.lock() {
             guard.insert(group_name.to_string(), session.to_string());
@@ -324,15 +338,30 @@ impl HttpClient {
     }
 
     fn livestream_session(&self, group_name: &str) -> io::Result<String> {
-        self.livestream_sessions
+        if let Some(session) = self
+            .livestream_sessions
             .lock()
             .ok()
             .and_then(|guard| guard.get(group_name).cloned())
-            .ok_or_else(|| {
-                io::Error::other(
-                    "No livestream session yet; start or check the stream first".to_string(),
-                )
-            })
+        {
+            return Ok(session);
+        }
+
+        // No run holds a session; so lets adopt the current one.
+        let status = self.enterprise_livestream_status(group_name)?;
+        match status.session.filter(|_| status.active) {
+            Some(session) => {
+                if let Ok(mut guard) = self.livestream_sessions.lock() {
+                    guard
+                        .entry(group_name.to_string())
+                        .or_insert_with(|| session.clone());
+                }
+                Ok(session)
+            }
+            None => Err(io::Error::other(
+                "No livestream session yet; start or check the stream first".to_string(),
+            )),
+        }
     }
 
     /// Attach the livestream session id
@@ -973,12 +1002,115 @@ impl HttpClient {
         Ok(())
     }
 
+    fn livestream_wait_for_start(
+        &self,
+        group_name: &str,
+        window: Duration,
+    ) -> io::Result<bool> {
+        use tungstenite::client::IntoClientRequest;
+
+        let ws_addr = self
+            .server_addr
+            .replacen("https://", "wss://", 1)
+            .replacen("http://", "ws://", 1);
+        let mut request = format!("{ws_addr}/livestream/{group_name}")
+            .into_client_request()
+            .map_err(io::Error::other)?;
+
+        let token = self.access_token()?;
+        request.headers_mut().insert(
+            "Authorization",
+            format!("Bearer {token}").parse().map_err(io::Error::other)?,
+        );
+        if let Some(uuid) = self.subscription_uuid() {
+            request.headers_mut().insert(
+                "X-Subscription-Uuid",
+                uuid.parse().map_err(io::Error::other)?,
+            );
+        }
+
+        // A plain TcpStream so the wait window can be a socket read timeout.
+        let host = request
+            .uri()
+            .host()
+            .ok_or_else(|| io::Error::other("no host in the socket url"))?
+            .to_string();
+        let secure = request.uri().scheme_str() == Some("wss");
+        let port = request.uri().port_u16().unwrap_or(if secure { 443 } else { 80 });
+        let stream = TcpStream::connect((host.as_str(), port))?;
+        stream.set_read_timeout(Some(window))?;
+        stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+
+        let connector = if secure {
+            let mut roots = rustls::RootCertStore::empty();
+            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .map_err(io::Error::other)?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+            tungstenite::Connector::Rustls(Arc::new(config))
+        } else {
+            tungstenite::Connector::Plain
+        };
+
+        let (mut socket, _response) =
+            tungstenite::client_tls_with_config(request, stream, None, Some(connector))
+                .map_err(|e| io::Error::other(e.to_string()))?;
+
+        loop {
+            match socket.read() {
+                Ok(tungstenite::Message::Text(text)) => {
+                    let Ok(event) = serde_json::from_str::<serde_json::Value>(&text) else {
+                        continue;
+                    };
+                    let kind = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    if kind != "start" && kind != "chunk" {
+                        continue;
+                    }
+
+                    // Adopt only if no run holds a session; see livestream_check.
+                    if let Some(session) = event.get("session").and_then(|v| v.as_str()) {
+                        if let Ok(mut guard) = self.livestream_sessions.lock() {
+                            guard
+                                .entry(group_name.to_string())
+                                .or_insert_with(|| session.to_string());
+                        }
+                    }
+                    let _ = socket.close(None);
+                    return Ok(true);
+                }
+                Ok(_) => continue,
+                Err(tungstenite::Error::Io(e))
+                    if e.kind() == io::ErrorKind::WouldBlock
+                        || e.kind() == io::ErrorKind::TimedOut =>
+                {
+                    let _ = socket.close(None);
+                    return Ok(false);
+                }
+                Err(e) => return Err(io::Error::other(e.to_string())),
+            }
+        }
+    }
+
     /// Checks to see if there's a livestream request.
     pub fn livestream_check(&self, group_name: &str) -> io::Result<()> {
         let max_size = MAX_CHECK_RESP_SIZE;
 
-        // The enterprise DS has no SSE stream to read: it pushes over a WebSocket
+        // The enterprise DS pushes start/chunk/end events over a WebSocket, polling as backup
         if self.backend.is_enterprise() {
+            match self.livestream_wait_for_start(group_name, ENTERPRISE_LIVESTREAM_POLL_WINDOW) {
+                Ok(true) => return Ok(()),
+                Ok(false) => {
+                    return Err(io::Error::other("No livestream requested".to_string()))
+                }
+                Err(e) => {
+                    log::debug!("Livestream socket unavailable ({e}); falling back to polling");
+                }
+            }
+
             let deadline = Instant::now() + ENTERPRISE_LIVESTREAM_POLL_WINDOW;
 
             loop {
@@ -986,7 +1118,11 @@ impl HttpClient {
                 if status.active {
                     // This run streams into the session the viewer opened.
                     if let Some(session) = status.session.as_deref() {
-                        self.remember_livestream_session(group_name, session);
+                        if let Ok(mut guard) = self.livestream_sessions.lock() {
+                            guard
+                                .entry(group_name.to_string())
+                                .or_insert_with(|| session.to_string());
+                        }
                     }
                     return Ok(());
                 }
