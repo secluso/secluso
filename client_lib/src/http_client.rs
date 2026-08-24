@@ -122,6 +122,8 @@ pub struct HttpClient {
     subscription_uuid: Arc<Mutex<Option<String>>>,
     /// Current livestream session id per group on the enterprise DS.
     livestream_sessions: Arc<Mutex<HashMap<String, String>>>,
+
+    staging_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -260,6 +262,14 @@ pub fn validate_ios_relay_binding(binding: &IosRelayBinding) -> io::Result<Url> 
 impl HttpClient {
     /// Attach whatever the server we're talking to expects.
     pub fn authorized_headers(&self, request_builder: RequestBuilder) -> RequestBuilder {
+        let staging_key = self
+            .staging_key
+            .clone()
+            .or_else(secluso_client_server_lib::auth::global_staging_key);
+        let request_builder = match staging_key {
+            Some(key) => request_builder.header("X-Staging-Key", key),
+            None => request_builder,
+        };
         if self.backend.is_enterprise() {
             if let Ok(token) = self.access_token() {
                 let request_builder =
@@ -305,7 +315,14 @@ impl HttpClient {
             session: EnterpriseSession::new(),
             subscription_uuid: Arc::new(Mutex::new(None)),
             livestream_sessions: Arc::new(Mutex::new(HashMap::new())),
+            staging_key: None,
         }
+    }
+
+    /// Set the staging gate key (from the pairing credentials). No-op with None.
+    pub fn with_staging_key(mut self, key: Option<String>) -> Self {
+        self.staging_key = key.filter(|k| !k.is_empty());
+        self
     }
 
     pub fn subscription_uuid(&self) -> Option<String> {
@@ -792,6 +809,8 @@ impl HttpClient {
         let response = self.authorized_headers(client
             .post(server_url))
             .header("Content-Type", "application/octet-stream")
+            // Tag the upload with its group so the relay can attribute storage per camera on /usage.
+            .header("X-Group-Key", group_name)
             .body(Body::new(reader))
             .send()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;

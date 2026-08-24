@@ -6,6 +6,23 @@ use anyhow::Context;
 use rand::distr::Uniform;
 use rand::Rng;
 use std::io;
+use std::sync::RwLock;
+
+static GLOBAL_STAGING_KEY: RwLock<Option<String>> = RwLock::new(None);
+
+pub fn global_staging_key() -> Option<String> {
+    GLOBAL_STAGING_KEY.read().ok().and_then(|guard| guard.clone())
+}
+
+fn remember_staging_key(key: &Option<String>) {
+    if let Some(value) = key {
+        if !value.is_empty() {
+            if let Ok(mut guard) = GLOBAL_STAGING_KEY.write() {
+                *guard = Some(value.clone());
+            }
+        }
+    }
+}
 
 pub const NUM_USERNAME_CHARS: usize = 14;
 pub const NUM_PASSWORD_CHARS: usize = 14;
@@ -47,6 +64,9 @@ pub struct UserCredentials {
     /// Absent means self-hosted (backwards compat.)
     #[serde(rename = "b", alias = "backend", default, skip_serializing_if = "is_default_backend")]
     pub backend: ServerBackend,
+
+    #[serde(rename = "sk", alias = "staging_key", default, skip_serializing_if = "Option::is_none")]
+    pub staging_key: Option<String>,
 }
 
 fn is_default_backend(backend: &ServerBackend) -> bool {
@@ -91,6 +111,7 @@ pub fn parse_user_credentials_full(
 
 pub fn parse_user_credentials_any(credentials_full: Vec<u8>) -> io::Result<UserCredentials> {
     if let Ok(parsed) = serde_json::from_slice::<UserCredentials>(&credentials_full) {
+        remember_staging_key(&parsed.staging_key);
         return Ok(parsed);
     }
 
@@ -102,6 +123,7 @@ pub fn parse_user_credentials_any(credentials_full: Vec<u8>) -> io::Result<UserC
         password,
         server_addr,
         backend: ServerBackend::SelfHosted,
+        staging_key: None,
     })
 }
 
@@ -167,6 +189,7 @@ pub fn create_user_credentials_for(
         password,
         server_addr,
         backend,
+        staging_key: None,
     };
     let credentials_full_string = serde_json::to_string(&user_credentials)
         .context("Failed to serialize user credentials into JSON")?;
