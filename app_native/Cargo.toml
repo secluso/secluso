@@ -20,6 +20,8 @@ openmls = "=0.8.1"
 docopt = "~1.1"
 
 [features]
+# Direct livestreaming, so chunks can skip the relay. QUIC / TLS
+p2p = ["secluso-client-lib/p2p"]
 default = []
 for-example = ["secluso-client-lib/http_client"]
 

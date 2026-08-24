@@ -2,6 +2,7 @@
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
+use secluso_client_lib::livestream_session::LivestreamSession;
 use crate::delivery_monitor::DeliveryMonitor;
 use crate::traits::Camera;
 use secluso_client_lib::http_client::HttpClient;
@@ -60,6 +61,22 @@ impl AsyncWrite for LivestreamWriter {
     }
 }
 
+/// Open a livestream session, trying for a direct path to the app
+#[cfg(feature = "p2p")]
+fn open_livestream_session(http_client: &HttpClient, group_name: &str) -> LivestreamSession {
+    LivestreamSession::open_direct(
+        http_client.clone(),
+        group_name,
+        group_name,
+        secluso_client_lib::p2p::Role::Camera,
+    )
+}
+
+#[cfg(not(feature = "p2p"))]
+fn open_livestream_session(http_client: &HttpClient, group_name: &str) -> LivestreamSession {
+    LivestreamSession::open(http_client.clone(), group_name, group_name)
+}
+
 pub fn livestream(
     mls_client: &mut MlsClient,
     camera: &dyn Camera,
@@ -71,6 +88,12 @@ pub fn livestream(
         // We return Ok(()) since we want the core() in main.rs to continue;
         // FIXME: not enforcing this yet.
         //return Ok(());
+    }
+
+    let group_name_probe = mls_client.get_group_name().unwrap();
+    if !http_client.livestream_session_ready(&group_name_probe) {
+        info!("Livestream: no session to stream into; skipping this run.");
+        return Ok(());
     }
 
     // Update MLS epoch
@@ -91,8 +114,18 @@ pub fn livestream(
     let pending_livestream_updates = delivery_monitor.get_livestream_updates();
     let updates_data = bincode::serialize(&pending_livestream_updates).unwrap();
 
-    http_client.livestream_upload(&group_name, updates_data, 0)?;
+    // Open the session before the first chunk.
+    // A return of 0 means the session went stale before the commit got here
+    // (the enterprise DS drops the chunk without storing it)
+    if http_client.livestream_upload(&group_name, updates_data, 0)? == 0 {
+        info!("Livestream: session ended before the commit landed; will retry next run.");
+        http_client.forget_livestream_session(&group_name);
+        return Ok(());
+    }
     delivery_monitor.dequeue_livestream_updates();
+
+    let session = open_livestream_session(http_client, &group_name);
+    debug!("Livestream: sending chunks over the {:?} path", session.path());
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let livestream_writer = LivestreamWriter::new(tx);
@@ -128,8 +161,7 @@ pub fn livestream(
         );
 
         let upload_start = Instant::now();
-        let num_pending_files =
-            http_client.livestream_upload(&group_name, enc_data, chunk_number)?;
+        let num_pending_files = session.upload_chunk(chunk_number, enc_data)?;
         chunk_number += 1;
 
         let upload_ms = upload_start.elapsed().as_millis();
@@ -152,6 +184,7 @@ pub fn livestream(
     }
 
     mls_client.save_group_state().unwrap();
+    http_client.forget_livestream_session(&group_name);
 
     Ok(())
 }

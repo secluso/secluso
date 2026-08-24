@@ -21,7 +21,12 @@ use secluso_client_lib::notification::{decode_notification, Notification};
 use secluso_client_lib::pairing::{self, generate_add_app_secret, MessageTransport,
     TcpStreamTransport, RelayTransport, get_random_name};
 use secluso_client_lib::video::{encrypt_video_file, decrypt_video_file, decrypt_thumbnail_file};
-use secluso_client_server_lib::auth::parse_user_credentials_full;
+use secluso_client_lib::subscription::{load_subscription_uuid, save_subscription_uuid};
+use secluso_client_lib::object_name::{
+    load_object_secret, object_name, object_name_with_kind, save_object_secret,
+};
+use std::path::Path;
+use secluso_client_server_lib::auth::{parse_user_credentials_any, parse_user_credentials_full};
 use openmls::prelude::KeyPackage;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -42,11 +47,14 @@ struct HeartbeatStatus {
 #[flutter_rust_bridge::frb]
 pub struct Clients {
     mls_clients: MlsClients,
+    /// Where this camera's state lives. The object naming secret is persisted here.
+    file_dir: String,
 }
 
 #[flutter_rust_bridge::frb]
 impl Clients {
     pub fn new(first_time: bool, file_dir: String) -> io::Result<Self> {
+        let stored_dir = file_dir.clone();
         let mls_clients: MlsClients = array::from_fn(|i| {
             let app_name = get_app_name(
                 first_time,
@@ -69,7 +77,10 @@ impl Clients {
             mls_client
         });
 
-        Ok(Self { mls_clients })
+        Ok(Self {
+            mls_clients,
+            file_dir: stored_dir,
+        })
     }
 }
 
@@ -160,14 +171,16 @@ fn send_credentials_full(
     Ok(())
 }
 
+/// Also collects the camera's object naming secret
 fn receive_camera_version_info(
     msg_transport: &mut dyn MessageTransport,
-) -> anyhow::Result<CameraVersionInfo> {
+) -> anyhow::Result<(CameraVersionInfo, Vec<u8>)> {
     info!("Receiving camera version info");
     let version_info_bytes = msg_transport.receive_msg("firmware_version")?;
+    let object_secret = msg_transport.receive_msg("object_secret")?;
     let version_info = serde_json::from_slice::<CameraVersionInfo>(&version_info_bytes)?;
 
-    Ok(version_info)
+    Ok((version_info, object_secret))
 }
 
 fn send_timestamp(
@@ -258,6 +271,7 @@ pub fn add_camera(
     pairing_token: String,
     credentials_full: String,
     android_camera: bool,
+    subscription_uuid: String,
 ) -> String {
     if clients_reg.is_none() {
         info!("Error: clients not initialized!");
@@ -276,8 +290,8 @@ pub fn add_camera(
 
     // Connect to the camera
     let msg_transport_ret: io::Result<Box<dyn MessageTransport>> = if android_camera {
-        let (server_username, server_password, server_addr) =
-            match parse_user_credentials_full(credentials_full.clone().into_bytes()) {
+        let credentials =
+            match parse_user_credentials_any(credentials_full.clone().into_bytes()) {
                 Ok(creds) => creds,
                 Err(e) => {
                     info!("Error (parse credentials): {e}");
@@ -285,10 +299,11 @@ pub fn add_camera(
                 }
             };
 
-        RelayTransport::initialize_connect(
-            server_username,
-            server_password,
-            server_addr,
+        RelayTransport::initialize_connect_with_backend(
+            credentials.username,
+            credentials.password,
+            credentials.server_addr,
+            credentials.backend,
         )
         .map(|transport| Box::new(transport) as Box<dyn MessageTransport>)
     } else {
@@ -316,9 +331,9 @@ pub fn add_camera(
     }
 
     info!("Waiting for firmware version from camera");
-    let version_info =
+    let (version_info, object_secret) =
         match receive_camera_version_info(msg_transport.as_mut()) {
-            Ok(version_info) => version_info,
+            Ok(received) => received,
             Err(e) => {
                 info!("Error (firmware): {e}");
                 return "Error".to_string();
@@ -333,6 +348,13 @@ pub fn add_camera(
     if app_native_version != version_info.firmware_version {
         return "PairVersionIncompatible".to_string();
     }
+
+    // Persist the naming secret before pairing
+    if let Err(e) = save_object_secret(Path::new(&clients.as_ref().file_dir), &object_secret) {
+        info!("Error (object secret): {e}");
+        return "Error".to_string();
+    }
+
 
     // Perform pairing
     info!("Starting camera pairing handshake");
@@ -357,6 +379,27 @@ pub fn add_camera(
         ) {
             info!("Error (credentials): {e}");
             return "Error".to_string();
+        }
+
+        // And which subscription this camera bills against
+        info!("Sending subscription uuid to camera");
+        if let Err(e) = send_credentials_full(
+            msg_transport.as_mut(),
+            &mut clients.mls_clients[CONFIG],
+            subscription_uuid.clone(),
+        ) {
+            info!("Error (subscription uuid): {e}");
+            return "Error".to_string();
+        }
+
+        if !subscription_uuid.is_empty() {
+            if let Err(e) = save_subscription_uuid(
+                Path::new(&clients.file_dir),
+                &subscription_uuid,
+            ) {
+                info!("Error (saving subscription uuid): {e}");
+                return "Error".to_string();
+            }
         }
     }
 
@@ -513,6 +556,59 @@ pub fn get_group_name(clients: &mut Option<Box<Clients>>, client_tag: &str) -> i
     }
 
     clients.as_mut().unwrap().mls_clients[mls_client_index.unwrap()].get_group_name()
+}
+
+/// The key this camera's enterprise object names are derived from.
+/// Not derived from MLS.
+pub fn get_object_key(clients: &mut Option<Box<Clients>>, _client_tag: &str) -> io::Result<Vec<u8>> {
+    let Some(clients) = clients.as_ref() else {
+        return Err(io::Error::other(
+            "Error: clients not initialized!".to_string(),
+        ));
+    };
+
+    load_object_secret(Path::new(&clients.file_dir))
+}
+
+/// The subscription the paired camera bills against (saved at paiirng)
+pub fn get_subscription_uuid(clients: &Option<Box<Clients>>) -> io::Result<String> {
+    let Some(clients) = clients.as_ref() else {
+        return Err(io::Error::other(
+            "Error: clients not initialized!".to_string(),
+        ));
+    };
+
+    load_subscription_uuid(Path::new(&clients.file_dir))
+}
+
+/// Store the naming secret the camera sent during pairing.
+pub fn store_object_secret(
+    clients: &mut Option<Box<Clients>>,
+    secret: &[u8],
+) -> io::Result<()> {
+    let Some(clients) = clients.as_ref() else {
+        return Err(io::Error::other(
+            "Error: clients not initialized!".to_string(),
+        ));
+    };
+
+    save_object_secret(Path::new(&clients.file_dir), secret)
+}
+
+/// The name an object is stored under on the enterprise DS
+pub fn object_name_for(
+    clients: &mut Option<Box<Clients>>,
+    client_tag: &str,
+    group_name: &str,
+    epoch: u64,
+    kind: Option<&str>,
+) -> io::Result<String> {
+    let key = get_object_key(clients, client_tag)?;
+
+    match kind {
+        Some(kind) => object_name_with_kind(&key, group_name, epoch, kind),
+        None => object_name(&key, group_name, epoch),
+    }
 }
 
 pub fn get_client_epoch(
@@ -856,7 +952,17 @@ pub fn process_add_app_config_response(
                         }
                     });
 
-                    let new_app_data = (new_app_data_array, new_app_name.clone());
+                    // Carry this camera's object naming secret and subscription to
+                    // the new app.
+                    let object_secret =
+                        load_object_secret(Path::new(&clients.as_ref().unwrap().file_dir))
+                            .unwrap_or_default();
+                    let subscription_uuid =
+                        load_subscription_uuid(Path::new(&clients.as_ref().unwrap().file_dir))
+                            .unwrap_or_default();
+
+                    let new_app_data =
+                        (new_app_data_array, new_app_name.clone(), object_secret, subscription_uuid);
                     let new_app_data_vec = bincode::serialize(&new_app_data).unwrap();
 
                     return Ok((new_app_data_vec, new_app_name))
@@ -883,8 +989,20 @@ pub fn join_camera_groups(
     secret: Vec<u8>,
     new_app_data_vec: Vec<u8>,
 ) -> io::Result<([u64; NUM_MLS_CLIENTS], String)> {
-    let (new_app_data_array, new_app_name): ([NewAppData; NUM_MLS_CLIENTS], String) =
-        bincode::deserialize(&new_app_data_vec).unwrap();
+    let (new_app_data_array, new_app_name, object_secret, subscription_uuid): (
+        [NewAppData; NUM_MLS_CLIENTS],
+        String,
+        Vec<u8>,
+        String,
+    ) = bincode::deserialize(&new_app_data_vec).unwrap();
+
+    // Persist the naming secret before joining anything
+    if !object_secret.is_empty() {
+        save_object_secret(Path::new(&clients.as_ref().unwrap().file_dir), &object_secret)?;
+    }
+    if !subscription_uuid.is_empty() {
+        save_subscription_uuid(Path::new(&clients.as_ref().unwrap().file_dir), &subscription_uuid)?;
+    }
 
     let epochs: [u64; NUM_MLS_CLIENTS] = std::array::from_fn(|i| {
         let app_contact =

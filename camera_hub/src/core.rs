@@ -2,8 +2,11 @@
 //!
 //! SPDX-License-Identifier: GPL-3.0-or-later
 
+use secluso_client_lib::object_name::load_object_secret;
 use cfg_if::cfg_if;
 use secluso_client_lib::http_client::HttpClient;
+use secluso_client_lib::subscription::{load_subscription_uuid, save_subscription_uuid};
+use secluso_client_server_lib::auth::ServerBackend;
 use secluso_client_lib::mls_client::{ClientType, MlsClient};
 use secluso_client_lib::mls_clients::{
     MlsClients, FCM, MLS_CLIENT_TAGS, MOTION, NUM_MLS_CLIENTS,
@@ -35,7 +38,7 @@ use crate::traits::Camera;
 use crate::config::process_config_command;
 use crate::notification_target::{send_notification, refresh_notification_target};
 use crate::pairing::flow::pair_all;
-use crate::pairing::io::{get_names, read_parse_full_credentials};
+use crate::pairing::io::{get_names, read_credentials_backend, read_parse_full_credentials};
 
 cfg_if! {
     if #[cfg(feature = "manual")] {
@@ -107,6 +110,7 @@ pub struct AndroidServerCredentials {
     pub server_username: String,
     pub server_password: String,
     pub server_addr: String,
+    pub server_backend: ServerBackend,
 }
 
 #[cfg(feature = "android")]
@@ -140,15 +144,28 @@ impl StopWaiter {
         // we issue dummy livestream and config requests here causing those
         // threads to come back, at which point they exit since they notice
         // the stop request.
+        //
+        // Only for the self-hosted server, whose checks block on an SSE stream that  nothing else will unblock.
         let result = match self {
             Self::Livestream {
                 http_client,
                 group_name,
-            } => http_client.livestream_start(group_name),
+            } => {
+                if http_client.backend().is_enterprise() {
+                    return;
+                }
+                http_client.livestream_start(group_name)
+            }
             Self::Config {
                 http_client,
                 group_name,
-            } => http_client.config_command(group_name, vec![0]),
+            } => {
+                // Same reasoning: the enterprise check is a bounded poll
+                if http_client.backend().is_enterprise() {
+                    return;
+                }
+                http_client.config_command(group_name, vec![0])
+            }
         };
 
         if let Err(e) = result {
@@ -163,6 +180,21 @@ static STOP_WAITERS: std::sync::OnceLock<
 > = std::sync::OnceLock::new();
 
 #[cfg(any(feature = "android", feature = "test"))]
+/// The key enterprise object names are derived from
+fn object_key_for(http_client: &HttpClient, _mls_client: &MlsClient) -> Option<Vec<u8>> {
+    if !http_client.backend().is_enterprise() {
+        return None;
+    }
+
+    match load_object_secret(std::path::Path::new(".")) {
+        Ok(secret) => Some(secret),
+        Err(e) => {
+            error!("Could not read the object naming secret: {e}");
+            None
+        }
+    }
+}
+
 fn register_stop_waiter(waiter: StopWaiter) {
     let mut waiters = STOP_WAITERS
         .get_or_init(|| std::sync::Mutex::new(vec![]))
@@ -207,6 +239,7 @@ pub fn set_android_server_credentials(
     server_username: String,
     server_password: String,
     server_addr: String,
+    server_backend: String,
 ) -> io::Result<()> {
     if server_username.trim().is_empty() {
         return Err(io::Error::new(
@@ -234,6 +267,11 @@ pub fn set_android_server_credentials(
         server_username,
         server_password,
         server_addr,
+        server_backend: if server_backend == "enterprise" {
+            ServerBackend::Enterprise
+        } else {
+            ServerBackend::SelfHosted
+        },
     });
 
     Ok(())
@@ -290,6 +328,22 @@ fn get_android_camera_settings() -> AndroidCameraSettings {
         .lock()
         .unwrap()
         .clone()
+}
+
+pub(crate) fn get_server_backend() -> ServerBackend {
+    #[cfg(feature = "android")]
+    {
+        if let Some(creds) = ANDROID_SERVER_CREDENTIALS
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .unwrap()
+            .clone()
+        {
+            return creds.server_backend;
+        }
+    }
+
+    read_credentials_backend()
 }
 
 pub(crate) fn get_server_credentials() -> (String, String, String) {
@@ -406,8 +460,16 @@ pub(crate) fn run(args: Args) -> io::Result<()> {
     // We typically run the camera_hub using a systemd service, which re-launches it
     // upon abort. We want every panic to abort so that the program can be re-launched.
     panic::set_hook(Box::new(|panic_info| {
-        println!("Panic occurred: {:?}", panic_info);
-        std::process::abort();
+        // Aborting would take  the whole app down, and println goes nowhere
+        #[cfg(feature = "android")]
+        {
+            error!("Panic occurred: {panic_info:?}");
+        }
+        #[cfg(not(feature = "android"))]
+        {
+            println!("Panic occurred: {:?}", panic_info);
+            std::process::abort();
+        }
     }));
 
     // Iterate through each camera struct and spawn in a thread to manage each individual one
@@ -437,6 +499,9 @@ pub(crate) fn run(args: Args) -> io::Result<()> {
             GLOBAL_THREAD_COUNT.fetch_sub(1, Ordering::SeqCst);
 
             if let Err(e) = result {
+                // The panic hook prints the payload as an opaque Any.
+                // So the error chain must be logged before it disappears into it.
+                error!("camera thread returned with: {e:#}");
                 panic!("camera thread returned with: {e}");
             }
         });
@@ -494,7 +559,12 @@ fn reset(camera: &dyn Camera, reset_full: bool) -> anyhow::Result<()> {
 
         //Second, delete data in the server
         let (server_username, server_password, server_addr) = get_server_credentials();
-        let http_client = HttpClient::new(server_addr, server_username, server_password);
+        let http_client = HttpClient::new_with_backend(
+            server_addr,
+            server_username,
+            server_password,
+            read_credentials_backend(),
+        );
 
         match http_client.deregister(&group_name) {
             Ok(_) => {
@@ -690,8 +760,14 @@ fn spawn_dedicated_check_threads(
             }
 
             println!("Livestream{} detected", livestream_app_name);
-            let mut requests = livestream_requests.lock().unwrap();
-            requests.push(livestream_app_name.clone());
+            {
+                let mut requests = livestream_requests.lock().unwrap();
+                if !requests.contains(&livestream_app_name) {
+                    requests.push(livestream_app_name.clone());
+                }
+            }
+            // Pace the next check
+            sleep(Duration::from_secs(1));
         } else {
             #[cfg(any(feature = "android", feature = "test"))]
             if STOP_REQUESTED.load(Ordering::SeqCst) {
@@ -779,7 +855,32 @@ fn core(
     println!("[{}] Running...", camera_name);
 
     let (server_username, server_password, server_addr) = get_server_credentials();
-    let http_client = HttpClient::new(server_addr, server_username, server_password);
+    let http_client = HttpClient::new_with_backend(
+        server_addr,
+        server_username,
+        server_password,
+        get_server_backend(),
+    );
+
+    // The subscription the app assigned this camera during pairing.
+    if let Ok(uuid) = load_subscription_uuid(Path::new(".")) {
+        http_client.set_subscription_uuid(Some(uuid));
+    }
+
+    // No-op on the self-hosted DS, which has no accounts.
+    if let Err(e) = http_client.register() {
+        error!("Could not register with the delivery service: {e}");
+    }
+
+    // Older pairings predate the assignment
+    if let Some(uuid) = http_client.subscription_uuid() {
+        if load_subscription_uuid(Path::new(".")).is_err() {
+            if let Err(e) = save_subscription_uuid(Path::new("."), &uuid) {
+                error!("Could not persist the subscription uuid: {e}");
+            }
+        }
+    }
+
 
     let mut locked_motion_check_time: Option<Instant> = None;
     let mut locked_delivery_check_time: Option<Instant> = None;
@@ -867,11 +968,13 @@ fn core(
                 )?;
 
                 info!("Uploading the encrypted thumbnail.");
+                let object_key = object_key_for(&http_client, &clients_com[THUMBNAIL]);
                 let _ = upload_pending_enc_thumbnails(
                     &clients_com[THUMBNAIL].get_group_name().unwrap(),
                     &mut delivery_monitor,
                     &http_client,
                     num_apps,
+                    object_key.as_deref(),
                 );
             }
 
@@ -891,11 +994,13 @@ fn core(
             prepare_motion_video(&mut clients_com[MOTION], video_info, &mut delivery_monitor)?;
 
             info!("Uploading the encrypted video.");
+            let object_key = object_key_for(&http_client, &clients_com[MOTION]);
             let _ = upload_pending_enc_videos(
                 &clients_com[MOTION].get_group_name().unwrap(),
                 &mut delivery_monitor,
                 &http_client,
                 num_apps,
+                object_key.as_deref(),
             );
 
             let state_dir_ref = state_dir.as_str();
@@ -932,13 +1037,15 @@ fn core(
 
             for app_name in requesting_app_names {
                 info!("Livestream start detected");
-                if app_name == PRIMARY_APP_NAME {
+                // A failed run (network error, stale session) shouldn't kill the camera core.
+                // Try again next req
+                let livestream_result = if app_name == PRIMARY_APP_NAME {
                     livestream(
                         &mut clients_ded_primary[LIVESTREAM_DED],
                         camera,
                         &mut delivery_monitor,
                         &http_client,
-                    )?;
+                    )
                 } else if let Some(clients_ded_sec) = clients_ded_secondary.get_mut(&app_name) {
                     livestream(
                         &mut clients_ded_sec[LIVESTREAM_DED],
@@ -946,7 +1053,12 @@ fn core(
                         // FIXME: delivery_monitor should use a separate queue for secondary apps
                         &mut delivery_monitor,
                         &http_client,
-                    )?;
+                    )
+                } else {
+                    Ok(())
+                };
+                if let Err(e) = livestream_result {
+                    error!("Livestream attempt failed: {e}");
                 }
             }
 
@@ -959,11 +1071,13 @@ fn core(
         {
             let num_apps = 1 + clients_ded_secondary.len();
 
+            let motion_object_key = object_key_for(&http_client, &clients_com[MOTION]);
             if upload_pending_enc_videos(
                 &clients_com[MOTION].get_group_name().unwrap(),
                 &mut delivery_monitor,
                 &http_client,
                 num_apps,
+                motion_object_key.as_deref(),
             )
             .is_ok()
             {
@@ -976,11 +1090,13 @@ fn core(
                 //let _ = send_pending_motion_videos(camera, &mut clients, &mut delivery_monitor, &http_client);
             }
 
+            let thumbnail_object_key = object_key_for(&http_client, &clients_com[THUMBNAIL]);
             if upload_pending_enc_thumbnails(
                 &clients_com[THUMBNAIL].get_group_name().unwrap(),
                 &mut delivery_monitor,
                 &http_client,
                 num_apps,
+                thumbnail_object_key.as_deref(),
             )
             .is_ok()
             {

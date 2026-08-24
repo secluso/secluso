@@ -1,10 +1,32 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use secluso_client_server_lib::auth::parse_user_credentials_full;
+use secluso_client_server_lib::auth::{parse_user_credentials_any, parse_user_credentials_full, ServerBackend};
 use secluso_client_lib::pairing::get_random_name;
 
 /// Returns username, password, and server addr
+/// Which delivery service for the provisioned credentials
+pub fn read_credentials_backend() -> ServerBackend {
+    let Ok(file) = File::open("credentials_full") else {
+        return ServerBackend::SelfHosted;
+    };
+    let Ok(metadata) = file.metadata() else {
+        return ServerBackend::SelfHosted;
+    };
+    let Ok(capacity) = metadata.len().try_into() else {
+        return ServerBackend::SelfHosted;
+    };
+
+    let mut reader = BufReader::with_capacity(capacity, file);
+    let Ok(data) = reader.fill_buf() else {
+        return ServerBackend::SelfHosted;
+    };
+
+    parse_user_credentials_any(data.to_vec())
+        .map(|credentials| credentials.backend)
+        .unwrap_or(ServerBackend::SelfHosted)
+}
+
 pub fn read_parse_full_credentials() -> (String, String, String) {
     let file = File::open("credentials_full").expect("Could not open user_credentials file");
     let mut reader =
@@ -13,10 +35,13 @@ pub fn read_parse_full_credentials() -> (String, String, String) {
 
     let credentials_full_bytes = data.to_vec();
 
-    let (server_username, server_password, server_addr) =
-        parse_user_credentials_full(credentials_full_bytes).unwrap();
+    let credentials = parse_user_credentials_any(credentials_full_bytes).unwrap();
 
-    (server_username, server_password, server_addr)
+    (
+        credentials.username,
+        credentials.password,
+        credentials.server_addr,
+    )
 }
 
 /// Utility function for outside the pairing module

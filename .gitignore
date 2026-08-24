@@ -54,3 +54,6 @@ motion_ai/pipeline/Cargo.lock
 motion_ai/cli/Cargo.lock
 server_backbone/Cargo.lock
 tester/Cargo.lock
+# Per-camera object naming secret
+object_secret
+subscription_uuid

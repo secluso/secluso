@@ -18,6 +18,8 @@ android = ["dep:ndk-sys", "dep:secluso-motion-ai"]
 manual = []
 telemetry = [] # todo: dep on the motion_ai crate
 test = []
+# Direct livestreaming, so chunks can skip the relay. QUIC / TLS
+p2p = ["secluso-client-lib/p2p"]
 
 [dependencies]
 docopt = "~1.1"

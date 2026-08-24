@@ -4,13 +4,23 @@ version = "1.0.2"
 edition = "2021"
 authors = ["Ardalan Amiri Sani <arrdalan@gmail.com>"]
 
+[target.'cfg(target_os = "android")'.dependencies]
+# reqwest's rustls feature verifies through the Android platform, which needs JNI
+# context and rejects certificates without OCSP data.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
+webpki-roots = { version = "0.26", optional = true }
+
 [features]
 default = ["logging"]
 logging = ["log"]
-http_client = ["dep:reqwest", "dep:base64"]
+http_client = ["dep:reqwest", "dep:base64", "dep:secluso-client-server-lib", "dep:rustls", "dep:webpki-roots", "dep:tungstenite"]
 camera_secret_qrcode = ["dep:qrcode", "dep:image"]
+# Direct peer-to-peer livestreaming, so chunks can skip the relay. QUIC / TLS
+p2p = ["dep:quinn", "dep:rustls", "dep:rcgen", "dep:tokio", "http_client"]
 
 [dependencies]
+# Enterprise DS object naming (src/object_name.rs)
+blake3 = "1"
 log = { version = "0.4.29", optional = true }
 serde = "1.0"
 serde_derive = "1.0"
@@ -21,11 +31,20 @@ openmls_libcrux_crypto = "=0.3.1"
 openmls_memory_storage = { version = "=0.5.0", features = ["persistence"] }
 openmls_basic_credential = "=0.5.0"
 bincode = "1.3.3"
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "multipart", "rustls"], optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "multipart", "rustls", "json"], optional = true }
+secluso-client-server-lib = { path = "../client_server_lib", optional = true }
 base64 = { version = "0.22.1", optional = true }
 base64-url = {version = "3.0.3"}
 anyhow = "^1.0.64" # Locked to this version due to flutter_rust_bridge usage in app
 serde_json = "1.0.149"
 rand = "0.9.4"
+
+# P2P transport.
+quinn = { version = "0.11", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
+webpki-roots = { version = "0.26", optional = true }
+tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"], optional = true }
+rcgen = { version = "0.13", optional = true }
+tokio = { version = "1", features = ["rt", "time", "macros", "net"], optional = true }
 qrcode = { version = "0.14.1", optional = true }
 image = { version = "0.25.10", optional = true }

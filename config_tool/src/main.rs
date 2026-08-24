@@ -14,7 +14,7 @@ use std::io::Write;
 use std::fs::create_dir;
 use std::path::Path;
 use url::Url;
-use secluso_client_server_lib::auth::{create_user_credentials};
+use secluso_client_server_lib::auth::{create_user_credentials_for, ServerBackend};
 use anyhow::Context;
 use anyhow::anyhow;
 
@@ -22,7 +22,7 @@ const USAGE: &str = "
 Helps configure the Secluso server, camera, and app.
 
 Usage:
-  secluso-config-tool --generate-user-credentials --server-addr ADDR --dir DIR
+  secluso-config-tool --generate-user-credentials --server-addr ADDR --dir DIR [--enterprise]
   secluso-config-tool --generate-camera-secret --dir DIR
   secluso-config-tool (--version | -v)
   secluso-config-tool (--help | -h)
@@ -31,6 +31,8 @@ Options:
     --generate-user-credentials     Generate a random username and a random key to be used to authenticate with the server.
     --generate-camera-secret        Generate a random secret to be used for camera pairing (used for Raspberry Pi cameras).
     --server-addr ADDR              Address (URL) of the server, e.g., https://example.com:8080/ or http://192.168.0.1/.
+    --enterprise                    The address is the hosted enterprise server, not a self-hosted one.
+                                    Changes how the camera and app authenticate and how objects are named.
     --dir DIR                       Directory for storing the camera's secret files.
     --version, -v                   Show tool version.
     --help, -h                      Show this screen.
@@ -42,6 +44,7 @@ struct Args {
     flag_generate_camera_secret: bool,
     flag_server_addr: String,
     flag_dir: String,
+    flag_enterprise: bool,
 }
 
 fn main() -> io::Result<()> {
@@ -54,7 +57,14 @@ fn main() -> io::Result<()> {
         .unwrap_or_else(|e| e.exit());
 
     if args.flag_generate_user_credentials {
-        if let Err(e) = generate_user_credentials(Path::new(&args.flag_dir), &args.flag_server_addr) {
+        let backend = if args.flag_enterprise {
+            ServerBackend::Enterprise
+        } else {
+            ServerBackend::SelfHosted
+        };
+        if let Err(e) =
+            generate_user_credentials(Path::new(&args.flag_dir), &args.flag_server_addr, backend)
+        {
             println!("Failed to generate!");
             println!("Error: {}", e);
         } else {
@@ -73,7 +83,11 @@ fn main() -> io::Result<()> {
 }
 
 
-fn generate_user_credentials(dir: &Path, mut server_addr: &str) -> anyhow::Result<()> {
+fn generate_user_credentials(
+    dir: &Path,
+    mut server_addr: &str,
+    backend: ServerBackend,
+) -> anyhow::Result<()> {
     if let Ok(parsed_url) = Url::parse(server_addr) {
         if parsed_url.scheme() != "http" && parsed_url.scheme() != "https" {
             return Err(anyhow!("Invalid server URL scheme: {}", parsed_url.scheme()));
@@ -87,7 +101,7 @@ fn generate_user_credentials(dir: &Path, mut server_addr: &str) -> anyhow::Resul
 
 
     let (credentials, credentials_full, credentials_full_testing) =
-        create_user_credentials(server_addr.to_string())?;
+        create_user_credentials_for(server_addr.to_string(), backend)?;
 
     // Create the directory if it doesn't exist
     create_dir(dir).context("Failed to create directory (it may already exist)")?;
@@ -96,6 +110,12 @@ fn generate_user_credentials(dir: &Path, mut server_addr: &str) -> anyhow::Resul
     let mut file =
         fs::File::create(dir.join("user_credentials")).context("Could not create user_credentials file")?;
     file.write_all(&credentials).context("Failed to write to file")?;
+
+    // Also save credentials_full as a plain file.
+    let mut file = fs::File::create(dir.join("user_credentials_full"))
+        .context("Could not create user_credentials_full file")?;
+    file.write_all(&credentials_full)
+        .context("Failed to write to file")?;
 
     // Save the credentials_full (which includes the server addr) as QR code to be shown to the app
     let code = QrCode::new(&credentials_full).context("Failed to generate QR code")?;
