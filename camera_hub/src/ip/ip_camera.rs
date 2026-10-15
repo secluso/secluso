@@ -26,10 +26,10 @@
 //! https://standards.iso.org/ittf/PubliclyAvailableStandards/c068960_ISO_IEC_14496-12_2015.zip
 
 use crate::delivery_monitor::VideoInfo;
-use crate::fmp4::Fmp4Writer;
 use crate::livestream::LivestreamWriter;
 use crate::motion::MotionResult;
-use crate::mp4::Mp4Writer;
+use crate::mp4::fmp4::Fmp4Writer;
+use crate::mp4::mp4::Mp4Writer;
 use crate::traits::{Camera, CodecParameters, Mp4};
 use std::fs;
 use std::io;
@@ -51,7 +51,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use crate::ip::ip_motion_detection::MotionDetection;
-use crate::{STATE_DIR_GENERAL, THUMBNAIL_DIR_GENERAL, VIDEO_DIR_GENERAL};
+use crate::core::{STATE_DIR_GENERAL, THUMBNAIL_DIR_GENERAL, VIDEO_DIR_GENERAL};
 use rpassword::read_password;
 use std::collections::VecDeque;
 use std::process::exit;

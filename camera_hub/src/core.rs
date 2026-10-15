@@ -61,9 +61,9 @@ cfg_if! {
     }
 }
 
-const STATE_DIR_GENERAL: &str = "state";
-const VIDEO_DIR_GENERAL: &str = "pending_videos";
-const THUMBNAIL_DIR_GENERAL: &str = "pending_thumbnails";
+pub(crate) const STATE_DIR_GENERAL: &str = "state";
+pub(crate) const VIDEO_DIR_GENERAL: &str = "pending_videos";
+pub(crate) const THUMBNAIL_DIR_GENERAL: &str = "pending_thumbnails";
 
 #[cfg(feature = "test")]
 const VERSION_DIR: &str = "current_version";
