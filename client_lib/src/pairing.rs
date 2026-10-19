@@ -75,6 +75,12 @@ pub struct CameraSecret {
 
     #[serde(rename = "wp", alias = "wiif_password")]
     pub wifi_password: Option<String>,
+
+    // Camera kind. "ip" marks a QR code from an IP camera hub, which has no
+    // hotspot (so no "wp") and is reached at an address the user types in.
+    // Absent for Raspberry Pi and Android cameras, so their QR codes are unchanged.
+    #[serde(rename = "t", default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq)]
@@ -109,6 +115,7 @@ pub fn generate_ip_camera_secret(camera_name: &str) -> anyhow::Result<Vec<u8>> {
         version: CAMERA_SECRET_VERSION.to_string(),
         secret: base64_url::encode(&secret),
         wifi_password: None,
+        kind: Some("ip".to_string()),
     };
 
     let writeable_secret = serde_json::to_string(&camera_secret)
@@ -136,6 +143,7 @@ pub fn generate_android_camera_secret(camera_name: &str) -> anyhow::Result<Vec<u
         version: CAMERA_SECRET_VERSION.to_string(),
         secret: base64_url::encode(&secret),
         wifi_password: None,
+        kind: None,
     };
 
     let writeable_secret = serde_json::to_string(&camera_secret)
@@ -211,6 +219,7 @@ pub fn generate_raspberry_camera_secret(
         version: CAMERA_SECRET_VERSION.to_string(),
         secret: base64_url::encode(&secret),
         wifi_password: Some(wifi_password),
+        kind: None,
     };
 
     let qr_content = serde_json::to_string(&camera_secret)
@@ -241,6 +250,7 @@ pub fn generate_add_app_secret() -> anyhow::Result<String> {
         version: CAMERA_SECRET_VERSION.to_string(),
         secret: base64_url::encode(&secret),
         wifi_password: None,
+        kind: None,
     };
 
     let qr_content = serde_json::to_string(&add_app_secret)
