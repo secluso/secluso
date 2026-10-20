@@ -3730,7 +3730,7 @@ dependencies = [
  "linfa",
  "linfa-clustering",
  "log",
- "ndarray 0.17.2",
+ "ndarray 0.16.1",
  "ndk-sys",
  "openmls",
  "rand 0.9.4",

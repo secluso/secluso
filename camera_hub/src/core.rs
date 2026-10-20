@@ -61,18 +61,21 @@ cfg_if! {
     }
 }
 
-const STATE_DIR_GENERAL: &str = "state";
-const VIDEO_DIR_GENERAL: &str = "pending_videos";
-const THUMBNAIL_DIR_GENERAL: &str = "pending_thumbnails";
+pub(crate) const STATE_DIR_GENERAL: &str = "state";
+pub(crate) const VIDEO_DIR_GENERAL: &str = "pending_videos";
+pub(crate) const THUMBNAIL_DIR_GENERAL: &str = "pending_thumbnails";
 
-#[cfg(feature = "test")]
+// The IP camera hub is a user-run program on a general-purpose Linux box with
+// no auto-updater, so it keeps its version marker next to its other state
+// instead of in the system-wide location Secluso OS uses.
+#[cfg(any(feature = "test", feature = "ip"))]
 const VERSION_DIR: &str = "current_version";
-#[cfg(feature = "test")]
+#[cfg(any(feature = "test", feature = "ip"))]
 const VERSION_FILE: &str = "current_version/raspberry_camera_hub";
 
-#[cfg(not(any(feature = "test", feature = "android")))]
+#[cfg(not(any(feature = "test", feature = "android", feature = "ip")))]
 const VERSION_DIR: &str = "/var/lib/secluso/current_version";
-#[cfg(not(any(feature = "test", feature = "android")))]
+#[cfg(not(any(feature = "test", feature = "android", feature = "ip")))]
 const VERSION_FILE: &str = "/var/lib/secluso/current_version/raspberry_camera_hub";
 
 #[cfg(feature = "android")]

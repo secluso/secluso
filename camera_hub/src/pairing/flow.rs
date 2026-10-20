@@ -24,7 +24,7 @@ cfg_if::cfg_if! {
         use crate::pairing::io::read_parse_full_credentials;
         use std::process::Command;
         use secluso_client_lib::http_client::HttpClient;
-    } else if #[cfg(feature = "test")] {
+    } else if #[cfg(any(feature = "test", feature = "ip"))] {
         use secluso_client_lib::mls_clients::CONFIG;
         use secluso_client_lib::pairing::TcpStreamTransport;
         use std::fs::File;
@@ -74,7 +74,7 @@ pub fn pair_all(
         }
     };
 
-    #[cfg(any(feature = "raspberry", feature = "test"))]
+    #[cfg(any(feature = "raspberry", feature = "test", feature = "ip"))]
     let mut msg_transport = TcpStreamTransport::initialize_no_connect()?;
     #[cfg(feature = "android")]
     let mut msg_transport = {
@@ -265,7 +265,7 @@ fn perform_pairing_handshake(
     Ok(app_key_package)
 }
 
-#[cfg(any(feature = "test", feature = "raspberry"))]
+#[cfg(any(feature = "test", feature = "raspberry", feature = "ip"))]
 fn receive_credentials_full(
     msg_transport: &mut dyn MessageTransport,
     mls_client: &mut MlsClient,
@@ -282,7 +282,7 @@ fn receive_credentials_full(
     Ok(())
 }
 
-#[cfg(any(feature = "test", feature = "raspberry"))]
+#[cfg(any(feature = "test", feature = "raspberry", feature = "ip"))]
 pub(crate) fn decrypt_msg(mls_client: &mut MlsClient, msg: Vec<u8>) -> io::Result<Vec<u8>> {
     let decrypted_msg = mls_client.decrypt(msg, true)?;
     mls_client.save_group_state()?;
